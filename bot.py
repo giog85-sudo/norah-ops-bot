@@ -1,11 +1,18 @@
 import os
+from datetime import date
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+import psycopg2
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-ALLOWED_USER_IDS = set()
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Optional security: only allow specific Telegram user IDs
+# --- Database connection ---
+def get_conn():
+    return psycopg2.connect(DATABASE_URL)
+
+# --- Security (allowed users) ---
+ALLOWED_USER_IDS = set()
 _raw = os.getenv("ALLOWED_USER_IDS", "").strip()
 if _raw:
     for x in _raw.split(","):
@@ -13,71 +20,122 @@ if _raw:
         if x.isdigit():
             ALLOWED_USER_IDS.add(int(x))
 
-def is_allowed(update: Update) -> bool:
+def is_allowed(update: Update):
     if not ALLOWED_USER_IDS:
-        return True  # if you didn't set allowlist yet, allow everyone (we'll lock it later)
+        return True
     return update.effective_user and update.effective_user.id in ALLOWED_USER_IDS
 
-async def guard(update: Update) -> bool:
+async def guard(update: Update):
     if not is_allowed(update):
         await update.message.reply_text("Not authorized.")
         return False
     return True
 
+# --- Create table if not exists ---
+def init_db():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS daily_stats (
+        day DATE PRIMARY KEY,
+        sales REAL,
+        covers INTEGER
+    );
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# --- /start ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await guard(update): return
+    await update.message.reply_text(
+        "👋 Norah Ops is online.\n\n"
+        "Commands:\n"
+        "/setdaily SALES COVERS\n"
+        "/daily\n"
+        "/help"
+    )
+
+# --- /help ---
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard(update): return
     await update.message.reply_text(
-        "Norah Ops Bot ✅\n\n"
-        "/daily - Owner daily sales summary\n"
-        "/shift - Manager shift brief\n"
-        "/covers - Today reservations overview\n"
-        "/notes - Notes (coming)\n"
-        "/help - Show commands"
+        "/setdaily 2500 120  → saves today's numbers\n"
+        "/daily → show today's report"
     )
 
-async def daily_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- /setdaily ---
+async def setdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard(update): return
+
+    try:
+        sales = float(context.args[0])
+        covers = int(context.args[1])
+    except:
+        await update.message.reply_text("Usage: /setdaily SALES COVERS\nExample: /setdaily 2450 118")
+        return
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    today = date.today()
+
+    cur.execute("""
+        INSERT INTO daily_stats (day, sales, covers)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (day)
+        DO UPDATE SET sales = EXCLUDED.sales, covers = EXCLUDED.covers;
+    """, (today, sales, covers))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    await update.message.reply_text(f"Saved: €{sales} | Covers: {covers}")
+
+# --- /daily ---
+async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await guard(update): return
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    today = date.today()
+
+    cur.execute("SELECT sales, covers FROM daily_stats WHERE day=%s;", (today,))
+    row = cur.fetchone()
+
+    cur.close()
+    conn.close()
+
+    if not row:
+        await update.message.reply_text("No data for today yet.")
+        return
+
+    sales, covers = row
+    avg = sales / covers if covers else 0
+
     await update.message.reply_text(
-        "📊 Norah Daily Summary (MVP)\n"
-        "- Sales: pending\n"
-        "- Covers: pending\n"
-        "- Avg ticket: pending\n"
-        "- Issues: none logged\n\n"
-        "Next step: we’ll connect Agora/CoverManager or allow manual input."
+        f"📊 Norah Daily Report\n\n"
+        f"Sales: €{sales:.2f}\n"
+        f"Covers: {covers}\n"
+        f"Avg ticket: €{avg:.2f}"
     )
 
-async def shift_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
-    await update.message.reply_text(
-        "👥 Shift Brief (MVP)\n"
-        "1) Confirm reservations + walk-in plan\n"
-        "2) Music: daylist 20:00–22:00 then night shift\n"
-        "3) Bathrooms check every 30–40 min\n"
-        "4) Service room doors closed at all times\n"
-    )
-
-async def covers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
-    await update.message.reply_text("📌 Covers (MVP): pending (we’ll connect CoverManager next).")
-
-async def notes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
-    await update.message.reply_text("🗒️ Notes (MVP): coming next.")
-
+# --- Main ---
 def main():
-    if not BOT_TOKEN:
-        raise RuntimeError("Missing BOT_TOKEN env var")
+    init_db()
 
     app = Application.builder().token(BOT_TOKEN).build()
 
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("daily", daily_cmd))
-    app.add_handler(CommandHandler("shift", shift_cmd))
-    app.add_handler(CommandHandler("covers", covers_cmd))
-    app.add_handler(CommandHandler("notes", notes_cmd))
+    app.add_handler(CommandHandler("setdaily", setdaily))
+    app.add_handler(CommandHandler("daily", daily))
 
-    # POLLING = simplest to deploy (no webhook URL needed)
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    print("Bot started...")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
