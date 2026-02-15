@@ -2,14 +2,10 @@ import os
 from datetime import date
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-import psycopg2
+import psycopg
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-# --- Database connection ---
-def get_conn():
-    return psycopg2.connect(DATABASE_URL)
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
 # --- Security (allowed users) ---
 ALLOWED_USER_IDS = set()
@@ -31,20 +27,24 @@ async def guard(update: Update):
         return False
     return True
 
+# --- Database connection ---
+def get_conn():
+    if not DATABASE_URL:
+        raise RuntimeError("Missing DATABASE_URL")
+    return psycopg.connect(DATABASE_URL)
+
 # --- Create table if not exists ---
 def init_db():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS daily_stats (
-        day DATE PRIMARY KEY,
-        sales REAL,
-        covers INTEGER
-    );
-    """)
-    conn.commit()
-    cur.close()
-    conn.close()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS daily_stats (
+                    day DATE PRIMARY KEY,
+                    sales DOUBLE PRECISION,
+                    covers INTEGER
+                );
+            """)
+        conn.commit()
 
 # --- /start ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -61,8 +61,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard(update): return
     await update.message.reply_text(
-        "/setdaily 2500 120  → saves today's numbers\n"
-        "/daily → show today's report"
+        "Usage:\n"
+        "/setdaily 2450 118\n"
+        "/daily"
     )
 
 # --- /setdaily ---
@@ -76,45 +77,37 @@ async def setdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /setdaily SALES COVERS\nExample: /setdaily 2450 118")
         return
 
-    conn = get_conn()
-    cur = conn.cursor()
-
     today = date.today()
 
-    cur.execute("""
-        INSERT INTO daily_stats (day, sales, covers)
-        VALUES (%s, %s, %s)
-        ON CONFLICT (day)
-        DO UPDATE SET sales = EXCLUDED.sales, covers = EXCLUDED.covers;
-    """, (today, sales, covers))
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO daily_stats (day, sales, covers)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (day)
+                DO UPDATE SET sales = EXCLUDED.sales, covers = EXCLUDED.covers;
+            """, (today, sales, covers))
+        conn.commit()
 
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    await update.message.reply_text(f"Saved: €{sales} | Covers: {covers}")
+    await update.message.reply_text(f"Saved ✅  Sales: €{sales} | Covers: {covers}")
 
 # --- /daily ---
 async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard(update): return
 
-    conn = get_conn()
-    cur = conn.cursor()
-
     today = date.today()
 
-    cur.execute("SELECT sales, covers FROM daily_stats WHERE day=%s;", (today,))
-    row = cur.fetchone()
-
-    cur.close()
-    conn.close()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT sales, covers FROM daily_stats WHERE day=%s;", (today,))
+            row = cur.fetchone()
 
     if not row:
-        await update.message.reply_text("No data for today yet.")
+        await update.message.reply_text("No data for today yet. Use: /setdaily 2450 118")
         return
 
     sales, covers = row
-    avg = sales / covers if covers else 0
+    avg = (sales / covers) if covers else 0
 
     await update.message.reply_text(
         f"📊 Norah Daily Report\n\n"
@@ -123,19 +116,19 @@ async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Avg ticket: €{avg:.2f}"
     )
 
-# --- Main ---
 def main():
+    if not BOT_TOKEN:
+        raise RuntimeError("Missing BOT_TOKEN")
+
     init_db()
 
     app = Application.builder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("setdaily", setdaily))
     app.add_handler(CommandHandler("daily", daily))
 
-    print("Bot started...")
-    app.run_polling()
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
