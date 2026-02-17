@@ -357,9 +357,21 @@ async def setdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
             """, (day, sales, covers))
         conn.commit()
 
-    await update.effective_message.reply_text(
-        f"Saved ✅  Day: {day.isoformat()} | Sales: €{sales:.2f} | Covers: {covers}"
-    )
+    # Detect if cutoff rule moved the day
+now = now_local()
+calendar_today = now.date()
+
+if day != calendar_today:
+    note = f"(before {CUTOFF_HOUR:02d}:00 cutoff — recorded as previous business day)"
+else:
+    note = "(recorded as today’s business day)"
+
+await update.effective_message.reply_text(
+    f"Saved ✅\n"
+    f"Business day: {day.isoformat()} {note}\n"
+    f"Sales: €{sales:.2f}\n"
+    f"Covers: {covers}"
+)
 
     # Auto-broadcast to owners dashboard(s)
     owners = parse_chat_ids(get_setting("OWNERS_CHAT_IDS"))
