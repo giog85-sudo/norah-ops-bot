@@ -1,5 +1,6 @@
 import os
 import re
+import collections
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -7,487 +8,241 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 import psycopg
 
-
 # =========================
-# ENV / CONFIG
+# ENV
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+TIMEZONE = os.getenv("TIMEZONE", "Europe/Madrid")
+CUTOFF_HOUR = int(os.getenv("CUTOFF_HOUR", "11"))
 
-TIMEZONE = (os.getenv("TIMEZONE", "Europe/Madrid") or "Europe/Madrid").strip()
-CUTOFF_HOUR = int((os.getenv("CUTOFF_HOUR", "11") or "11").strip())
-
-# Readers (optional). If empty -> allow everyone to read/query.
-ALLOWED_USER_IDS = set()
-_raw_allowed = os.getenv("ALLOWED_USER_IDS", "").strip()
-if _raw_allowed:
-    for x in _raw_allowed.split(","):
-        x = x.strip()
-        if x.isdigit():
-            ALLOWED_USER_IDS.add(int(x))
-
-# Writers: only these users can /setdaily and /edit
-DEFAULT_WRITERS = "446855702"
-_raw_writers = (os.getenv("WRITER_USER_IDS", DEFAULT_WRITERS) or DEFAULT_WRITERS).strip()
 WRITER_USER_IDS = set()
-if _raw_writers:
-    for x in _raw_writers.split(","):
-        x = x.strip()
-        if x.isdigit():
-            WRITER_USER_IDS.add(int(x))
-
+_raw = os.getenv("WRITER_USER_IDS", "446855702")
+for x in _raw.split(","):
+    if x.strip().isdigit():
+        WRITER_USER_IDS.add(int(x.strip()))
 
 # =========================
 # SECURITY
 # =========================
-def is_allowed(update: Update) -> bool:
-    if not ALLOWED_USER_IDS:
-        return True
-    return bool(update.effective_user and update.effective_user.id in ALLOWED_USER_IDS)
+def is_writer(update: Update):
+    return update.effective_user and update.effective_user.id in WRITER_USER_IDS
 
-def is_writer(update: Update) -> bool:
-    return bool(update.effective_user and update.effective_user.id in WRITER_USER_IDS)
-
-async def guard(update: Update) -> bool:
-    if not is_allowed(update):
-        if update.effective_message:
-            await update.effective_message.reply_text("Not authorized.")
-        return False
+async def guard(update: Update):
     return True
-
 
 # =========================
 # DB
 # =========================
 def get_conn():
-    if not DATABASE_URL:
-        raise RuntimeError("Missing DATABASE_URL")
     return psycopg.connect(DATABASE_URL)
 
 def init_db():
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS daily_stats (
-                    day DATE PRIMARY KEY,
-                    sales DOUBLE PRECISION,
-                    covers INTEGER
-                );
+            CREATE TABLE IF NOT EXISTS daily_stats(
+                day DATE PRIMARY KEY,
+                sales DOUBLE PRECISION,
+                covers INTEGER
+            );
             """)
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS bot_settings (
-                    key TEXT PRIMARY KEY,
-                    value TEXT
-                );
+            CREATE TABLE IF NOT EXISTS daily_reports(
+                day DATE PRIMARY KEY,
+                report_text TEXT
+            );
             """)
         conn.commit()
 
-
 # =========================
-# SETTINGS (owners broadcast chat ids)
+# TIME
 # =========================
-def get_setting(key: str):
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT value FROM bot_settings WHERE key=%s;", (key,))
-            row = cur.fetchone()
-    return row[0] if row else None
-
-def set_setting(key: str, value: str) -> None:
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO bot_settings (key, value)
-                VALUES (%s, %s)
-                ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
-            """, (key, value))
-        conn.commit()
-
-def parse_chat_ids(raw: str | None) -> list[int]:
-    if not raw:
-        return []
-    out = []
-    for x in raw.split(","):
-        x = x.strip()
-        if not x:
-            continue
-        try:
-            out.append(int(x))
-        except ValueError:
-            pass
-    return out
-
-
-# =========================
-# DATE / BUSINESS DAY LOGIC
-# =========================
-def now_local() -> datetime:
+def now_local():
     return datetime.now(ZoneInfo(TIMEZONE))
 
-def business_day_from_now() -> date:
+def business_day():
     n = now_local()
-    d = n.date()
     if n.hour < CUTOFF_HOUR:
-        return d - timedelta(days=1)
-    return d
-
-def parse_ymd(s: str) -> date:
-    return datetime.strptime(s, "%Y-%m-%d").date()
-
-def add_months(d: date, months: int) -> date:
-    y = d.year + (d.month - 1 + months) // 12
-    m = (d.month - 1 + months) % 12 + 1
-    if m == 12:
-        next_month = date(y + 1, 1, 1)
-    else:
-        next_month = date(y, m + 1, 1)
-    last_day = (next_month - timedelta(days=1)).day
-    return date(y, m, min(d.day, last_day))
-
-def add_years(d: date, years: int) -> date:
-    try:
-        return d.replace(year=d.year + years)
-    except ValueError:
-        return d.replace(month=2, day=28, year=d.year + years)
-
+        return (n.date() - timedelta(days=1))
+    return n.date()
 
 # =========================
-# REPORT HELPERS
+# DAILY SALES
 # =========================
-def fetch_day(day: date):
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT sales, covers FROM daily_stats WHERE day=%s;", (day,))
-            return cur.fetchone()
-
-def render_day_report(day: date) -> str | None:
-    row = fetch_day(day)
-    if not row:
-        return None
-    sales, covers = row
-    avg = (sales / covers) if covers else 0
-    return (
-        f"📊 Norah Daily Report ({day.isoformat()})\n\n"
-        f"Sales: €{sales:.2f}\n"
-        f"Covers: {covers}\n"
-        f"Avg ticket: €{avg:.2f}"
-    )
-
-def summarize_range(start: date, end: date) -> tuple[float, int, int]:
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT
-                    COALESCE(SUM(sales), 0) AS sales_sum,
-                    COALESCE(SUM(covers), 0) AS covers_sum,
-                    COUNT(*) AS day_count
-                FROM daily_stats
-                WHERE day BETWEEN %s AND %s;
-            """, (start, end))
-            sales_sum, covers_sum, day_count = cur.fetchone()
-    return float(sales_sum), int(covers_sum), int(day_count)
-
-def render_range_report(title: str, start: date, end: date) -> str:
-    sales_sum, covers_sum, day_count = summarize_range(start, end)
-    avg = (sales_sum / covers_sum) if covers_sum else 0
-    return (
-        f"📈 {title}\n"
-        f"Period: {start.isoformat()} → {end.isoformat()} ({day_count} day(s))\n\n"
-        f"Total sales: €{sales_sum:.2f}\n"
-        f"Total covers: {covers_sum}\n"
-        f"Avg ticket: €{avg:.2f}"
-    )
-
-def fetch_best_worst(best: bool = True):
-    order = "DESC" if best else "ASC"
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(f"""
-                SELECT day, sales, covers
-                FROM daily_stats
-                WHERE sales IS NOT NULL
-                ORDER BY sales {order}
-                LIMIT 1;
-            """)
-            return cur.fetchone()
-
-def parse_period_to_start(token: str, end: date) -> date | None:
-    s = token.strip().upper()
-    m = re.fullmatch(r"(\d+)([MY])?", s)
-    if not m:
-        return None
-    num = int(m.group(1))
-    unit = m.group(2) or "D"
-    if num <= 0 or num > 5000:
-        return None
-
-    if unit == "D":
-        return end - timedelta(days=num - 1)
-    if unit == "M":
-        return add_months(end, -num)
-    if unit == "Y":
-        return add_years(end, -num)
-    return None
-
-
-# =========================
-# TELEGRAM COMMANDS
-# =========================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
-    await update.effective_message.reply_text(
-        "👋 Norah Ops is online.\n\n"
-        "Commands:\n"
-        "/setdaily SALES COVERS\n"
-        "/setdaily YYYY-MM-DD SALES COVERS\n"
-        "/edit YYYY-MM-DD SALES COVERS (writers)\n"
-        "/daily (business day)\n"
-        "/today (calendar day)\n"
-        "/month\n"
-        "/lastmonth\n"
-        "/last 7 | /last 6M | /last 1Y\n"
-        "/last7\n"
-        "/range YYYY-MM-DD YYYY-MM-DD\n"
-        "/bestday\n"
-        "/worstday\n"
-        "/setowners"
-    )
-
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
-    await update.effective_message.reply_text(
-        "Examples:\n"
-        "/setdaily 4820 114\n"
-        "/setdaily 2026-02-16 4820 114\n"
-        "/edit 2026-02-16 4820 114\n"
-        "/daily\n"
-        "/today\n"
-        "/month\n"
-        "/lastmonth\n"
-        "/last 7\n"
-        "/last 6M\n"
-        "/last 1Y\n"
-        "/range 2026-03-15 2026-04-07\n"
-        "/bestday\n"
-        "/worstday\n"
-        f"\nBusiness-day cutoff: {CUTOFF_HOUR:02d}:00 ({TIMEZONE})"
-    )
-
-async def setowners(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
-    chat_id = update.effective_chat.id
-    current = parse_chat_ids(get_setting("OWNERS_CHAT_IDS"))
-    if chat_id not in current:
-        current.append(chat_id)
-        set_setting("OWNERS_CHAT_IDS", ",".join(str(x) for x in current))
-    await update.effective_message.reply_text(
-        f"✅ Owners destination saved.\nChat ID: {chat_id}\nTotal destinations: {len(current)}"
-    )
-
 async def setdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
     if not is_writer(update):
-        await update.effective_message.reply_text("Not authorized to set daily stats.")
+        await update.message.reply_text("Not authorized")
         return
 
-    args = context.args
     try:
-        if len(args) == 2:
-            sales = float(args[0])
-            covers = int(args[1])
-            day = business_day_from_now()
-        elif len(args) == 3:
-            day = parse_ymd(args[0])
-            sales = float(args[1])
-            covers = int(args[2])
+        if len(context.args) == 2:
+            day = business_day()
+            sales = float(context.args[0])
+            covers = int(context.args[1])
         else:
-            raise ValueError
-    except Exception:
-        await update.effective_message.reply_text(
-            "Usage:\n"
-            "/setdaily SALES COVERS\n"
-            "/setdaily YYYY-MM-DD SALES COVERS\n"
-            "Example: /setdaily 2450 118\n"
-            "Example: /setdaily 2026-02-16 2450 118"
-        )
+            day = datetime.strptime(context.args[0], "%Y-%m-%d").date()
+            sales = float(context.args[1])
+            covers = int(context.args[2])
+    except:
+        await update.message.reply_text("Usage: /setdaily SALES COVERS or /setdaily YYYY-MM-DD SALES COVERS")
         return
 
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO daily_stats (day, sales, covers)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (day)
-                DO UPDATE SET sales = EXCLUDED.sales, covers = EXCLUDED.covers;
-            """, (day, sales, covers))
+            INSERT INTO daily_stats(day,sales,covers)
+            VALUES(%s,%s,%s)
+            ON CONFLICT(day) DO UPDATE SET sales=EXCLUDED.sales,covers=EXCLUDED.covers;
+            """,(day,sales,covers))
         conn.commit()
 
-    now = now_local()
-    calendar_today = now.date()
-    if day != calendar_today:
-        note = f"(before {CUTOFF_HOUR:02d}:00 cutoff — recorded as previous business day)"
-    else:
-        note = "(recorded as today’s business day)"
-
-    await update.effective_message.reply_text(
-        f"Saved ✅\n"
-        f"Business day: {day.isoformat()} {note}\n"
-        f"Sales: €{sales:.2f}\n"
-        f"Covers: {covers}"
-    )
-
-    owners = parse_chat_ids(get_setting("OWNERS_CHAT_IDS"))
-    text = render_day_report(day)
-    if owners and text:
-        for cid in owners:
-            try:
-                await context.bot.send_message(chat_id=cid, text=text)
-            except Exception:
-                pass
+    await update.message.reply_text(f"Saved ✅ Business day: {day}\nSales €{sales}\nCovers {covers}")
 
 async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
     if not is_writer(update):
-        await update.effective_message.reply_text("Not authorized to edit daily stats.")
         return
+    day = datetime.strptime(context.args[0], "%Y-%m-%d").date()
+    sales = float(context.args[1])
+    covers = int(context.args[2])
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            INSERT INTO daily_stats(day,sales,covers)
+            VALUES(%s,%s,%s)
+            ON CONFLICT(day) DO UPDATE SET sales=EXCLUDED.sales,covers=EXCLUDED.covers;
+            """,(day,sales,covers))
+        conn.commit()
+    await update.message.reply_text("Edited")
 
-    args = context.args
-    try:
-        day = parse_ymd(args[0])
-        sales = float(args[1])
-        covers = int(args[2])
-    except Exception:
-        await update.effective_message.reply_text(
-            "Usage: /edit YYYY-MM-DD SALES COVERS\nExample: /edit 2026-02-16 2450 118"
-        )
+# =========================
+# REPORT STORAGE
+# =========================
+async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.split("\n",1)
+    if len(text)<2:
+        await update.message.reply_text("Write notes under /report")
         return
+    notes = text[1]
+    day = business_day()
 
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO daily_stats (day, sales, covers)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (day)
-                DO UPDATE SET sales = EXCLUDED.sales, covers = EXCLUDED.covers;
-            """, (day, sales, covers))
+            INSERT INTO daily_reports(day,report_text)
+            VALUES(%s,%s)
+            ON CONFLICT(day) DO UPDATE SET report_text=EXCLUDED.report_text;
+            """,(day,notes))
         conn.commit()
 
-    await update.effective_message.reply_text(
-        f"Edited ✅\nDay: {day.isoformat()}\nSales: €{sales:.2f}\nCovers: {covers}"
-    )
+    await update.message.reply_text(f"Notes saved for {day}")
 
-async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
-    d = business_day_from_now()
-    text = render_day_report(d)
-    if not text:
-        await update.effective_message.reply_text(
-            f"No data for business day {d.isoformat()} yet.\nUse: /setdaily SALES COVERS"
-        )
+async def reportday(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    day=datetime.strptime(context.args[0],"%Y-%m-%d").date()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT report_text FROM daily_reports WHERE day=%s",(day,))
+            r=cur.fetchone()
+    if not r:
+        await update.message.reply_text("No report")
+    else:
+        await update.message.reply_text(r[0])
+
+async def reportdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    day=business_day()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT report_text FROM daily_reports WHERE day=%s",(day,))
+            r=cur.fetchone()
+    if not r:
+        await update.message.reply_text("No report")
+    else:
+        await update.message.reply_text(r[0])
+
+# =========================
+# TREND ANALYSIS
+# =========================
+def tokenize(text):
+    words=re.findall(r"[a-zA-Z]+",text.lower())
+    return [w for w in words if len(w)>3]
+
+async def noteslast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    days=int(context.args[0]) if context.args else 30
+    start=business_day()-timedelta(days=days)
+    end=business_day()
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT report_text FROM daily_reports WHERE day BETWEEN %s AND %s",(start,end))
+            rows=cur.fetchall()
+
+    counter=collections.Counter()
+    for r in rows:
+        counter.update(tokenize(r[0]))
+
+    if not counter:
+        await update.message.reply_text("No reports yet")
         return
-    await update.effective_message.reply_text(text)
 
-async def today_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
-    d = now_local().date()
-    text = render_day_report(d)
-    if not text:
-        await update.effective_message.reply_text(f"No data for calendar day {d.isoformat()} yet.")
-        return
-    await update.effective_message.reply_text(text)
+    msg="\n".join([f"{w}: {c}" for w,c in counter.most_common(10)])
+    await update.message.reply_text("📊 Notes trends:\n"+msg)
 
-async def month(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
-    today = now_local().date()
-    start = today.replace(day=1)
-    await update.effective_message.reply_text(render_range_report("Norah Month-to-Date", start, today))
+async def findnote(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyword=context.args[0].lower()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT day,report_text FROM daily_reports ORDER BY day DESC LIMIT 120")
+            rows=cur.fetchall()
 
-async def lastmonth(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
-    today = now_local().date()
-    first_this = today.replace(day=1)
-    last_prev = first_this - timedelta(days=1)
-    start_prev = last_prev.replace(day=1)
-    await update.effective_message.reply_text(render_range_report("Norah Last Month", start_prev, last_prev))
+    matches=[str(d) for d,t in rows if keyword in t.lower()]
+    await update.message.reply_text("\n".join(matches) if matches else "No matches")
 
-async def last(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
-    if not context.args:
-        await update.effective_message.reply_text("Usage: /last 7  OR  /last 6M  OR  /last 1Y")
-        return
-    token = context.args[0]
-    end = now_local().date()
-    start = parse_period_to_start(token, end)
-    if not start:
-        await update.effective_message.reply_text("Usage: /last 7  OR  /last 6M  OR  /last 1Y")
-        return
-    await update.effective_message.reply_text(render_range_report(f"Norah Last {token.upper()}", start, end))
+async def soldout(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT report_text FROM daily_reports")
+            rows=cur.fetchall()
 
-async def last7(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
-    end = now_local().date()
-    start = end - timedelta(days=6)
-    await update.effective_message.reply_text(render_range_report("Norah Last 7 Days", start, end))
+    counter=collections.Counter()
+    for r in rows:
+        m=re.search(r"Sold out:(.*)",r[0],re.I)
+        if m:
+            counter.update(tokenize(m.group(1)))
 
-async def range_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
-    try:
-        start = parse_ymd(context.args[0])
-        end = parse_ymd(context.args[1])
-        if end < start:
-            raise ValueError
-    except Exception:
-        await update.effective_message.reply_text("Usage: /range YYYY-MM-DD YYYY-MM-DD\nExample: /range 2026-03-15 2026-04-07")
-        return
-    await update.effective_message.reply_text(render_range_report("Norah Custom Range", start, end))
+    await update.message.reply_text("\n".join([f"{w}: {c}" for w,c in counter.most_common(10)]) or "No data")
 
-async def bestday(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
-    row = fetch_best_worst(best=True)
-    if not row:
-        await update.effective_message.reply_text("No data yet.")
-        return
-    d, sales, covers = row
-    avg = (sales / covers) if covers else 0
-    await update.effective_message.reply_text(
-        f"🏆 Norah Best Day\n\nDay: {d.isoformat()}\nSales: €{sales:.2f}\nCovers: {covers}\nAvg ticket: €{avg:.2f}"
-    )
+async def complaints(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT report_text FROM daily_reports")
+            rows=cur.fetchall()
 
-async def worstday(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
-    row = fetch_best_worst(best=False)
-    if not row:
-        await update.effective_message.reply_text("No data yet.")
-        return
-    d, sales, covers = row
-    avg = (sales / covers) if covers else 0
-    await update.effective_message.reply_text(
-        f"🧊 Norah Worst Day\n\nDay: {d.isoformat()}\nSales: €{sales:.2f}\nCovers: {covers}\nAvg ticket: €{avg:.2f}"
-    )
+    counter=collections.Counter()
+    for r in rows:
+        m=re.search(r"Complaints:(.*)",r[0],re.I)
+        if m:
+            counter.update(tokenize(m.group(1)))
 
+    await update.message.reply_text("\n".join([f"{w}: {c}" for w,c in counter.most_common(10)]) or "No data")
 
+# =========================
+# MAIN
+# =========================
 def main():
-    if not BOT_TOKEN:
-        raise RuntimeError("Missing BOT_TOKEN")
     init_db()
+    app=Application.builder().token(BOT_TOKEN).build()
 
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("setowners", setowners))
-    app.add_handler(CommandHandler("setdaily", setdaily))
-    app.add_handler(CommandHandler("edit", edit))
-    app.add_handler(CommandHandler("daily", daily))
-    app.add_handler(CommandHandler("today", today_cmd))
-    app.add_handler(CommandHandler("month", month))
-    app.add_handler(CommandHandler("lastmonth", lastmonth))
-    app.add_handler(CommandHandler("last", last))
-    app.add_handler(CommandHandler("last7", last7))
-    app.add_handler(CommandHandler("range", range_cmd))
-    app.add_handler(CommandHandler("bestday", bestday))
-    app.add_handler(CommandHandler("worstday", worstday))
+    app.add_handler(CommandHandler("setdaily",setdaily))
+    app.add_handler(CommandHandler("edit",edit))
+    app.add_handler(CommandHandler("report",report))
+    app.add_handler(CommandHandler("reportday",reportday))
+    app.add_handler(CommandHandler("reportdaily",reportdaily))
+    app.add_handler(CommandHandler("noteslast",noteslast))
+    app.add_handler(CommandHandler("findnote",findnote))
+    app.add_handler(CommandHandler("soldout",soldout))
+    app.add_handler(CommandHandler("complaints",complaints))
 
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling()
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
