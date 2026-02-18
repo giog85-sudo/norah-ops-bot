@@ -2,13 +2,19 @@ import os
 import re
 import json
 import collections
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, time as dtime
 from zoneinfo import ZoneInfo
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 import psycopg
 
 
@@ -21,16 +27,23 @@ DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 TIMEZONE = (os.getenv("TIMEZONE", "Europe/Madrid") or "Europe/Madrid").strip()
 CUTOFF_HOUR = int((os.getenv("CUTOFF_HOUR", "11") or "11").strip())
 
-# Writers: who can set/edit numbers (and usually also submit notes)
-DEFAULT_WRITERS = "446855702"  # your Telegram id (Gio) as fallback
+DEFAULT_WRITERS = "446855702"  # Gio
 _raw_writers = (os.getenv("WRITER_USER_IDS", DEFAULT_WRITERS) or DEFAULT_WRITERS).strip()
-WRITER_USER_IDS = set()
-for x in _raw_writers.split(","):
-    x = x.strip()
-    if x.isdigit():
-        WRITER_USER_IDS.add(int(x))
+WRITER_USER_IDS = {int(x.strip()) for x in _raw_writers.split(",") if x.strip().isdigit()}
 
-# Optional translation settings (LibreTranslate)
+# Weekly digest schedule
+AUTO_WEEKLY_DIGEST = (os.getenv("AUTO_WEEKLY_DIGEST", "1").strip() == "1")
+DIGEST_WEEKDAY = int(os.getenv("DIGEST_WEEKDAY", "0"))  # Monday=0
+DIGEST_HOUR = int(os.getenv("DIGEST_HOUR", "10"))
+DIGEST_MINUTE = int(os.getenv("DIGEST_MINUTE", "0"))
+
+# Alerts schedule (optional)
+AUTO_ALERTS = (os.getenv("AUTO_ALERTS", "0").strip() == "1")
+ALERTS_HOUR = int(os.getenv("ALERTS_HOUR", "11"))
+ALERTS_MINUTE = int(os.getenv("ALERTS_MINUTE", "15"))
+ALERTS_LOOKBACK_DAYS = int(os.getenv("ALERTS_LOOKBACK_DAYS", "7"))
+
+# Translation settings (LibreTranslate)
 TRANSLATE_URL = (os.getenv("TRANSLATE_URL", "https://libretranslate.de/translate") or "").strip()
 TRANSLATE_FROM = (os.getenv("TRANSLATE_FROM", "es") or "es").strip()
 TRANSLATE_TO = (os.getenv("TRANSLATE_TO", "en") or "en").strip()
@@ -44,7 +57,6 @@ def is_writer(update: Update) -> bool:
     return bool(update.effective_user and update.effective_user.id in WRITER_USER_IDS)
 
 async def guard(update: Update) -> bool:
-    # Keep open for now; you can restrict later.
     return True
 
 
@@ -269,6 +281,7 @@ def extract_report_body(full_message: str) -> str:
     lines = full_message.splitlines()
     if not lines:
         return ""
+    # Remove first line that contains /report...
     return "\n".join(lines[1:]).strip()
 
 
@@ -278,14 +291,11 @@ def extract_report_body(full_message: str) -> str:
 _translate_cache: dict[str, str] = {}
 
 def translate_es_to_en(text: str) -> str:
-    """Best-effort: returns English translation, or original text if translation fails."""
-    t = text.strip()
+    t = (text or "").strip()
     if not t:
         return t
     if t in _translate_cache:
         return _translate_cache[t]
-
-    # If no URL configured, just return original.
     if not TRANSLATE_URL:
         _translate_cache[t] = t
         return t
@@ -311,9 +321,7 @@ def translate_es_to_en(text: str) -> str:
         with urlopen(req, timeout=8) as resp:
             raw = resp.read().decode("utf-8", errors="ignore")
             out = json.loads(raw)
-            translated = (out.get("translatedText") or "").strip()
-            if not translated:
-                translated = t
+            translated = (out.get("translatedText") or "").strip() or t
     except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError):
         translated = t
 
@@ -327,11 +335,8 @@ def translate_es_to_en(text: str) -> str:
 STOPWORDS_EN = {
     "this","that","with","from","your","have","just","very","into","over","after","before",
     "then","than","they","them","there","here","also","only","been","were","was","are","and",
-    "the","for","but","not","too","about","when","what","which","would","could","should",
-    "table","guest","guests","said","says","music","loud"  # we do NOT include these normally,
+    "the","for","but","not","too","about","when","what","which","would","could","should"
 }
-# NOTE: we won't hard-block "music/loud"; left here as example. We'll use a real list below.
-
 STOPWORDS_ES = {
     "esto","esta","este","estos","estas","para","pero","porque","como","cuando","donde","quien",
     "que","con","sin","muy","mas","menos","sobre","entre","hasta","desde","tambien","solo",
@@ -340,19 +345,16 @@ STOPWORDS_ES = {
     "hay","fue","eran","era","son","estaba","estaban","esta","estoy","estan",
     "mesa","mesas","cliente","clientes"
 }
-
-# Words we ALWAYS ignore because they are template headers / noise
 ALWAYS_IGNORE = {
-    "incidents","incident","incidencias",
+    "incidents","incident","incidencias","incidencia",
     "staff","personal","problemas","problema",
     "sold","soldout","agotados","agotado","platos",
-    "complaints","quejas",
+    "complaints","quejas","reclamaciones",
     "test","testing"
 }
 
 WORD_RE = re.compile(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+", re.UNICODE)
 
-# Section header variants (ES + EN)
 SECTION_HEADERS = {
     "incidents": ["incidents", "incidencias", "incidencia"],
     "staff": ["staff", "personal", "problemas de personal", "equipo"],
@@ -360,11 +362,8 @@ SECTION_HEADERS = {
     "complaints": ["complaints", "quejas", "quejas de clientes", "reclamaciones"],
 }
 
-def normalize_text(s: str) -> str:
-    return (s or "").strip()
-
 def tokenize(text: str) -> list[str]:
-    text = normalize_text(text).lower()
+    text = (text or "").strip().lower()
     words = WORD_RE.findall(text)
     out = []
     for w in words:
@@ -379,42 +378,27 @@ def tokenize(text: str) -> list[str]:
     return out
 
 def extract_sections(report_text: str) -> dict[str, str]:
-    """
-    Extract sections from freeform report text.
-    Works even if some headings are missing.
-    """
-    text = normalize_text(report_text)
+    text = (report_text or "").strip()
     if not text:
         return {"incidents":"", "staff":"", "soldout":"", "complaints":""}
 
-    # Build a header regex for all known variants
-    # Example: (Incidents|Incidencias|Staff|Personal|Platos agotados|Quejas...)
     variants = []
     for group in SECTION_HEADERS.values():
         variants.extend(group)
-
-    # Sort longer first to match "problemas de personal" before "personal"
     variants = sorted(set(variants), key=lambda x: len(x), reverse=True)
+
     header_pattern = r"(?im)^\s*(" + "|".join(re.escape(v) for v in variants) + r")\s*:\s*$"
-
-    # Find headings and slice blocks
     lines = text.splitlines()
-    indices = []
-    for i, line in enumerate(lines):
-        if re.match(header_pattern, line.strip()):
-            indices.append(i)
+    indices = [i for i, line in enumerate(lines) if re.match(header_pattern, line.strip())]
 
-    # If no headings, put everything into incidents (fallback)
     if not indices:
         return {"incidents": text, "staff":"", "soldout":"", "complaints":""}
 
-    # Map heading -> canonical key
     def canonical(h: str) -> str:
-        h = h.strip().lower()
+        h = h.strip().lower().rstrip(":").strip()
         for key, group in SECTION_HEADERS.items():
             if any(h == g.lower() for g in group):
                 return key
-        # try contains match
         for key, group in SECTION_HEADERS.items():
             for g in group:
                 if g.lower() in h:
@@ -422,13 +406,12 @@ def extract_sections(report_text: str) -> dict[str, str]:
         return "incidents"
 
     sections = {"incidents":"", "staff":"", "soldout":"", "complaints":""}
-    for idx_pos, start_i in enumerate(indices):
-        header_line = lines[start_i].strip().rstrip(":").strip()
-        key = canonical(header_line.replace(":", ""))
 
+    for idx_pos, start_i in enumerate(indices):
+        header_line = lines[start_i].strip()
+        key = canonical(header_line)
         end_i = indices[idx_pos + 1] if idx_pos + 1 < len(indices) else len(lines)
         body = "\n".join(lines[start_i + 1:end_i]).strip()
-        # append if repeated headings
         if sections.get(key):
             sections[key] += "\n" + body
         else:
@@ -437,9 +420,6 @@ def extract_sections(report_text: str) -> dict[str, str]:
     return sections
 
 def count_phrases(tokens: list[str]) -> tuple[collections.Counter, collections.Counter]:
-    """
-    Returns (bigrams, unigrams)
-    """
     uni = collections.Counter(tokens)
     bi = collections.Counter()
     for a, b in zip(tokens, tokens[1:]):
@@ -448,8 +428,77 @@ def count_phrases(tokens: list[str]) -> tuple[collections.Counter, collections.C
         bi[f"{a} {b}"] += 1
     return bi, uni
 
-def top_items(counter: collections.Counter, n: int = 5, min_count: int = 1) -> list[tuple[str,int]]:
+def top_items(counter: collections.Counter, n: int = 6, min_count: int = 1) -> list[tuple[str,int]]:
     return [(k,v) for k,v in counter.most_common(n) if v >= min_count]
+
+def build_section_counters(start: date, end: date):
+    reports = get_reports_in_range(start, end)
+    sec_bigram = {k: collections.Counter() for k in ("incidents","staff","soldout","complaints")}
+    sec_unigram = {k: collections.Counter() for k in ("incidents","staff","soldout","complaints")}
+
+    for _, text in reports:
+        sections = extract_sections(text)
+        for key, content in sections.items():
+            toks = tokenize(content)
+            bi, uni = count_phrases(toks)
+            sec_bigram[key].update(bi)
+            sec_unigram[key].update(uni)
+
+    return reports, sec_bigram, sec_unigram
+
+def pick_best(sec_bi: collections.Counter, sec_uni: collections.Counter, want: int = 7) -> list[tuple[str,int]]:
+    out = []
+    out.extend(top_items(sec_bi, n=want, min_count=1))
+    if len(out) < 5:
+        existing = set(k for k,_ in out)
+        for k,v in sec_uni.most_common(30):
+            if k in existing:
+                continue
+            out.append((k,v))
+            if len(out) >= want:
+                break
+    return out[:want]
+
+def format_top_bilingual(items: list[tuple[str,int]], max_lines: int = 7) -> str:
+    if not items:
+        return "—"
+    lines = []
+    for phrase, cnt in items[:max_lines]:
+        en = translate_es_to_en(phrase)
+        if en.strip().lower() == phrase.strip().lower():
+            lines.append(f"• {phrase} ({cnt})")
+        else:
+            lines.append(f"• {phrase} → {en} ({cnt})")
+    return "\n".join(lines)
+
+
+# =========================
+# REPORT PENDING STATE (two-step report)
+# =========================
+# key: (chat_id, user_id) -> {"day": date, "ts": datetime_utc}
+PENDING_REPORTS: dict[tuple[int, int], dict] = {}
+PENDING_TTL_MINUTES = 30
+
+def _pending_cleanup():
+    now = datetime.utcnow()
+    dead = []
+    for k, v in PENDING_REPORTS.items():
+        ts = v.get("ts")
+        if not ts or (now - ts).total_seconds() > PENDING_TTL_MINUTES * 60:
+            dead.append(k)
+    for k in dead:
+        PENDING_REPORTS.pop(k, None)
+
+def _set_pending(chat_id: int, user_id: int, day: date):
+    _pending_cleanup()
+    PENDING_REPORTS[(chat_id, user_id)] = {"day": day, "ts": datetime.utcnow()}
+
+def _pop_pending(chat_id: int, user_id: int) -> date | None:
+    _pending_cleanup()
+    v = PENDING_REPORTS.pop((chat_id, user_id), None)
+    if not v:
+        return None
+    return v.get("day")
 
 
 # =========================
@@ -470,11 +519,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/bestday\n"
         "/worstday\n\n"
         "Notes:\n"
-        "/report  (paste sections under command)\n"
+        "/report  (send /report, then send notes as next message)\n"
+        "/report  YYYY-MM-DD  (optional forced date)\n"
+        "/cancelreport\n"
         "/reportdaily\n"
         "/reportday YYYY-MM-DD\n\n"
         "Notes analytics:\n"
-        "/noteslast 30  (or 6M / 1Y)\n"
+        "/noteslast 30 (or 6M / 1Y)\n"
+        "/notestrends 30\n"
+        "/alerts 7\n"
         "/findnote keyword\n"
         "/soldout 30\n"
         "/complaints 30\n\n"
@@ -493,9 +546,11 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/range 2026-03-15 2026-04-07\n"
         "/bestday\n"
         "/worstday\n\n"
-        "Notes:\n"
-        "/report\n"
-        "Incidents:\n...\n\nStaff:\n...\n\nSold out:\n...\n\nComplaints:\n...\n\n"
+        "Notes (recommended):\n"
+        "1) send /report\n"
+        "2) paste full note template as the next message\n\n"
+        "Force date:\n"
+        "/report 2026-02-17\n\n"
         f"Business-day cutoff: {CUTOFF_HOUR:02d}:00 ({TIMEZONE})"
     )
 
@@ -530,11 +585,7 @@ async def setdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raise ValueError
     except Exception:
         await update.effective_message.reply_text(
-            "Usage:\n"
-            "/setdaily SALES COVERS\n"
-            "/setdaily YYYY-MM-DD SALES COVERS\n"
-            "Example: /setdaily 2450 118\n"
-            "Example: /setdaily 2026-02-16 2450 118"
+            "Usage:\n/setdaily SALES COVERS\n/setdaily YYYY-MM-DD SALES COVERS"
         )
         return
 
@@ -548,21 +599,10 @@ async def setdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
             """, (day, sales, covers))
         conn.commit()
 
-    now = now_local()
-    calendar_today = now.date()
-    if day != calendar_today:
-        note = f"(before {CUTOFF_HOUR:02d}:00 cutoff — recorded as previous business day)"
-    else:
-        note = "(recorded as today’s business day)"
-
     await update.effective_message.reply_text(
-        f"Saved ✅\n"
-        f"Business day: {day.isoformat()} {note}\n"
-        f"Sales: €{sales:.2f}\n"
-        f"Covers: {covers}"
+        f"Saved ✅\nBusiness day: {day.isoformat()}\nSales: €{sales:.2f}\nCovers: {covers}"
     )
 
-    # Auto-broadcast numeric daily report to owners dashboards
     owners = parse_chat_ids(get_setting("OWNERS_CHAT_IDS"))
     text = render_day_report(day)
     if owners and text:
@@ -578,15 +618,12 @@ async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("Not authorized to edit daily stats.")
         return
 
-    args = context.args
     try:
-        day = parse_ymd(args[0])
-        sales = float(args[1])
-        covers = int(args[2])
+        day = parse_ymd(context.args[0])
+        sales = float(context.args[1])
+        covers = int(context.args[2])
     except Exception:
-        await update.effective_message.reply_text(
-            "Usage: /edit YYYY-MM-DD SALES COVERS\nExample: /edit 2026-02-16 2450 118"
-        )
+        await update.effective_message.reply_text("Usage: /edit YYYY-MM-DD SALES COVERS")
         return
 
     with get_conn() as conn:
@@ -599,20 +636,13 @@ async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             """, (day, sales, covers))
         conn.commit()
 
-    await update.effective_message.reply_text(
-        f"Edited ✅\nDay: {day.isoformat()}\nSales: €{sales:.2f}\nCovers: {covers}"
-    )
+    await update.effective_message.reply_text("Edited ✅")
 
 async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard(update): return
     d = business_day_from_now()
     text = render_day_report(d)
-    if not text:
-        await update.effective_message.reply_text(
-            f"No data for business day {d.isoformat()} yet.\nUse: /setdaily SALES COVERS"
-        )
-        return
-    await update.effective_message.reply_text(text)
+    await update.effective_message.reply_text(text or f"No data for business day {d.isoformat()} yet.")
 
 async def month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard(update): return
@@ -641,7 +671,7 @@ async def range_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if end < start:
             raise ValueError
     except Exception:
-        await update.effective_message.reply_text("Usage: /range YYYY-MM-DD YYYY-MM-DD\nExample: /range 2026-03-15 2026-04-07")
+        await update.effective_message.reply_text("Usage: /range YYYY-MM-DD YYYY-MM-DD")
         return
     await update.effective_message.reply_text(render_range_report("Norah Custom Range", start, end))
 
@@ -654,7 +684,7 @@ async def bestday(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d, sales, covers = row
     avg = (sales / covers) if covers else 0
     await update.effective_message.reply_text(
-        f"🏆 Norah Best Day\n\nDay: {d.isoformat()}\nSales: €{sales:.2f}\nCovers: {covers}\nAvg ticket: €{avg:.2f}"
+        f"🏆 Best Day\nDay: {d.isoformat()}\nSales: €{sales:.2f}\nCovers: {covers}\nAvg ticket: €{avg:.2f}"
     )
 
 async def worstday(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -666,104 +696,107 @@ async def worstday(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d, sales, covers = row
     avg = (sales / covers) if covers else 0
     await update.effective_message.reply_text(
-        f"🧊 Norah Worst Day\n\nDay: {d.isoformat()}\nSales: €{sales:.2f}\nCovers: {covers}\nAvg ticket: €{avg:.2f}"
+        f"🧊 Worst Day\nDay: {d.isoformat()}\nSales: €{sales:.2f}\nCovers: {covers}\nAvg ticket: €{avg:.2f}"
     )
 
 
 # =========================
-# NOTES COMMANDS
+# NOTES COMMANDS (FIXED)
 # =========================
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard(update): return
-
-    msg_text = update.effective_message.text or ""
-    args = context.args
+    if not is_writer(update):
+        await update.effective_message.reply_text("Not authorized to submit notes.")
+        return
 
     forced_day = None
-    if args:
+    if context.args:
         try:
-            forced_day = parse_ymd(args[0])
+            forced_day = parse_ymd(context.args[0])
         except Exception:
             forced_day = None
 
     day = forced_day if forced_day else business_day_from_now()
-    body = extract_report_body(msg_text)
 
-    if not body:
-        await update.effective_message.reply_text(
-            "Usage:\n"
-            "/report\n"
-            "Incidents:\n...\n\n"
-            "Staff:\n...\n\n"
-            "Sold out:\n...\n\n"
-            "Complaints:\n...\n\n"
-            "Or force date:\n/report YYYY-MM-DD\n(then paste the text under the command line)"
-        )
+    # If notes are included in the same message: save immediately
+    msg_text = (update.effective_message.text or "").strip()
+    body = extract_report_body(msg_text)
+    if body:
+        save_daily_report(day, body)
+        await update.effective_message.reply_text(f"Saved 📝 Notes for business day: {day.isoformat()}")
         return
 
-    save_daily_report(day, body)
-
-    now = now_local()
-    calendar_today = now.date()
-    if forced_day:
-        note = "(date forced)"
-    else:
-        if day != calendar_today:
-            note = f"(before {CUTOFF_HOUR:02d}:00 cutoff — recorded as previous business day)"
-        else:
-            note = "(recorded as today’s business day)"
+    # Otherwise: arm pending mode and ask for next message
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    _set_pending(chat_id, user_id, day)
 
     await update.effective_message.reply_text(
-        f"Saved 📝\nBusiness day: {day.isoformat()} {note}\nNotes saved."
+        f"✅ Report mode ON.\n"
+        f"Now send the notes as your NEXT message (or reply to this message).\n"
+        f"Business day: {day.isoformat()}\n\n"
+        f"To cancel: /cancelreport"
     )
+
+async def cancelreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await guard(update): return
+    if not update.effective_chat or not update.effective_user:
+        return
+    _pop_pending(update.effective_chat.id, update.effective_user.id)
+    await update.effective_message.reply_text("Cancelled ✅ Report mode OFF.")
 
 async def reportdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard(update): return
     day = business_day_from_now()
     text = fetch_daily_report(day)
-    if not text:
-        await update.effective_message.reply_text(
-            f"No notes saved for business day {day.isoformat()} yet.\nUse /report to submit notes."
-        )
-        return
-    await update.effective_message.reply_text(f"📝 Norah Daily Notes ({day.isoformat()})\n\n{text.strip()}")
+    await update.effective_message.reply_text(
+        text or f"No notes saved for business day {day.isoformat()} yet.\nUse /report to submit notes."
+    )
 
 async def reportday(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard(update): return
     try:
         day = parse_ymd(context.args[0])
     except Exception:
-        await update.effective_message.reply_text("Usage: /reportday YYYY-MM-DD\nExample: /reportday 2026-02-17")
+        await update.effective_message.reply_text("Usage: /reportday YYYY-MM-DD")
         return
-
     text = fetch_daily_report(day)
-    if not text:
-        await update.effective_message.reply_text(f"No notes saved for {day.isoformat()} yet.")
+    await update.effective_message.reply_text(text or "No notes for that day.")
+
+async def capture_pending_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Catches the NEXT normal message after /report and saves it as notes."""
+    if not await guard(update): return
+    if not is_writer(update):
         return
-    await update.effective_message.reply_text(f"📝 Norah Daily Notes ({day.isoformat()})\n\n{text.strip()}")
+    if not update.effective_chat or not update.effective_user:
+        return
+
+    # Ignore messages that start with a command
+    txt = (update.effective_message.text or "").strip()
+    if not txt or txt.startswith("/"):
+        return
+
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+
+    # If the user replied to the bot's "Report mode ON" message, we also accept it,
+    # but simplest is: if pending exists, always use it.
+    day = _pop_pending(chat_id, user_id)
+    if not day:
+        return
+
+    save_daily_report(day, txt)
+    await update.effective_message.reply_text(f"Saved 📝 Notes for business day: {day.isoformat()}")
 
 
 # =========================
-# NOTES ANALYTICS (Bilingual)
+# ANALYTICS COMMANDS
 # =========================
-def format_top_bilingual(items: list[tuple[str,int]], max_lines: int = 5) -> str:
-    if not items:
-        return "—"
-    lines = []
-    for phrase, cnt in items[:max_lines]:
-        en = translate_es_to_en(phrase)
-        if en.strip().lower() == phrase.strip().lower():
-            lines.append(f"• {phrase} ({cnt})")
-        else:
-            lines.append(f"• {phrase} → {en} ({cnt})")
-    return "\n".join(lines)
-
 async def noteslast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard(update): return
     if not context.args:
         await update.effective_message.reply_text("Usage: /noteslast 30  (or 6M / 1Y)")
         return
-
     token = context.args[0]
     end = business_day_from_now()
     start = parse_period_to_start(token, end)
@@ -771,42 +804,15 @@ async def noteslast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("Usage: /noteslast 30  (or 6M / 1Y)")
         return
 
-    reports = get_reports_in_range(start, end)
+    reports, sec_bi, sec_uni = build_section_counters(start, end)
     if not reports:
         await update.effective_message.reply_text("No reports yet for that period.")
         return
 
-    # Counters per section
-    sec_bigram = {k: collections.Counter() for k in ("incidents","staff","soldout","complaints")}
-    sec_unigram = {k: collections.Counter() for k in ("incidents","staff","soldout","complaints")}
-
-    for _, text in reports:
-        sections = extract_sections(text)
-        for key, content in sections.items():
-            toks = tokenize(content)
-            bi, uni = count_phrases(toks)
-            sec_bigram[key].update(bi)
-            sec_unigram[key].update(uni)
-
-    # Prefer bigrams, then fill with unigrams if needed
-    def best(counter_bi: collections.Counter, counter_uni: collections.Counter) -> list[tuple[str,int]]:
-        out = []
-        out.extend(top_items(counter_bi, n=7, min_count=1))
-        if len(out) < 5:
-            # add unigrams not already in out
-            existing = set(k for k,_ in out)
-            for k,v in counter_uni.most_common(10):
-                if k in existing:
-                    continue
-                out.append((k,v))
-                if len(out) >= 7:
-                    break
-        return out[:7]
-
-    inc = best(sec_bigram["incidents"], sec_unigram["incidents"])
-    stf = best(sec_bigram["staff"], sec_unigram["staff"])
-    sol = best(sec_bigram["soldout"], sec_unigram["soldout"])
-    cmp = best(sec_bigram["complaints"], sec_unigram["complaints"])
+    inc = pick_best(sec_bi["incidents"], sec_uni["incidents"])
+    stf = pick_best(sec_bi["staff"], sec_uni["staff"])
+    sol = pick_best(sec_bi["soldout"], sec_uni["soldout"])
+    cmp = pick_best(sec_bi["complaints"], sec_uni["complaints"])
 
     await update.effective_message.reply_text(
         f"📊 Norah Notes Trends (last {token.upper()})\n"
@@ -816,6 +822,109 @@ async def noteslast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🍽 Sold out:\n{format_top_bilingual(sol)}\n\n"
         f"⚠️ Complaints:\n{format_top_bilingual(cmp)}"
     )
+
+async def notestrends(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await guard(update): return
+    n = int(context.args[0]) if context.args else 30
+    if n < 3 or n > 365:
+        await update.effective_message.reply_text("Usage: /notestrends 30 (3..365)")
+        return
+
+    end = business_day_from_now()
+    last_start = end - timedelta(days=n - 1)
+    prev_end = last_start - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=n - 1)
+
+    last_reports, last_bi, last_uni = build_section_counters(last_start, end)
+    prev_reports, prev_bi, prev_uni = build_section_counters(prev_start, prev_end)
+
+    if not last_reports:
+        await update.effective_message.reply_text("No reports yet for the latest period.")
+        return
+
+    def delta_list(section: str) -> list[tuple[str,int,int]]:
+        A = last_bi[section] if sum(last_bi[section].values()) else last_uni[section]
+        B = prev_bi[section] if sum(prev_bi[section].values()) else prev_uni[section]
+        keys = set(list(A.keys())[:100] + list(B.keys())[:100])
+        deltas = []
+        for k in keys:
+            a = A.get(k, 0)
+            b = B.get(k, 0)
+            if a == 0 and b == 0:
+                continue
+            deltas.append((k, a, b))
+        deltas.sort(key=lambda x: (x[1] - x[2], x[1]), reverse=True)
+        return deltas[:6]
+
+    def format_delta(items):
+        if not items:
+            return "—"
+        lines = []
+        for k,a,b in items:
+            diff = a - b
+            if diff <= 0:
+                continue
+            en = translate_es_to_en(k)
+            label = f"{k} → {en}" if en.strip().lower() != k.strip().lower() else k
+            lines.append(f"• {label}: {a} (prev {b}, +{diff})")
+        return "\n".join(lines) if lines else "—"
+
+    out = (
+        f"📈 Norah Notes Trend Change (last {n} vs previous {n})\n"
+        f"Latest: {last_start.isoformat()} → {end.isoformat()}\n"
+        f"Previous: {prev_start.isoformat()} → {prev_end.isoformat()}\n\n"
+        f"⚠️ Complaints increasing:\n{format_delta(delta_list('complaints'))}\n\n"
+        f"🍽 Sold-out increasing:\n{format_delta(delta_list('soldout'))}\n\n"
+        f"👥 Staff issues increasing:\n{format_delta(delta_list('staff'))}\n\n"
+        f"🛠 Incidents increasing:\n{format_delta(delta_list('incidents'))}"
+    )
+    await update.effective_message.reply_text(out)
+
+async def alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await guard(update): return
+    n = int(context.args[0]) if context.args else ALERTS_LOOKBACK_DAYS
+    n = max(3, min(60, n))
+
+    end = business_day_from_now()
+    last_start = end - timedelta(days=n - 1)
+    prev_end = last_start - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=n - 1)
+
+    last_reports, last_bi, last_uni = build_section_counters(last_start, end)
+    prev_reports, prev_bi, prev_uni = build_section_counters(prev_start, prev_end)
+
+    if not last_reports:
+        await update.effective_message.reply_text("No reports yet.")
+        return
+
+    def top_spikes(section: str) -> list[str]:
+        A = last_bi[section] if sum(last_bi[section].values()) else last_uni[section]
+        B = prev_bi[section] if sum(prev_bi[section].values()) else prev_uni[section]
+        spikes = []
+        for k,a in A.most_common(30):
+            b = B.get(k, 0)
+            if a >= 2 and a >= b + 2:
+                en = translate_es_to_en(k)
+                label = f"{k} → {en}" if en.strip().lower() != k.strip().lower() else k
+                spikes.append(f"• {label}: {a} (prev {b})")
+            if len(spikes) >= 5:
+                break
+        return spikes
+
+    comp = top_spikes("complaints")
+    sold = top_spikes("soldout")
+    staff = top_spikes("staff")
+    inc = top_spikes("incidents")
+
+    msg = (
+        f"🚨 Norah Alerts (last {n} days)\n"
+        f"Period: {last_start.isoformat()} → {end.isoformat()}\n\n"
+        f"⚠️ Complaints spikes:\n" + ("\n".join(comp) if comp else "—") + "\n\n"
+        f"🍽 Sold-out spikes:\n" + ("\n".join(sold) if sold else "—") + "\n\n"
+        f"👥 Staff spikes:\n" + ("\n".join(staff) if staff else "—") + "\n\n"
+        f"🛠 Incidents spikes:\n" + ("\n".join(inc) if inc else "—")
+    )
+    await update.effective_message.reply_text(msg)
 
 async def findnote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard(update): return
@@ -834,17 +943,9 @@ async def findnote(update: Update, context: ContextTypes.DEFAULT_TYPE):
             """)
             rows = cur.fetchall()
 
-    matches = []
-    for d, text in rows:
-        if keyword in (text or "").lower():
-            matches.append(d.isoformat())
-
-    if not matches:
-        await update.effective_message.reply_text("No matches found.")
-        return
-
+    matches = [d.isoformat() for d, text in rows if keyword in (text or "").lower()]
     await update.effective_message.reply_text(
-        f"🔎 Keyword '{keyword}' found on:\n" + "\n".join(matches[:40])
+        ("🔎 Found on:\n" + "\n".join(matches[:40])) if matches else "No matches found."
     )
 
 async def soldout(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -853,33 +954,13 @@ async def soldout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     end = business_day_from_now()
     start = parse_period_to_start(token, end)
     if not start:
-        await update.effective_message.reply_text("Usage: /soldout 30  (or 6M / 1Y)")
+        await update.effective_message.reply_text("Usage: /soldout 30 (or 6M/1Y)")
         return
-
-    reports = get_reports_in_range(start, end)
+    reports, sec_bi, sec_uni = build_section_counters(start, end)
     if not reports:
-        await update.effective_message.reply_text("No reports yet for that period.")
+        await update.effective_message.reply_text("No reports yet.")
         return
-
-    counter_bi = collections.Counter()
-    counter_uni = collections.Counter()
-
-    for _, text in reports:
-        sections = extract_sections(text)
-        toks = tokenize(sections.get("soldout",""))
-        bi, uni = count_phrases(toks)
-        counter_bi.update(bi)
-        counter_uni.update(uni)
-
-    top = top_items(counter_bi, n=8, min_count=1)
-    if len(top) < 5:
-        existing = set(k for k,_ in top)
-        for k,v in counter_uni.most_common(15):
-            if k not in existing:
-                top.append((k,v))
-            if len(top) >= 8:
-                break
-
+    top = pick_best(sec_bi["soldout"], sec_uni["soldout"], want=8)
     await update.effective_message.reply_text(
         f"🍽 Sold-out trends (last {token.upper()}):\n{format_top_bilingual(top, max_lines=8)}"
     )
@@ -890,36 +971,99 @@ async def complaints(update: Update, context: ContextTypes.DEFAULT_TYPE):
     end = business_day_from_now()
     start = parse_period_to_start(token, end)
     if not start:
-        await update.effective_message.reply_text("Usage: /complaints 30  (or 6M / 1Y)")
+        await update.effective_message.reply_text("Usage: /complaints 30 (or 6M/1Y)")
         return
-
-    reports = get_reports_in_range(start, end)
+    reports, sec_bi, sec_uni = build_section_counters(start, end)
     if not reports:
-        await update.effective_message.reply_text("No reports yet for that period.")
+        await update.effective_message.reply_text("No reports yet.")
         return
-
-    counter_bi = collections.Counter()
-    counter_uni = collections.Counter()
-
-    for _, text in reports:
-        sections = extract_sections(text)
-        toks = tokenize(sections.get("complaints",""))
-        bi, uni = count_phrases(toks)
-        counter_bi.update(bi)
-        counter_uni.update(uni)
-
-    top = top_items(counter_bi, n=8, min_count=1)
-    if len(top) < 5:
-        existing = set(k for k,_ in top)
-        for k,v in counter_uni.most_common(15):
-            if k not in existing:
-                top.append((k,v))
-            if len(top) >= 8:
-                break
-
+    top = pick_best(sec_bi["complaints"], sec_uni["complaints"], want=8)
     await update.effective_message.reply_text(
         f"⚠️ Complaint trends (last {token.upper()}):\n{format_top_bilingual(top, max_lines=8)}"
     )
+
+
+# =========================
+# AUTO MESSAGES (Weekly digest + optional alerts)
+# =========================
+async def send_to_owners(context: ContextTypes.DEFAULT_TYPE, text: str):
+    owners = parse_chat_ids(get_setting("OWNERS_CHAT_IDS"))
+    if not owners:
+        return
+    for cid in owners:
+        try:
+            await context.bot.send_message(chat_id=cid, text=text)
+        except Exception:
+            pass
+
+async def weekly_digest_job(context: ContextTypes.DEFAULT_TYPE):
+    end = business_day_from_now()
+    start7 = end - timedelta(days=6)
+
+    numeric = render_range_report("Weekly Digest — Numbers (last 7 days)", start7, end)
+
+    reports, sec_bi, sec_uni = build_section_counters(start7, end)
+    if reports:
+        inc = pick_best(sec_bi["incidents"], sec_uni["incidents"])
+        stf = pick_best(sec_bi["staff"], sec_uni["staff"])
+        sol = pick_best(sec_bi["soldout"], sec_uni["soldout"])
+        cmp = pick_best(sec_bi["complaints"], sec_uni["complaints"])
+
+        notes = (
+            f"📝 Weekly Digest — Notes (last 7 days)\n"
+            f"Period: {start7.isoformat()} → {end.isoformat()}\n\n"
+            f"🛠 Incidents:\n{format_top_bilingual(inc)}\n\n"
+            f"👥 Staff:\n{format_top_bilingual(stf)}\n\n"
+            f"🍽 Sold out:\n{format_top_bilingual(sol)}\n\n"
+            f"⚠️ Complaints:\n{format_top_bilingual(cmp)}"
+        )
+    else:
+        notes = "📝 Weekly Digest — Notes\nNo notes yet for last 7 days."
+
+    await send_to_owners(context, "📬 NORAH — WEEKLY DIGEST\n\n" + numeric)
+    await send_to_owners(context, notes)
+
+async def daily_alerts_job(context: ContextTypes.DEFAULT_TYPE):
+    n = ALERTS_LOOKBACK_DAYS
+    end = business_day_from_now()
+    last_start = end - timedelta(days=n - 1)
+    prev_end = last_start - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=n - 1)
+
+    last_reports, last_bi, last_uni = build_section_counters(last_start, end)
+    prev_reports, prev_bi, prev_uni = build_section_counters(prev_start, prev_end)
+
+    if not last_reports:
+        return
+
+    def top_spikes(section: str) -> list[str]:
+        A = last_bi[section] if sum(last_bi[section].values()) else last_uni[section]
+        B = prev_bi[section] if sum(prev_bi[section].values()) else prev_uni[section]
+        spikes = []
+        for k,a in A.most_common(30):
+            b = B.get(k, 0)
+            if a >= 2 and a >= b + 2:
+                en = translate_es_to_en(k)
+                label = f"{k} → {en}" if en.strip().lower() != k.strip().lower() else k
+                spikes.append(f"• {label}: {a} (prev {b})")
+            if len(spikes) >= 4:
+                break
+        return spikes
+
+    comp = top_spikes("complaints")
+    sold = top_spikes("soldout")
+    staff = top_spikes("staff")
+    inc = top_spikes("incidents")
+
+    msg = (
+        f"🚨 NORAH — AUTO ALERTS (last {n} days)\n"
+        f"Period: {last_start.isoformat()} → {end.isoformat()}\n\n"
+        f"⚠️ Complaints spikes:\n" + ("\n".join(comp) if comp else "—") + "\n\n"
+        f"🍽 Sold-out spikes:\n" + ("\n".join(sold) if sold else "—") + "\n\n"
+        f"👥 Staff spikes:\n" + ("\n".join(staff) if staff else "—") + "\n\n"
+        f"🛠 Incidents spikes:\n" + ("\n".join(inc) if inc else "—")
+    )
+    await send_to_owners(context, msg)
 
 
 # =========================
@@ -930,9 +1074,9 @@ def main():
         raise RuntimeError("Missing BOT_TOKEN")
 
     init_db()
-
     app = Application.builder().token(BOT_TOKEN).build()
 
+    # Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
 
@@ -948,13 +1092,39 @@ def main():
     app.add_handler(CommandHandler("worstday", worstday))
 
     app.add_handler(CommandHandler("report", report))
+    app.add_handler(CommandHandler("cancelreport", cancelreport))
     app.add_handler(CommandHandler("reportdaily", reportdaily))
     app.add_handler(CommandHandler("reportday", reportday))
 
     app.add_handler(CommandHandler("noteslast", noteslast))
+    app.add_handler(CommandHandler("notestrends", notestrends))
+    app.add_handler(CommandHandler("alerts", alerts))
     app.add_handler(CommandHandler("findnote", findnote))
     app.add_handler(CommandHandler("soldout", soldout))
     app.add_handler(CommandHandler("complaints", complaints))
+
+    # IMPORTANT: must be after /report command handler
+    # Captures the next normal text message after /report
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), capture_pending_notes))
+
+    # Scheduled jobs
+    tz = ZoneInfo(TIMEZONE)
+
+    if AUTO_WEEKLY_DIGEST:
+        app.job_queue.run_daily(
+            weekly_digest_job,
+            time=dtime(hour=DIGEST_HOUR, minute=DIGEST_MINUTE, tzinfo=tz),
+            days=(DIGEST_WEEKDAY,),
+            name="weekly_digest",
+        )
+
+    if AUTO_ALERTS:
+        app.job_queue.run_daily(
+            daily_alerts_job,
+            time=dtime(hour=ALERTS_HOUR, minute=ALERTS_MINUTE, tzinfo=tz),
+            days=(0, 1, 2, 3, 4, 5, 6),
+            name="daily_alerts",
+        )
 
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
