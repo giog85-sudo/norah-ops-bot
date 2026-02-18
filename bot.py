@@ -37,7 +37,7 @@ if _raw:
 TZ = ZoneInfo(TZ_NAME)
 
 # For report-mode capture:
-# key = f"{chat_id}:{user_id}" -> True/False
+# key = f"{chat_id}:{user_id}" -> dict state
 REPORT_MODE_KEY = "report_mode_map"
 
 
@@ -82,7 +82,7 @@ def init_db():
                 );
                 """
             )
-            # Notes (we store entries, so multiple per day possible)
+            # Notes (multiple entries per day possible)
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS notes_entries (
@@ -188,7 +188,6 @@ def add_months(d: date, months: int) -> date:
     y = d.year + (d.month - 1 + months) // 12
     m = (d.month - 1 + months) % 12 + 1
     # clamp day to last day of target month
-    # find last day of month: go to first of next month minus 1 day
     if m == 12:
         next_first = date(y + 1, 1, 1)
     else:
@@ -251,9 +250,9 @@ test
 """.split()
 )
 
+
 def tokenize(text: str) -> list[str]:
     text = (text or "").lower()
-    # keep letters, numbers; replace punctuation with space
     text = re.sub(r"[^a-z0-9áéíóúñüç]+", " ", text)
     words = [w.strip() for w in text.split() if w.strip()]
     return [w for w in words if w not in STOPWORDS and len(w) >= 3]
@@ -414,7 +413,10 @@ HELP_TEXT = (
     "/soldout 30\n"
     "/complaints 30\n\n"
     "Setup:\n"
-    "/setowners  (run in Owners chat once)\n"
+    "/setowners  (run in Owners chat once)\n\n"
+    "Debug:\n"
+    "/ping\n"
+    "/whoami\n"
 )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -432,6 +434,68 @@ async def setowners(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     add_owner_chat(chat.id)
     await update.message.reply_text(f"✅ Owners chat registered: {chat.id}")
+
+# --- DEBUG ---
+async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await guard(update): return
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+    await update.message.reply_text(
+        f"👤 User ID: {user.id}\n"
+        f"💬 Chat ID: {chat.id}\n"
+        f"🗣️ Chat type: {chat.type}"
+    )
+
+async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await guard(update): return
+
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+
+    # DB check
+    db_ok = False
+    db_err = ""
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1;")
+                cur.fetchone()
+        db_ok = True
+    except Exception as e:
+        db_ok = False
+        db_err = str(e)[:180]
+
+    now = now_local()
+    bday = business_day_today()
+    owners = owners_chat_ids()
+
+    allow_mode = "OPEN (no ALLOWED_USER_IDS set)" if not ALLOWED_USER_IDS else "RESTRICTED"
+    jobq = "YES" if context.application.job_queue is not None else "NO"
+
+    msg = (
+        "🏓 PONG — Norah Ops Health Check\n\n"
+        f"Bot: ✅ running\n"
+        f"DB: {'✅ OK' if db_ok else '❌ FAIL'}\n"
+    )
+    if not db_ok:
+        msg += f"DB error: {db_err}\n"
+
+    msg += (
+        f"\nTime: {now.strftime('%Y-%m-%d %H:%M')} ({TZ_NAME})\n"
+        f"Cutoff hour: {CUTOFF_HOUR}:00\n"
+        f"Business day now: {bday.isoformat()}\n"
+        f"\nOwners chats: {', '.join(str(x) for x in owners) if owners else 'NONE (run /setowners in owners chat)'}\n"
+        f"Access mode: {allow_mode}\n"
+        f"JobQueue (weekly digest): {jobq}\n"
+        f"\nThis chat id: {chat.id}\n"
+        f"Your user id: {user.id}"
+    )
+
+    await update.message.reply_text(msg)
 
 # --- SALES ---
 async def setdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -550,7 +614,6 @@ async def range_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def bestday(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard(update): return
-    # default: last 30 business days
     p = period_ending_today("30")
     row = best_or_worst_day(p, worst=False)
     if not row:
@@ -671,7 +734,6 @@ async def findnote(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /findnote keyword")
         return
 
-    # Search last 365 days by default
     p = period_ending_today("1Y")
     rows = notes_in_period(p)
     matches: list[date] = []
@@ -688,7 +750,7 @@ async def findnote(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if d not in uniq:
             uniq.append(d)
 
-    show = uniq[-10:]  # last 10 match dates
+    show = uniq[-10:]
     await update.message.reply_text(
         f"🔎 Matches for '{keyword}':\n" + "\n".join(d.isoformat() for d in show)
     )
@@ -756,13 +818,9 @@ async def complaints(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # =========================
-# TEXT HANDLER (THIS FIXES YOUR PROBLEM)
+# TEXT HANDLER (captures report notes)
 # =========================
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    This is the missing piece: after /report, ANY next text message from that user in that chat
-    will be saved as notes (no need to reply).
-    """
     if not update.message:
         return
     if not await guard(update):
@@ -777,10 +835,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg_text:
         return
 
-    # If user is in report mode, consume this message as notes
     rm = get_report_mode(context.application, chat.id, user.id)
     if rm and rm.get("on"):
-        # Determine business day saved (stored when /report was issued)
         day_str = rm.get("day")
         day_ = parse_yyyy_mm_dd(day_str) if day_str else business_day_today()
 
@@ -790,8 +846,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Saved 📝 Notes for business day {day_.isoformat()}.")
         return
 
-    # Otherwise: ignore normal chatter (owners chat may be read-only anyway)
-    # You can optionally respond with help, but better to stay silent in groups.
+    # otherwise stay silent on normal text
 
 
 # =========================
@@ -800,14 +855,12 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def send_weekly_digest(context: ContextTypes.DEFAULT_TYPE):
     chats = owners_chat_ids()
     if not chats:
-        return  # owners chat not registered yet
+        return
 
-    # last 7 business days ending today
     p7 = period_ending_today("7")
-    total_sales_7, total_covers_7, days_data_7 = sum_daily(p7)
+    total_sales_7, total_covers_7, _ = sum_daily(p7)
     avg_ticket_7 = (total_sales_7 / total_covers_7) if total_covers_7 else 0.0
 
-    # previous 7 for delta
     prev_end = p7.start - timedelta(days=1)
     prev_start = prev_end - timedelta(days=6)
     pprev = Period(prev_start, prev_end)
@@ -822,11 +875,9 @@ async def send_weekly_digest(context: ContextTypes.DEFAULT_TYPE):
     sales_delta = pct(total_sales_7, total_sales_prev)
     ticket_delta = pct(avg_ticket_7, avg_ticket_prev)
 
-    # best/worst in last 7
     best = best_or_worst_day(p7, worst=False)
     worst = best_or_worst_day(p7, worst=True)
 
-    # notes trends last 7
     rows = notes_in_period(p7)
     counter = Counter()
     for _, txt in rows:
@@ -834,7 +885,6 @@ async def send_weekly_digest(context: ContextTypes.DEFAULT_TYPE):
     top_words = counter.most_common(8)
     top_words_str = ", ".join(f"{w}({c})" for w, c in top_words) if top_words else "—"
 
-    # Basic alerts
     alerts = []
     if sales_delta is not None and sales_delta <= -10:
         alerts.append(f"Sales down {sales_delta:.0f}% vs previous 7 days")
@@ -871,7 +921,6 @@ async def send_weekly_digest(context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(chat_id=chat_id, text=msg)
         except Exception as e:
-            # don't crash digest if one chat fails
             print(f"Weekly digest send failed for chat {chat_id}: {e}")
 
 
@@ -889,8 +938,10 @@ def main():
     # Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
-
     app.add_handler(CommandHandler("setowners", setowners))
+
+    app.add_handler(CommandHandler("whoami", whoami))
+    app.add_handler(CommandHandler("ping", ping))
 
     app.add_handler(CommandHandler("setdaily", setdaily))
     app.add_handler(CommandHandler("edit", edit))
@@ -911,7 +962,7 @@ def main():
     app.add_handler(CommandHandler("soldout", soldout))
     app.add_handler(CommandHandler("complaints", complaints))
 
-    # Text handler (THIS is what fixes your report capture)
+    # Text handler (captures notes after /report)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
     # Weekly digest: Monday at WEEKLY_DIGEST_HOUR (Madrid time)
