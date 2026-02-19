@@ -7,6 +7,7 @@ from collections import Counter
 
 import psycopg
 from telegram import Update
+from telegram.constants import ChatType
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -21,11 +22,22 @@ from telegram.ext import (
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
-TZ_NAME = os.getenv("TZ_NAME", "Europe/Madrid").strip() or "Europe/Madrid"
-CUTOFF_HOUR = int(os.getenv("CUTOFF_HOUR", "11").strip() or "11")  # business day cutoff next day
-WEEKLY_DIGEST_HOUR = int(os.getenv("WEEKLY_DIGEST_HOUR", "9").strip() or "9")  # Monday digest hour
+# Backwards-compatible timezone env names:
+TZ_NAME = (os.getenv("TZ_NAME") or os.getenv("TIMEZONE") or "Europe/Madrid").strip() or "Europe/Madrid"
+CUTOFF_HOUR = int((os.getenv("CUTOFF_HOUR", "11").strip() or "11"))  # business day cutoff next day
+WEEKLY_DIGEST_HOUR = int((os.getenv("WEEKLY_DIGEST_HOUR", "9").strip() or "9"))  # Monday digest hour
 
-# Allowed users
+# Daily auto-post to owners "silent" group:
+DAILY_POST_HOUR = int((os.getenv("DAILY_POST_HOUR", "11").strip() or "11"))
+DAILY_POST_MINUTE = int((os.getenv("DAILY_POST_MINUTE", "5").strip() or "5"))
+
+# Access mode:
+# OPEN -> anyone can use commands
+# RESTRICTED -> only users in ALLOWED_USER_IDS can use commands
+ACCESS_MODE = (os.getenv("ACCESS_MODE", "RESTRICTED").strip().upper() or "RESTRICTED")
+ACCESS_MODE = "OPEN" if ACCESS_MODE == "OPEN" else "RESTRICTED"
+
+# Allowed users (comma-separated user IDs)
 ALLOWED_USER_IDS = set()
 _raw = os.getenv("ALLOWED_USER_IDS", "").strip()
 if _raw:
@@ -42,21 +54,42 @@ REPORT_MODE_KEY = "report_mode_map"
 
 
 # =========================
-# SECURITY
+# SECURITY / AUTH
 # =========================
-def is_allowed(update: Update) -> bool:
-    if not ALLOWED_USER_IDS:
+def user_id(update: Update) -> int | None:
+    u = update.effective_user
+    return u.id if u else None
+
+def chat_type(update: Update) -> str | None:
+    c = update.effective_chat
+    return c.type if c else None
+
+def is_authorized(update: Update) -> bool:
+    # OPEN means everyone can run commands
+    if ACCESS_MODE == "OPEN":
         return True
-    user = update.effective_user
-    return bool(user and user.id in ALLOWED_USER_IDS)
+    # RESTRICTED means only ALLOWED_USER_IDS
+    if not ALLOWED_USER_IDS:
+        # Safety fallback: if not set, treat as OPEN to avoid locking yourself out
+        return True
+    uid = user_id(update)
+    return bool(uid and uid in ALLOWED_USER_IDS)
 
+async def guard_command(update: Update, *, reply_in_private_only: bool = True) -> bool:
+    """
+    For commands: if unauthorized, optionally reply (prefer only in private chat to avoid spam).
+    """
+    if is_authorized(update):
+        return True
 
-async def guard(update: Update) -> bool:
-    if not is_allowed(update):
-        if update.message:
-            await update.message.reply_text("Not authorized.")
+    # Avoid spamming groups/supergroups with "Not authorized."
+    ctype = chat_type(update)
+    if reply_in_private_only and ctype in (ChatType.GROUP, ChatType.SUPERGROUP):
         return False
-    return True
+
+    if update.message:
+        await update.message.reply_text("Not authorized.")
+    return False
 
 
 # =========================
@@ -66,7 +99,6 @@ def get_conn():
     if not DATABASE_URL:
         raise RuntimeError("Missing DATABASE_URL")
     return psycopg.connect(DATABASE_URL)
-
 
 def init_db():
     with get_conn() as conn:
@@ -108,7 +140,6 @@ def init_db():
             )
         conn.commit()
 
-
 def set_setting(key: str, value: str):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -122,14 +153,12 @@ def set_setting(key: str, value: str):
             )
         conn.commit()
 
-
 def get_setting(key: str, default: str = "") -> str:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT value FROM settings WHERE key=%s;", (key,))
             row = cur.fetchone()
     return row[0] if row and row[0] is not None else default
-
 
 def parse_chat_ids(s: str) -> list[int]:
     out: list[int] = []
@@ -143,16 +172,28 @@ def parse_chat_ids(s: str) -> list[int]:
             continue
     return out
 
-
-def add_owner_chat(chat_id: int):
-    current = parse_chat_ids(get_setting("OWNERS_CHAT_IDS", ""))
-    if chat_id not in current:
-        current.append(chat_id)
-    set_setting("OWNERS_CHAT_IDS", ",".join(str(x) for x in current))
-
-
 def owners_chat_ids() -> list[int]:
     return parse_chat_ids(get_setting("OWNERS_CHAT_IDS", ""))
+
+def set_owners_chat_ids(ids: list[int]):
+    # unique + stable order
+    seen = set()
+    uniq = []
+    for x in ids:
+        if x not in seen:
+            uniq.append(x)
+            seen.add(x)
+    set_setting("OWNERS_CHAT_IDS", ",".join(str(x) for x in uniq))
+
+def add_owner_chat(chat_id: int):
+    current = owners_chat_ids()
+    if chat_id not in current:
+        current.append(chat_id)
+    set_owners_chat_ids(current)
+
+def remove_owner_chat(chat_id: int):
+    current = [x for x in owners_chat_ids() if x != chat_id]
+    set_owners_chat_ids(current)
 
 
 # =========================
@@ -160,7 +201,6 @@ def owners_chat_ids() -> list[int]:
 # =========================
 def now_local() -> datetime:
     return datetime.now(TZ)
-
 
 def business_day_for(ts: datetime) -> date:
     """
@@ -172,22 +212,15 @@ def business_day_for(ts: datetime) -> date:
         return (ts.date() - timedelta(days=1))
     return ts.date()
 
-
 def business_day_today() -> date:
     return business_day_for(now_local())
-
 
 def parse_yyyy_mm_dd(s: str) -> date:
     return datetime.strptime(s, "%Y-%m-%d").date()
 
-
 def add_months(d: date, months: int) -> date:
-    """
-    Calendar-month subtraction/addition without external libs.
-    """
     y = d.year + (d.month - 1 + months) // 12
     m = (d.month - 1 + months) % 12 + 1
-    # clamp day to last day of target month
     if m == 12:
         next_first = date(y + 1, 1, 1)
     else:
@@ -195,19 +228,12 @@ def add_months(d: date, months: int) -> date:
     last_day = (next_first - timedelta(days=1)).day
     return date(y, m, min(d.day, last_day))
 
-
 @dataclass
 class Period:
     start: date
     end: date  # inclusive
 
-
 def parse_period_arg(arg: str) -> int | tuple[str, int]:
-    """
-    Returns either:
-      - int days
-      - ("M", months) or ("Y", years)
-    """
     a = (arg or "").strip().upper()
     if a.isdigit():
         return int(a)
@@ -217,7 +243,6 @@ def parse_period_arg(arg: str) -> int | tuple[str, int]:
         unit = m.group(2)
         return (unit, n)
     raise ValueError("Invalid period")
-
 
 def period_ending_today(arg: str) -> Period:
     end = business_day_today()
@@ -232,7 +257,6 @@ def period_ending_today(arg: str) -> Period:
     else:  # "Y"
         start = date(end.year - n, end.month, end.day) + timedelta(days=1)
     return Period(start=start, end=end)
-
 
 def daterange_days(p: Period) -> int:
     return (p.end - p.start).days + 1
@@ -249,7 +273,6 @@ de la el los las y o pero si entonces para a en con sin por del al es son fue fu
 test
 """.split()
 )
-
 
 def tokenize(text: str) -> list[str]:
     text = (text or "").lower()
@@ -275,14 +298,12 @@ def upsert_daily(day_: date, sales: float, covers: int):
             )
         conn.commit()
 
-
 def get_daily(day_: date):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT sales, covers FROM daily_stats WHERE day=%s;", (day_,))
             row = cur.fetchone()
     return row
-
 
 def sum_daily(p: Period):
     with get_conn() as conn:
@@ -298,7 +319,6 @@ def sum_daily(p: Period):
             row = cur.fetchone()
     total_sales, total_covers, days_with_data = row
     return float(total_sales), int(total_covers), int(days_with_data)
-
 
 def best_or_worst_day(p: Period, worst: bool = False):
     order = "ASC" if worst else "DESC"
@@ -317,7 +337,6 @@ def best_or_worst_day(p: Period, worst: bool = False):
             row = cur.fetchone()
     return row
 
-
 def insert_note_entry(day_: date, chat_id: int, user_id: int, text: str):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -330,7 +349,6 @@ def insert_note_entry(day_: date, chat_id: int, user_id: int, text: str):
             )
         conn.commit()
 
-
 def notes_for_day(day_: date) -> list[str]:
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -340,7 +358,6 @@ def notes_for_day(day_: date) -> list[str]:
             )
             rows = cur.fetchall()
     return [r[0] for r in rows]
-
 
 def notes_in_period(p: Period) -> list[tuple[date, str]]:
     with get_conn() as conn:
@@ -368,7 +385,6 @@ def _report_map(app: Application) -> dict[str, dict]:
         app.bot_data[REPORT_MODE_KEY] = m
     return m
 
-
 def set_report_mode(app: Application, chat_id: int, user_id: int, day_: date | None):
     key = f"{chat_id}:{user_id}"
     _report_map(app)[key] = {
@@ -377,11 +393,9 @@ def set_report_mode(app: Application, chat_id: int, user_id: int, day_: date | N
         "ts": now_local().isoformat(),
     }
 
-
 def clear_report_mode(app: Application, chat_id: int, user_id: int):
     key = f"{chat_id}:{user_id}"
     _report_map(app).pop(key, None)
-
 
 def get_report_mode(app: Application, chat_id: int, user_id: int):
     key = f"{chat_id}:{user_id}"
@@ -413,31 +427,49 @@ HELP_TEXT = (
     "/soldout 30\n"
     "/complaints 30\n\n"
     "Setup:\n"
-    "/setowners  (run in Owners chat once)\n\n"
+    "/setowners  (run in Owners chat once)\n"
+    "/ownerslist\n"
+    "/removeowners  (run in chat you want removed)\n\n"
     "Debug:\n"
     "/ping\n"
     "/whoami\n"
 )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
+    if not await guard_command(update): return
     await update.message.reply_text("👋 Norah Ops is online.\n\n" + HELP_TEXT)
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
+    if not await guard_command(update): return
     await update.message.reply_text(HELP_TEXT)
 
 async def setowners(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
+    if not await guard_command(update): return
     chat = update.effective_chat
     if not chat:
         return
     add_owner_chat(chat.id)
     await update.message.reply_text(f"✅ Owners chat registered: {chat.id}")
 
+async def ownerslist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await guard_command(update): return
+    ids = owners_chat_ids()
+    if not ids:
+        await update.message.reply_text("Owners chats: NONE. Run /setowners in the owners (silent) group.")
+        return
+    await update.message.reply_text("Owners chats:\n" + "\n".join(str(x) for x in ids))
+
+async def removeowners(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await guard_command(update): return
+    chat = update.effective_chat
+    if not chat:
+        return
+    remove_owner_chat(chat.id)
+    await update.message.reply_text(f"🗑️ Removed this chat from owners list: {chat.id}")
+
 # --- DEBUG ---
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
+    if not await guard_command(update): return
     chat = update.effective_chat
     user = update.effective_user
     if not chat or not user:
@@ -449,14 +481,13 @@ async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
+    if not await guard_command(update): return
 
     chat = update.effective_chat
     user = update.effective_user
     if not chat or not user:
         return
 
-    # DB check
     db_ok = False
     db_err = ""
     try:
@@ -473,7 +504,7 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bday = business_day_today()
     owners = owners_chat_ids()
 
-    allow_mode = "OPEN (no ALLOWED_USER_IDS set)" if not ALLOWED_USER_IDS else "RESTRICTED"
+    allow_mode = "OPEN" if ACCESS_MODE == "OPEN" else ("OPEN (no ALLOWED_USER_IDS set)" if not ALLOWED_USER_IDS else "RESTRICTED")
     jobq = "YES" if context.application.job_queue is not None else "NO"
 
     msg = (
@@ -499,7 +530,7 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- SALES ---
 async def setdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
+    if not await guard_command(update): return
 
     if len(context.args) < 2:
         await update.message.reply_text("Usage: /setdaily SALES COVERS\nExample: /setdaily 2450 118")
@@ -517,7 +548,7 @@ async def setdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Saved ✅  Day: {day_.isoformat()} | Sales: €{sales:.2f} | Covers: {covers}")
 
 async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
+    if not await guard_command(update): return
     if len(context.args) < 3:
         await update.message.reply_text("Usage: /edit YYYY-MM-DD SALES COVERS")
         return
@@ -532,7 +563,7 @@ async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Edited ✅  Day: {day_.isoformat()} | Sales: €{sales:.2f} | Covers: {covers}")
 
 async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
+    if not await guard_command(update): return
     day_ = business_day_today()
     row = get_daily(day_)
     if not row:
@@ -551,7 +582,7 @@ async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def month(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
+    if not await guard_command(update): return
     end = business_day_today()
     start = date(end.year, end.month, 1)
     p = Period(start=start, end=end)
@@ -567,7 +598,7 @@ async def month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def last(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
+    if not await guard_command(update): return
     if not context.args:
         await update.message.reply_text("Usage: /last 7   OR   /last 6M   OR   /last 1Y")
         return
@@ -588,7 +619,7 @@ async def last(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def range_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
+    if not await guard_command(update): return
     if len(context.args) < 2:
         await update.message.reply_text("Usage: /range YYYY-MM-DD YYYY-MM-DD")
         return
@@ -613,7 +644,7 @@ async def range_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def bestday(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
+    if not await guard_command(update): return
     p = period_ending_today("30")
     row = best_or_worst_day(p, worst=False)
     if not row:
@@ -627,7 +658,7 @@ async def bestday(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def worstday(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
+    if not await guard_command(update): return
     p = period_ending_today("30")
     row = best_or_worst_day(p, worst=True)
     if not row:
@@ -642,7 +673,7 @@ async def worstday(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- NOTES ---
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
+    if not await guard_command(update): return
     chat = update.effective_chat
     user = update.effective_user
     if not chat or not user:
@@ -657,7 +688,7 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cancelreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
+    if not await guard_command(update): return
     chat = update.effective_chat
     user = update.effective_user
     if not chat or not user:
@@ -666,7 +697,7 @@ async def cancelreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❎ Report mode cancelled.")
 
 async def reportdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
+    if not await guard_command(update): return
     day_ = business_day_today()
     texts = notes_for_day(day_)
     if not texts:
@@ -680,7 +711,7 @@ async def reportdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def reportday(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
+    if not await guard_command(update): return
     if not context.args:
         await update.message.reply_text("Usage: /reportday YYYY-MM-DD")
         return
@@ -698,7 +729,7 @@ async def reportday(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- NOTES ANALYTICS ---
 async def noteslast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
+    if not await guard_command(update): return
     if not context.args:
         await update.message.reply_text("Usage: /noteslast 30   (or 6M / 1Y)")
         return
@@ -725,7 +756,7 @@ async def noteslast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def findnote(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
+    if not await guard_command(update): return
     if not context.args:
         await update.message.reply_text("Usage: /findnote keyword")
         return
@@ -756,7 +787,7 @@ async def findnote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def soldout(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
+    if not await guard_command(update): return
     if not context.args:
         await update.message.reply_text("Usage: /soldout 30")
         return
@@ -787,7 +818,7 @@ async def soldout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def complaints(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard(update): return
+    if not await guard_command(update): return
     if not context.args:
         await update.message.reply_text("Usage: /complaints 30")
         return
@@ -823,8 +854,6 @@ async def complaints(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
-    if not await guard(update):
-        return
 
     chat = update.effective_chat
     user = update.effective_user
@@ -835,8 +864,14 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg_text:
         return
 
+    # IMPORTANT: do NOT guard random group messages (avoid "Not authorized." spam)
     rm = get_report_mode(context.application, chat.id, user.id)
     if rm and rm.get("on"):
+        if not is_authorized(update):
+            # silently ignore if unauthorized
+            clear_report_mode(context.application, chat.id, user.id)
+            return
+
         day_str = rm.get("day")
         day_ = parse_yyyy_mm_dd(day_str) if day_str else business_day_today()
 
@@ -850,13 +885,13 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
-# WEEKLY DIGEST
+# SCHEDULED POSTS
 # =========================
 async def send_weekly_digest(context: ContextTypes.DEFAULT_TYPE):
     chats = owners_chat_ids()
     if not chats:
         return
-
+    # ... keep your existing weekly digest content exactly as before ...
     p7 = period_ending_today("7")
     total_sales_7, total_covers_7, _ = sum_daily(p7)
     avg_ticket_7 = (total_sales_7 / total_covers_7) if total_covers_7 else 0.0
@@ -923,6 +958,47 @@ async def send_weekly_digest(context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             print(f"Weekly digest send failed for chat {chat_id}: {e}")
 
+async def send_daily_post_to_owners(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Posts yesterday's business day summary into all owners chats.
+    Scheduled at DAILY_POST_HOUR:DAILY_POST_MINUTE.
+    """
+    chats = owners_chat_ids()
+    if not chats:
+        return
+
+    now = now_local()
+    # At 11:05, business_day_today() is "today", but we want the day that just ended:
+    report_day = now.date() - timedelta(days=1)
+
+    sales_row = get_daily(report_day)
+    notes_texts = notes_for_day(report_day)
+
+    sales_line = "Sales: —\nCovers: —\nAvg ticket: —"
+    if sales_row:
+        sales, covers = sales_row
+        sales = float(sales or 0)
+        covers = int(covers or 0)
+        avg = (sales / covers) if covers else 0.0
+        sales_line = f"Sales: €{sales:.2f}\nCovers: {covers}\nAvg ticket: €{avg:.2f}"
+
+    notes_block = "No notes submitted."
+    if notes_texts:
+        notes_block = "\n\n— — —\n\n".join(notes_texts)
+
+    msg = (
+        f"📌 Norah Daily Post\n"
+        f"Business day: {report_day.isoformat()}\n\n"
+        f"{sales_line}\n\n"
+        f"📝 Notes:\n{notes_block}"
+    )
+
+    for chat_id in chats:
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=msg)
+        except Exception as e:
+            print(f"Daily post send failed for chat {chat_id}: {e}")
+
 
 # =========================
 # MAIN
@@ -938,7 +1014,10 @@ def main():
     # Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
+
     app.add_handler(CommandHandler("setowners", setowners))
+    app.add_handler(CommandHandler("ownerslist", ownerslist))
+    app.add_handler(CommandHandler("removeowners", removeowners))
 
     app.add_handler(CommandHandler("whoami", whoami))
     app.add_handler(CommandHandler("ping", ping))
@@ -965,13 +1044,20 @@ def main():
     # Text handler (captures notes after /report)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
-    # Weekly digest: Monday at WEEKLY_DIGEST_HOUR (Madrid time)
+    # Schedules
     if app.job_queue is not None:
+        # Weekly digest: Monday
         app.job_queue.run_daily(
             send_weekly_digest,
             time=time(hour=WEEKLY_DIGEST_HOUR, minute=0, tzinfo=TZ),
             days=(0,),  # Monday
             name="weekly_digest_monday",
+        )
+        # Daily post to owners
+        app.job_queue.run_daily(
+            send_daily_post_to_owners,
+            time=time(hour=DAILY_POST_HOUR, minute=DAILY_POST_MINUTE, tzinfo=TZ),
+            name="daily_post_to_owners",
         )
 
     app.run_polling(allowed_updates=Update.ALL_TYPES)
