@@ -1020,14 +1020,9 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg_text:
         return
 
-    # If this is OWNERS_SILENT, keep it clean (gentle redirect)
-    if get_chat_role(chat.id) == ROLE_OWNERS_SILENT and not user.is_bot:
-        try:
-            await update.message.reply_text("🧾 This is the silent Owners group.\nPlease post requests in *Norah Owners Requests*.", parse_mode="Markdown")
-        except:
-            pass
-        return
-
+    # --- IMPORTANT FIX ---
+    # Handle report-mode capture FIRST (so it still works even if someone mistakenly
+    # enters /report in OWNERS_SILENT).
     rm = get_report_mode(context.application, chat.id, user.id)
     if rm and rm.get("on"):
         if not allow_notes_cmd(update):
@@ -1041,6 +1036,17 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         clear_report_mode(context.application, chat.id, user.id)
 
         await update.message.reply_text(f"Saved 📝 Notes for business day {day_.isoformat()}.")
+        return
+
+    # If this is OWNERS_SILENT, keep it clean (gentle redirect)
+    if get_chat_role(chat.id) == ROLE_OWNERS_SILENT and not user.is_bot:
+        try:
+            await update.message.reply_text(
+                "🧾 This is the silent Owners group.\nPlease post requests in *Norah Owners Requests*.",
+                parse_mode="Markdown",
+            )
+        except:
+            pass
         return
 
     # otherwise stay silent on normal text
@@ -1129,7 +1135,7 @@ async def send_daily_post_to_owners(context: ContextTypes.DEFAULT_TYPE):
     if not chats:
         return
 
-    # ✅ FIX: align with cutoff-hour business day logic
+    # ✅ aligned with cutoff-hour business day logic
     report_day = previous_business_day(now_local())
 
     sales_row = get_daily(report_day)
