@@ -33,7 +33,7 @@ DAILY_POST_MINUTE = int((os.getenv("DAILY_POST_MINUTE", "5").strip() or "5"))
 
 # Access mode:
 # OPEN -> anyone can use commands
-# RESTRICTED -> only users in ALLOWED_USER_IDS can use commands
+# RESTRICTED -> only users in ALLOWED_USER_IDS can use admin/setup commands
 ACCESS_MODE = (os.getenv("ACCESS_MODE", "RESTRICTED").strip().upper() or "RESTRICTED")
 ACCESS_MODE = "OPEN" if ACCESS_MODE == "OPEN" else "RESTRICTED"
 
@@ -52,6 +52,16 @@ TZ = ZoneInfo(TZ_NAME)
 # key = f"{chat_id}:{user_id}" -> dict state
 REPORT_MODE_KEY = "report_mode_map"
 
+# =========================
+# CHAT ROLES (NEW)
+# =========================
+ROLE_OPS_ADMIN = "OPS_ADMIN"
+ROLE_OWNERS_SILENT = "OWNERS_SILENT"
+ROLE_MANAGER_INPUT = "MANAGER_INPUT"
+ROLE_OWNERS_REQUESTS = "OWNERS_REQUESTS"
+
+VALID_CHAT_ROLES = {ROLE_OPS_ADMIN, ROLE_OWNERS_SILENT, ROLE_MANAGER_INPUT, ROLE_OWNERS_REQUESTS}
+
 
 # =========================
 # SECURITY / AUTH
@@ -64,8 +74,8 @@ def chat_type(update: Update) -> str | None:
     c = update.effective_chat
     return c.type if c else None
 
-def is_authorized(update: Update) -> bool:
-    # OPEN means everyone can run commands
+def is_admin(update: Update) -> bool:
+    # OPEN means everyone can run admin/setup commands
     if ACCESS_MODE == "OPEN":
         return True
     # RESTRICTED means only ALLOWED_USER_IDS
@@ -75,14 +85,13 @@ def is_authorized(update: Update) -> bool:
     uid = user_id(update)
     return bool(uid and uid in ALLOWED_USER_IDS)
 
-async def guard_command(update: Update, *, reply_in_private_only: bool = True) -> bool:
+async def guard_admin(update: Update, *, reply_in_private_only: bool = True) -> bool:
     """
-    For commands: if unauthorized, optionally reply (prefer only in private chat to avoid spam).
+    For admin/setup commands: if unauthorized, optionally reply (prefer only in private chat to avoid spam).
     """
-    if is_authorized(update):
+    if is_admin(update):
         return True
 
-    # Avoid spamming groups/supergroups with "Not authorized."
     ctype = chat_type(update)
     if reply_in_private_only and ctype in (ChatType.GROUP, ChatType.SUPERGROUP):
         return False
@@ -129,7 +138,7 @@ def init_db():
             )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_notes_entries_day ON notes_entries(day);")
 
-            # Settings (owners chats, etc.)
+            # Settings (legacy owners chats + misc)
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS settings (
@@ -138,6 +147,20 @@ def init_db():
                 );
                 """
             )
+
+            # Chat roles (NEW)
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_roles (
+                    chat_id BIGINT PRIMARY KEY,
+                    role TEXT NOT NULL,
+                    chat_type TEXT,
+                    title TEXT,
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_chat_roles_role ON chat_roles(role);")
         conn.commit()
 
 def set_setting(key: str, value: str):
@@ -160,6 +183,7 @@ def get_setting(key: str, default: str = "") -> str:
             row = cur.fetchone()
     return row[0] if row and row[0] is not None else default
 
+# ---- Legacy owners chat ids (kept) ----
 def parse_chat_ids(s: str) -> list[int]:
     out: list[int] = []
     for part in (s or "").split(","):
@@ -172,11 +196,10 @@ def parse_chat_ids(s: str) -> list[int]:
             continue
     return out
 
-def owners_chat_ids() -> list[int]:
+def owners_chat_ids_legacy() -> list[int]:
     return parse_chat_ids(get_setting("OWNERS_CHAT_IDS", ""))
 
-def set_owners_chat_ids(ids: list[int]):
-    # unique + stable order
+def set_owners_chat_ids_legacy(ids: list[int]):
     seen = set()
     uniq = []
     for x in ids:
@@ -185,15 +208,63 @@ def set_owners_chat_ids(ids: list[int]):
             seen.add(x)
     set_setting("OWNERS_CHAT_IDS", ",".join(str(x) for x in uniq))
 
-def add_owner_chat(chat_id: int):
-    current = owners_chat_ids()
+def add_owner_chat_legacy(chat_id: int):
+    current = owners_chat_ids_legacy()
     if chat_id not in current:
         current.append(chat_id)
-    set_owners_chat_ids(current)
+    set_owners_chat_ids_legacy(current)
 
-def remove_owner_chat(chat_id: int):
-    current = [x for x in owners_chat_ids() if x != chat_id]
-    set_owners_chat_ids(current)
+def remove_owner_chat_legacy(chat_id: int):
+    current = [x for x in owners_chat_ids_legacy() if x != chat_id]
+    set_owners_chat_ids_legacy(current)
+
+# ---- Chat roles helpers (NEW) ----
+def set_chat_role(chat_id: int, role: str, *, ctype: str | None = None, title: str | None = None):
+    role = (role or "").strip().upper()
+    if role not in VALID_CHAT_ROLES:
+        raise ValueError("Invalid chat role")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO chat_roles (chat_id, role, chat_type, title, updated_at)
+                VALUES (%s, %s, %s, %s, NOW())
+                ON CONFLICT (chat_id) DO UPDATE
+                SET role = EXCLUDED.role,
+                    chat_type = EXCLUDED.chat_type,
+                    title = EXCLUDED.title,
+                    updated_at = NOW();
+                """,
+                (chat_id, role, ctype, title),
+            )
+        conn.commit()
+
+def get_chat_role(chat_id: int) -> str | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT role FROM chat_roles WHERE chat_id=%s;", (chat_id,))
+            row = cur.fetchone()
+    return row[0] if row else None
+
+def chats_with_role(role: str) -> list[int]:
+    role = (role or "").strip().upper()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT chat_id FROM chat_roles WHERE role=%s ORDER BY chat_id;", (role,))
+            rows = cur.fetchall()
+    return [int(r[0]) for r in rows] if rows else []
+
+def owners_silent_chat_ids() -> list[int]:
+    # Prefer role-based; fallback to legacy
+    ids = chats_with_role(ROLE_OWNERS_SILENT)
+    return ids if ids else owners_chat_ids_legacy()
+
+def list_all_chats() -> list[tuple[int, str, str | None, str | None]]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT chat_id, role, chat_type, title FROM chat_roles ORDER BY role, chat_id;")
+            rows = cur.fetchall()
+    return [(int(r[0]), r[1], r[2], r[3]) for r in rows] if rows else []
 
 
 # =========================
@@ -214,6 +285,10 @@ def business_day_for(ts: datetime) -> date:
 
 def business_day_today() -> date:
     return business_day_for(now_local())
+
+def previous_business_day(ts: datetime | None = None) -> date:
+    ts = ts or now_local()
+    return business_day_for(ts) - timedelta(days=1)
 
 def parse_yyyy_mm_dd(s: str) -> date:
     return datetime.strptime(s, "%Y-%m-%d").date()
@@ -403,6 +478,35 @@ def get_report_mode(app: Application, chat_id: int, user_id: int):
 
 
 # =========================
+# PERMISSION BY CHAT ROLE (NEW)
+# =========================
+def current_chat_role(update: Update) -> str | None:
+    c = update.effective_chat
+    return get_chat_role(c.id) if c else None
+
+def allow_in_ops_or_admin(update: Update) -> bool:
+    role = current_chat_role(update)
+    if role == ROLE_OPS_ADMIN:
+        return True
+    # If roles not set yet, keep old behavior: admin can still operate
+    return is_admin(update)
+
+def allow_sales_cmd(update: Update) -> bool:
+    role = current_chat_role(update)
+    # sales commands should be allowed in OPS_ADMIN, MANAGER_INPUT, OWNERS_REQUESTS
+    if role in (ROLE_OPS_ADMIN, ROLE_MANAGER_INPUT, ROLE_OWNERS_REQUESTS):
+        return True
+    return is_admin(update)
+
+def allow_notes_cmd(update: Update) -> bool:
+    role = current_chat_role(update)
+    # notes (/report...) should be allowed in OPS_ADMIN and MANAGER_INPUT
+    if role in (ROLE_OPS_ADMIN, ROLE_MANAGER_INPUT):
+        return True
+    return is_admin(update)
+
+
+# =========================
 # COMMANDS
 # =========================
 HELP_TEXT = (
@@ -426,63 +530,106 @@ HELP_TEXT = (
     "/findnote keyword\n"
     "/soldout 30\n"
     "/complaints 30\n\n"
-    "Setup:\n"
-    "/setowners  (run in Owners chat once)\n"
+    "Setup (ADMIN):\n"
+    "/setowners  (legacy: run in Owners Silent once)\n"
     "/ownerslist\n"
-    "/removeowners  (run in chat you want removed)\n\n"
+    "/removeowners\n"
+    "/setchatrole OPS_ADMIN | OWNERS_SILENT | MANAGER_INPUT | OWNERS_REQUESTS\n"
+    "/chats\n\n"
     "Debug:\n"
     "/ping\n"
     "/whoami\n"
 )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard_command(update): return
     await update.message.reply_text("👋 Norah Ops is online.\n\n" + HELP_TEXT)
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard_command(update): return
     await update.message.reply_text(HELP_TEXT)
 
-async def setowners(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard_command(update): return
+# ---- Chat role setup (NEW) ----
+async def setchatrole_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await guard_admin(update):
+        return
     chat = update.effective_chat
     if not chat:
         return
-    add_owner_chat(chat.id)
+    if not context.args:
+        await update.message.reply_text("Usage: /setchatrole OPS_ADMIN | OWNERS_SILENT | MANAGER_INPUT | OWNERS_REQUESTS")
+        return
+    role = context.args[0].strip().upper()
+    if role not in VALID_CHAT_ROLES:
+        await update.message.reply_text("Invalid role. Use: OPS_ADMIN | OWNERS_SILENT | MANAGER_INPUT | OWNERS_REQUESTS")
+        return
+
+    title = getattr(chat, "title", None)
+    set_chat_role(chat.id, role, ctype=chat.type, title=title)
+
+    # Keep legacy owners list in sync
+    if role == ROLE_OWNERS_SILENT:
+        add_owner_chat_legacy(chat.id)
+
+    await update.message.reply_text(f"✅ Chat role set: {role}\nChat ID: {chat.id}")
+
+async def chats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await guard_admin(update):
+        return
+    rows = list_all_chats()
+    if not rows:
+        await update.message.reply_text("No chat roles set yet. Use /setchatrole in each chat once.")
+        return
+    lines = []
+    for cid, role, ctype, title in rows:
+        lines.append(f"{role} | {cid} | {ctype or '-'} | {title or '-'}")
+    await update.message.reply_text("Chats:\n" + "\n".join(lines))
+
+# ---- Legacy owners setup (kept) ----
+async def setowners(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await guard_admin(update):
+        return
+    chat = update.effective_chat
+    if not chat:
+        return
+    add_owner_chat_legacy(chat.id)
+    # also set role if not set
+    title = getattr(chat, "title", None)
+    set_chat_role(chat.id, ROLE_OWNERS_SILENT, ctype=chat.type, title=title)
     await update.message.reply_text(f"✅ Owners chat registered: {chat.id}")
 
 async def ownerslist(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard_command(update): return
-    ids = owners_chat_ids()
+    if not await guard_admin(update):
+        return
+    ids = owners_silent_chat_ids()
     if not ids:
-        await update.message.reply_text("Owners chats: NONE. Run /setowners in the owners (silent) group.")
+        await update.message.reply_text("Owners chats: NONE. Run /setowners (legacy) or /setchatrole OWNERS_SILENT.")
         return
     await update.message.reply_text("Owners chats:\n" + "\n".join(str(x) for x in ids))
 
 async def removeowners(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard_command(update): return
+    if not await guard_admin(update):
+        return
     chat = update.effective_chat
     if not chat:
         return
-    remove_owner_chat(chat.id)
+    remove_owner_chat_legacy(chat.id)
     await update.message.reply_text(f"🗑️ Removed this chat from owners list: {chat.id}")
 
 # --- DEBUG ---
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard_command(update): return
     chat = update.effective_chat
     user = update.effective_user
     if not chat or not user:
         return
+    role = get_chat_role(chat.id) or "-"
     await update.message.reply_text(
         f"👤 User ID: {user.id}\n"
         f"💬 Chat ID: {chat.id}\n"
-        f"🗣️ Chat type: {chat.type}"
+        f"🗣️ Chat type: {chat.type}\n"
+        f"🏷️ Chat role: {role}\n"
+        f"🔐 Admin: {'YES' if is_admin(update) else 'NO'}"
     )
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard_command(update): return
-
     chat = update.effective_chat
     user = update.effective_user
     if not chat or not user:
@@ -502,7 +649,8 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     now = now_local()
     bday = business_day_today()
-    owners = owners_chat_ids()
+    prev_bday = previous_business_day(now)
+    owners = owners_silent_chat_ids()
 
     allow_mode = "OPEN" if ACCESS_MODE == "OPEN" else ("OPEN (no ALLOWED_USER_IDS set)" if not ALLOWED_USER_IDS else "RESTRICTED")
     jobq = "YES" if context.application.job_queue is not None else "NO"
@@ -519,9 +667,10 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"\nTime: {now.strftime('%Y-%m-%d %H:%M')} ({TZ_NAME})\n"
         f"Cutoff hour: {CUTOFF_HOUR}:00\n"
         f"Business day now: {bday.isoformat()}\n"
-        f"\nOwners chats: {', '.join(str(x) for x in owners) if owners else 'NONE (run /setowners in owners chat)'}\n"
+        f"Previous business day: {prev_bday.isoformat()}\n"
+        f"\nOwners silent chats: {', '.join(str(x) for x in owners) if owners else 'NONE'}\n"
         f"Access mode: {allow_mode}\n"
-        f"JobQueue (weekly digest): {jobq}\n"
+        f"JobQueue: {jobq}\n"
         f"\nThis chat id: {chat.id}\n"
         f"Your user id: {user.id}"
     )
@@ -530,7 +679,8 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- SALES ---
 async def setdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard_command(update): return
+    if not allow_sales_cmd(update):
+        return
 
     if len(context.args) < 2:
         await update.message.reply_text("Usage: /setdaily SALES COVERS\nExample: /setdaily 2450 118")
@@ -548,7 +698,8 @@ async def setdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Saved ✅  Day: {day_.isoformat()} | Sales: €{sales:.2f} | Covers: {covers}")
 
 async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard_command(update): return
+    if not allow_sales_cmd(update):
+        return
     if len(context.args) < 3:
         await update.message.reply_text("Usage: /edit YYYY-MM-DD SALES COVERS")
         return
@@ -563,7 +714,8 @@ async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Edited ✅  Day: {day_.isoformat()} | Sales: €{sales:.2f} | Covers: {covers}")
 
 async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard_command(update): return
+    if not allow_sales_cmd(update):
+        return
     day_ = business_day_today()
     row = get_daily(day_)
     if not row:
@@ -582,7 +734,8 @@ async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def month(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard_command(update): return
+    if not allow_sales_cmd(update):
+        return
     end = business_day_today()
     start = date(end.year, end.month, 1)
     p = Period(start=start, end=end)
@@ -598,7 +751,8 @@ async def month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def last(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard_command(update): return
+    if not allow_sales_cmd(update):
+        return
     if not context.args:
         await update.message.reply_text("Usage: /last 7   OR   /last 6M   OR   /last 1Y")
         return
@@ -619,7 +773,8 @@ async def last(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def range_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard_command(update): return
+    if not allow_sales_cmd(update):
+        return
     if len(context.args) < 2:
         await update.message.reply_text("Usage: /range YYYY-MM-DD YYYY-MM-DD")
         return
@@ -644,7 +799,8 @@ async def range_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def bestday(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard_command(update): return
+    if not allow_sales_cmd(update):
+        return
     p = period_ending_today("30")
     row = best_or_worst_day(p, worst=False)
     if not row:
@@ -658,7 +814,8 @@ async def bestday(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def worstday(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard_command(update): return
+    if not allow_sales_cmd(update):
+        return
     p = period_ending_today("30")
     row = best_or_worst_day(p, worst=True)
     if not row:
@@ -673,7 +830,8 @@ async def worstday(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- NOTES ---
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard_command(update): return
+    if not allow_notes_cmd(update):
+        return
     chat = update.effective_chat
     user = update.effective_user
     if not chat or not user:
@@ -682,13 +840,14 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     set_report_mode(context.application, chat.id, user.id, day_)
     await update.message.reply_text(
         f"✅ Report mode ON.\n"
-        f"Now send the notes as your NEXT message (or reply to this message).\n"
+        f"Now send the notes as your NEXT message.\n"
         f"Business day: {day_.isoformat()}\n\n"
         f"To cancel: /cancelreport"
     )
 
 async def cancelreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard_command(update): return
+    if not allow_notes_cmd(update):
+        return
     chat = update.effective_chat
     user = update.effective_user
     if not chat or not user:
@@ -697,7 +856,8 @@ async def cancelreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❎ Report mode cancelled.")
 
 async def reportdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard_command(update): return
+    if not allow_notes_cmd(update):
+        return
     day_ = business_day_today()
     texts = notes_for_day(day_)
     if not texts:
@@ -706,12 +866,11 @@ async def reportdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     joined = "\n\n— — —\n\n".join(texts)
-    await update.message.reply_text(
-        f"📝 Notes for business day {day_.isoformat()}:\n\n{joined}"
-    )
+    await update.message.reply_text(f"📝 Notes for business day {day_.isoformat()}:\n\n{joined}")
 
 async def reportday(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard_command(update): return
+    if not allow_notes_cmd(update):
+        return
     if not context.args:
         await update.message.reply_text("Usage: /reportday YYYY-MM-DD")
         return
@@ -729,7 +888,8 @@ async def reportday(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- NOTES ANALYTICS ---
 async def noteslast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard_command(update): return
+    if not allow_sales_cmd(update):
+        return
     if not context.args:
         await update.message.reply_text("Usage: /noteslast 30   (or 6M / 1Y)")
         return
@@ -751,12 +911,11 @@ async def noteslast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     top = counter.most_common(12)
     lines = [f"{w}: {c}" for w, c in top] if top else ["(no keywords yet)"]
 
-    await update.message.reply_text(
-        "📊 Notes trends:\n" + "\n".join(lines)
-    )
+    await update.message.reply_text("📊 Notes trends:\n" + "\n".join(lines))
 
 async def findnote(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard_command(update): return
+    if not allow_sales_cmd(update):
+        return
     if not context.args:
         await update.message.reply_text("Usage: /findnote keyword")
         return
@@ -782,12 +941,11 @@ async def findnote(update: Update, context: ContextTypes.DEFAULT_TYPE):
             uniq.append(d)
 
     show = uniq[-10:]
-    await update.message.reply_text(
-        f"🔎 Matches for '{keyword}':\n" + "\n".join(d.isoformat() for d in show)
-    )
+    await update.message.reply_text(f"🔎 Matches for '{keyword}':\n" + "\n".join(d.isoformat() for d in show))
 
 async def soldout(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard_command(update): return
+    if not allow_sales_cmd(update):
+        return
     if not context.args:
         await update.message.reply_text("Usage: /soldout 30")
         return
@@ -813,12 +971,11 @@ async def soldout(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No 'sold out' items detected yet for that period.")
         return
 
-    await update.message.reply_text(
-        "🍽️ Sold-out signals:\n" + "\n".join(f"{w}: {c}" for w, c in top)
-    )
+    await update.message.reply_text("🍽️ Sold-out signals:\n" + "\n".join(f"{w}: {c}" for w, c in top))
 
 async def complaints(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await guard_command(update): return
+    if not allow_sales_cmd(update):
+        return
     if not context.args:
         await update.message.reply_text("Usage: /complaints 30")
         return
@@ -844,12 +1001,11 @@ async def complaints(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No complaint keywords detected yet for that period.")
         return
 
-    await update.message.reply_text(
-        "⚠️ Complaint signals:\n" + "\n".join(f"{w}: {c}" for w, c in top)
-    )
+    await update.message.reply_text("⚠️ Complaint signals:\n" + "\n".join(f"{w}: {c}" for w, c in top))
+
 
 # =========================
-# TEXT HANDLER (captures report notes)
+# TEXT HANDLER (captures report notes + keeps owners silent clean)
 # =========================
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -864,11 +1020,17 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg_text:
         return
 
-    # IMPORTANT: do NOT guard random group messages (avoid "Not authorized." spam)
+    # If this is OWNERS_SILENT, keep it clean (gentle redirect)
+    if get_chat_role(chat.id) == ROLE_OWNERS_SILENT and not user.is_bot:
+        try:
+            await update.message.reply_text("🧾 This is the silent Owners group.\nPlease post requests in *Norah Owners Requests*.", parse_mode="Markdown")
+        except:
+            pass
+        return
+
     rm = get_report_mode(context.application, chat.id, user.id)
     if rm and rm.get("on"):
-        if not is_authorized(update):
-            # silently ignore if unauthorized
+        if not allow_notes_cmd(update):
             clear_report_mode(context.application, chat.id, user.id)
             return
 
@@ -888,10 +1050,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # SCHEDULED POSTS
 # =========================
 async def send_weekly_digest(context: ContextTypes.DEFAULT_TYPE):
-    chats = owners_chat_ids()
+    chats = owners_silent_chat_ids()
     if not chats:
         return
-    # ... keep your existing weekly digest content exactly as before ...
+
     p7 = period_ending_today("7")
     total_sales_7, total_covers_7, _ = sum_daily(p7)
     avg_ticket_7 = (total_sales_7 / total_covers_7) if total_covers_7 else 0.0
@@ -960,16 +1122,15 @@ async def send_weekly_digest(context: ContextTypes.DEFAULT_TYPE):
 
 async def send_daily_post_to_owners(context: ContextTypes.DEFAULT_TYPE):
     """
-    Posts yesterday's business day summary into all owners chats.
+    Posts the PREVIOUS BUSINESS DAY summary into owners silent chats.
     Scheduled at DAILY_POST_HOUR:DAILY_POST_MINUTE.
     """
-    chats = owners_chat_ids()
+    chats = owners_silent_chat_ids()
     if not chats:
         return
 
-    now = now_local()
-    # At 11:05, business_day_today() is "today", but we want the day that just ended:
-    report_day = now.date() - timedelta(days=1)
+    # ✅ FIX: align with cutoff-hour business day logic
+    report_day = previous_business_day(now_local())
 
     sales_row = get_daily(report_day)
     notes_texts = notes_for_day(report_day)
@@ -1015,13 +1176,19 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
 
+    # Setup
+    app.add_handler(CommandHandler("setchatrole", setchatrole_cmd))
+    app.add_handler(CommandHandler("chats", chats_cmd))
+
     app.add_handler(CommandHandler("setowners", setowners))
     app.add_handler(CommandHandler("ownerslist", ownerslist))
     app.add_handler(CommandHandler("removeowners", removeowners))
 
+    # Debug
     app.add_handler(CommandHandler("whoami", whoami))
     app.add_handler(CommandHandler("ping", ping))
 
+    # Sales
     app.add_handler(CommandHandler("setdaily", setdaily))
     app.add_handler(CommandHandler("edit", edit))
     app.add_handler(CommandHandler("daily", daily))
@@ -1031,11 +1198,13 @@ def main():
     app.add_handler(CommandHandler("bestday", bestday))
     app.add_handler(CommandHandler("worstday", worstday))
 
+    # Notes
     app.add_handler(CommandHandler("report", report))
     app.add_handler(CommandHandler("cancelreport", cancelreport))
     app.add_handler(CommandHandler("reportdaily", reportdaily))
     app.add_handler(CommandHandler("reportday", reportday))
 
+    # Notes analytics
     app.add_handler(CommandHandler("noteslast", noteslast))
     app.add_handler(CommandHandler("findnote", findnote))
     app.add_handler(CommandHandler("soldout", soldout))
