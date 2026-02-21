@@ -22,22 +22,16 @@ from telegram.ext import (
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
-# Backwards-compatible timezone env names:
 TZ_NAME = (os.getenv("TZ_NAME") or os.getenv("TIMEZONE") or "Europe/Madrid").strip() or "Europe/Madrid"
-CUTOFF_HOUR = int((os.getenv("CUTOFF_HOUR", "11").strip() or "11"))  # business day cutoff next day
-WEEKLY_DIGEST_HOUR = int((os.getenv("WEEKLY_DIGEST_HOUR", "9").strip() or "9"))  # Monday digest hour
+CUTOFF_HOUR = int((os.getenv("CUTOFF_HOUR", "11").strip() or "11"))
+WEEKLY_DIGEST_HOUR = int((os.getenv("WEEKLY_DIGEST_HOUR", "9").strip() or "9"))
 
-# Daily auto-post to owners "silent" group:
 DAILY_POST_HOUR = int((os.getenv("DAILY_POST_HOUR", "11").strip() or "11"))
 DAILY_POST_MINUTE = int((os.getenv("DAILY_POST_MINUTE", "5").strip() or "5"))
 
-# Access mode:
-# OPEN -> anyone can use commands
-# RESTRICTED -> only users in ALLOWED_USER_IDS can use admin/setup commands
 ACCESS_MODE = (os.getenv("ACCESS_MODE", "RESTRICTED").strip().upper() or "RESTRICTED")
 ACCESS_MODE = "OPEN" if ACCESS_MODE == "OPEN" else "RESTRICTED"
 
-# Allowed users (comma-separated user IDs)
 ALLOWED_USER_IDS = set()
 _raw = os.getenv("ALLOWED_USER_IDS", "").strip()
 if _raw:
@@ -48,12 +42,9 @@ if _raw:
 
 TZ = ZoneInfo(TZ_NAME)
 
-# For report-mode capture:
-# key = f"{chat_id}:{user_id}" -> dict state
 REPORT_MODE_KEY = "report_mode_map"
-
-# For full-daily mode capture:
 FULL_MODE_KEY = "full_mode_map"
+GUIDED_FULL_KEY = "guided_full_map"
 
 # =========================
 # CHAT ROLES
@@ -62,9 +53,7 @@ ROLE_OPS_ADMIN = "OPS_ADMIN"
 ROLE_OWNERS_SILENT = "OWNERS_SILENT"
 ROLE_MANAGER_INPUT = "MANAGER_INPUT"
 ROLE_OWNERS_REQUESTS = "OWNERS_REQUESTS"
-
 VALID_CHAT_ROLES = {ROLE_OPS_ADMIN, ROLE_OWNERS_SILENT, ROLE_MANAGER_INPUT, ROLE_OWNERS_REQUESTS}
-
 
 # =========================
 # SECURITY / AUTH
@@ -73,39 +62,27 @@ def user_id(update: Update) -> int | None:
     u = update.effective_user
     return u.id if u else None
 
-
 def chat_type(update: Update) -> str | None:
     c = update.effective_chat
     return c.type if c else None
 
-
 def is_admin(update: Update) -> bool:
-    # OPEN means everyone can run admin/setup commands
     if ACCESS_MODE == "OPEN":
         return True
-    # RESTRICTED means only ALLOWED_USER_IDS
     if not ALLOWED_USER_IDS:
-        # Safety fallback: if not set, treat as OPEN to avoid locking yourself out
         return True
     uid = user_id(update)
     return bool(uid and uid in ALLOWED_USER_IDS)
 
-
 async def guard_admin(update: Update, *, reply_in_private_only: bool = True) -> bool:
-    """
-    For admin/setup commands: if unauthorized, optionally reply (prefer only in private chat to avoid spam).
-    """
     if is_admin(update):
         return True
-
     ctype = chat_type(update)
     if reply_in_private_only and ctype in (ChatType.GROUP, ChatType.SUPERGROUP):
         return False
-
     if update.message:
         await update.message.reply_text("Not authorized.")
     return False
-
 
 # =========================
 # DATABASE
@@ -115,11 +92,9 @@ def get_conn():
         raise RuntimeError("Missing DATABASE_URL")
     return psycopg.connect(DATABASE_URL)
 
-
 def init_db():
     with get_conn() as conn:
         with conn.cursor() as cur:
-            # Daily sales/covers (base table)
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS daily_stats (
@@ -131,25 +106,31 @@ def init_db():
                 """
             )
 
-            # --- MIGRATION: extend daily_stats for "full daily report" fields ---
-            # Totals
-            cur.execute("ALTER TABLE daily_stats ADD COLUMN IF NOT EXISTS visa DOUBLE PRECISION;")
-            cur.execute("ALTER TABLE daily_stats ADD COLUMN IF NOT EXISTS cash DOUBLE PRECISION;")
-            cur.execute("ALTER TABLE daily_stats ADD COLUMN IF NOT EXISTS tips DOUBLE PRECISION;")
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS full_daily_stats (
+                    day DATE PRIMARY KEY,
+                    total_sales DOUBLE PRECISION,
+                    visa DOUBLE PRECISION,
+                    cash DOUBLE PRECISION,
+                    tips DOUBLE PRECISION,
 
-            # Lunch
-            cur.execute("ALTER TABLE daily_stats ADD COLUMN IF NOT EXISTS lunch_sales DOUBLE PRECISION;")
-            cur.execute("ALTER TABLE daily_stats ADD COLUMN IF NOT EXISTS lunch_pax INTEGER;")
-            cur.execute("ALTER TABLE daily_stats ADD COLUMN IF NOT EXISTS lunch_walkins INTEGER;")
-            cur.execute("ALTER TABLE daily_stats ADD COLUMN IF NOT EXISTS lunch_noshows INTEGER;")
+                    lunch_sales DOUBLE PRECISION,
+                    lunch_pax INTEGER,
+                    lunch_walkins INTEGER,
+                    lunch_noshows INTEGER,
 
-            # Dinner
-            cur.execute("ALTER TABLE daily_stats ADD COLUMN IF NOT EXISTS dinner_sales DOUBLE PRECISION;")
-            cur.execute("ALTER TABLE daily_stats ADD COLUMN IF NOT EXISTS dinner_pax INTEGER;")
-            cur.execute("ALTER TABLE daily_stats ADD COLUMN IF NOT EXISTS dinner_walkins INTEGER;")
-            cur.execute("ALTER TABLE daily_stats ADD COLUMN IF NOT EXISTS dinner_noshows INTEGER;")
+                    dinner_sales DOUBLE PRECISION,
+                    dinner_pax INTEGER,
+                    dinner_walkins INTEGER,
+                    dinner_noshows INTEGER,
 
-            # Notes (multiple entries per day possible)
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_full_daily_stats_day ON full_daily_stats(day);")
+
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS notes_entries (
@@ -164,7 +145,6 @@ def init_db():
             )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_notes_entries_day ON notes_entries(day);")
 
-            # Settings (legacy owners chats + misc)
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS settings (
@@ -174,7 +154,6 @@ def init_db():
                 """
             )
 
-            # Chat roles
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS chat_roles (
@@ -187,9 +166,7 @@ def init_db():
                 """
             )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_chat_roles_role ON chat_roles(role);")
-
         conn.commit()
-
 
 def set_setting(key: str, value: str):
     with get_conn() as conn:
@@ -204,7 +181,6 @@ def set_setting(key: str, value: str):
             )
         conn.commit()
 
-
 def get_setting(key: str, default: str = "") -> str:
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -212,8 +188,6 @@ def get_setting(key: str, default: str = "") -> str:
             row = cur.fetchone()
     return row[0] if row and row[0] is not None else default
 
-
-# ---- Legacy owners chat ids (kept) ----
 def parse_chat_ids(s: str) -> list[int]:
     out: list[int] = []
     for part in (s or "").split(","):
@@ -226,10 +200,8 @@ def parse_chat_ids(s: str) -> list[int]:
             continue
     return out
 
-
 def owners_chat_ids_legacy() -> list[int]:
     return parse_chat_ids(get_setting("OWNERS_CHAT_IDS", ""))
-
 
 def set_owners_chat_ids_legacy(ids: list[int]):
     seen = set()
@@ -240,20 +212,16 @@ def set_owners_chat_ids_legacy(ids: list[int]):
             seen.add(x)
     set_setting("OWNERS_CHAT_IDS", ",".join(str(x) for x in uniq))
 
-
 def add_owner_chat_legacy(chat_id: int):
     current = owners_chat_ids_legacy()
     if chat_id not in current:
         current.append(chat_id)
     set_owners_chat_ids_legacy(current)
 
-
 def remove_owner_chat_legacy(chat_id: int):
     current = [x for x in owners_chat_ids_legacy() if x != chat_id]
     set_owners_chat_ids_legacy(current)
 
-
-# ---- Chat roles helpers ----
 def set_chat_role(chat_id: int, role: str, *, ctype: str | None = None, title: str | None = None):
     role = (role or "").strip().upper()
     if role not in VALID_CHAT_ROLES:
@@ -274,14 +242,12 @@ def set_chat_role(chat_id: int, role: str, *, ctype: str | None = None, title: s
             )
         conn.commit()
 
-
 def get_chat_role(chat_id: int) -> str | None:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT role FROM chat_roles WHERE chat_id=%s;", (chat_id,))
             row = cur.fetchone()
     return row[0] if row else None
-
 
 def chats_with_role(role: str) -> list[int]:
     role = (role or "").strip().upper()
@@ -291,12 +257,9 @@ def chats_with_role(role: str) -> list[int]:
             rows = cur.fetchall()
     return [int(r[0]) for r in rows] if rows else []
 
-
 def owners_silent_chat_ids() -> list[int]:
-    # Prefer role-based; fallback to legacy
     ids = chats_with_role(ROLE_OWNERS_SILENT)
     return ids if ids else owners_chat_ids_legacy()
-
 
 def list_all_chats() -> list[tuple[int, str, str | None, str | None]]:
     with get_conn() as conn:
@@ -305,37 +268,37 @@ def list_all_chats() -> list[tuple[int, str, str | None, str | None]]:
             rows = cur.fetchall()
     return [(int(r[0]), r[1], r[2], r[3]) for r in rows] if rows else []
 
-
 # =========================
 # DATE / PERIOD HELPERS
 # =========================
 def now_local() -> datetime:
     return datetime.now(TZ)
 
-
 def business_day_for(ts: datetime) -> date:
-    """
-    Business day definition:
-    - If local time is before CUTOFF_HOUR, business day is previous calendar day
-    - Else business day is today
-    """
     if ts.hour < CUTOFF_HOUR:
         return (ts.date() - timedelta(days=1))
     return ts.date()
 
-
 def business_day_today() -> date:
     return business_day_for(now_local())
-
 
 def previous_business_day(ts: datetime | None = None) -> date:
     ts = ts or now_local()
     return business_day_for(ts) - timedelta(days=1)
 
-
 def parse_yyyy_mm_dd(s: str) -> date:
     return datetime.strptime(s, "%Y-%m-%d").date()
 
+def parse_dd_mm_yyyy(s: str) -> date:
+    return datetime.strptime(s, "%d/%m/%Y").date()
+
+def parse_any_date(s: str) -> date:
+    s = (s or "").strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+        return parse_yyyy_mm_dd(s)
+    if re.fullmatch(r"\d{2}/\d{2}/\d{4}", s):
+        return parse_dd_mm_yyyy(s)
+    raise ValueError("Invalid date format")
 
 def add_months(d: date, months: int) -> date:
     y = d.year + (d.month - 1 + months) // 12
@@ -347,12 +310,10 @@ def add_months(d: date, months: int) -> date:
     last_day = (next_first - timedelta(days=1)).day
     return date(y, m, min(d.day, last_day))
 
-
 @dataclass
 class Period:
     start: date
-    end: date  # inclusive
-
+    end: date
 
 def parse_period_arg(arg: str) -> int | tuple[str, int]:
     a = (arg or "").strip().upper()
@@ -365,25 +326,21 @@ def parse_period_arg(arg: str) -> int | tuple[str, int]:
         return (unit, n)
     raise ValueError("Invalid period")
 
-
 def period_ending_today(arg: str) -> Period:
     end = business_day_today()
     spec = parse_period_arg(arg)
     if isinstance(spec, int):
         start = end - timedelta(days=spec - 1) if spec > 0 else end
         return Period(start=start, end=end)
-
     unit, n = spec
     if unit == "M":
         start = add_months(end, -n) + timedelta(days=1)
-    else:  # "Y"
+    else:
         start = date(end.year - n, end.month, end.day) + timedelta(days=1)
     return Period(start=start, end=end)
 
-
 def daterange_days(p: Period) -> int:
     return (p.end - p.start).days + 1
-
 
 # =========================
 # TEXT CLEANING FOR NOTES ANALYTICS
@@ -397,171 +354,11 @@ test
 """.split()
 )
 
-
 def tokenize(text: str) -> list[str]:
     text = (text or "").lower()
     text = re.sub(r"[^a-z0-9áéíóúñüç]+", " ", text)
     words = [w.strip() for w in text.split() if w.strip()]
     return [w for w in words if w not in STOPWORDS and len(w) >= 3]
-
-
-# =========================
-# NUMBER / PARSING HELPERS
-# =========================
-def parse_num(s: str) -> float:
-    """
-    Parses numbers like:
-    - 7199,50
-    - 6.400,30
-    - 6400.30
-    - 799
-    """
-    if s is None:
-        raise ValueError("missing number")
-    t = str(s).strip()
-    t = t.replace("€", "").replace(" ", "")
-    # If both '.' and ',' present: assume '.' thousands and ',' decimals (EU format)
-    if "," in t and "." in t:
-        t = t.replace(".", "")
-        t = t.replace(",", ".")
-    elif "," in t:
-        t = t.replace(",", ".")
-    return float(t)
-
-
-def parse_int(s: str) -> int:
-    if s is None:
-        raise ValueError("missing int")
-    t = str(s).strip()
-    t = t.replace(" ", "")
-    return int(re.sub(r"[^\d\-]+", "", t))
-
-
-def parse_day_any(s: str) -> date:
-    t = (s or "").strip()
-    # yyyy-mm-dd
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", t):
-        return parse_yyyy_mm_dd(t)
-    # dd/mm/yyyy
-    if re.fullmatch(r"\d{2}/\d{2}/\d{4}", t):
-        return datetime.strptime(t, "%d/%m/%Y").date()
-    raise ValueError("Invalid day format")
-
-
-def parse_full_report_block(text: str) -> dict:
-    """
-    Parses the "full daily report" block:
-
-    Day: 24/01/2026
-    Total Sales Day:7199,50
-    Visa:6400,3
-    Cash:799,2
-    Tips: 103,60
-
-    Lunch:2341,30
-    Pax: 50
-    Average pax:46,82
-    Walk in:3
-    No show: 7
-
-    Dinner:4858,20
-    Pax: 106
-    Average pax:45,83
-    Walk in:2
-    No show:4
-    """
-    lines = [ln.strip() for ln in (text or "").splitlines()]
-    lines = [ln for ln in lines if ln.strip()]
-
-    out: dict = {
-        "day": None,
-        "total_sales": None,
-        "visa": None,
-        "cash": None,
-        "tips": None,
-        "lunch_sales": None,
-        "lunch_pax": None,
-        "lunch_walkins": None,
-        "lunch_noshows": None,
-        "dinner_sales": None,
-        "dinner_pax": None,
-        "dinner_walkins": None,
-        "dinner_noshows": None,
-    }
-
-    section: str | None = None  # None / "lunch" / "dinner"
-
-    for raw in lines:
-        ln = re.sub(r"\s*:\s*", ":", raw)
-        low = ln.lower()
-
-        m = re.match(r"^(day|fecha):(.+)$", low)
-        if m:
-            out["day"] = parse_day_any(m.group(2).strip())
-            continue
-
-        m = re.match(r"^(total sales day|total sales|sales day|ventas dia|ventas día|total ventas):(.+)$", low)
-        if m:
-            out["total_sales"] = parse_num(m.group(2))
-            continue
-
-        m = re.match(r"^(visa|card|tarjeta):(.+)$", low)
-        if m:
-            out["visa"] = parse_num(m.group(2))
-            continue
-
-        m = re.match(r"^(cash|efectivo):(.+)$", low)
-        if m:
-            out["cash"] = parse_num(m.group(2))
-            continue
-
-        m = re.match(r"^(tips|propinas|tip):(.+)$", low)
-        if m:
-            out["tips"] = parse_num(m.group(2))
-            continue
-
-        m = re.match(r"^(lunch|almuerzo|comida):(.+)$", low)
-        if m:
-            section = "lunch"
-            out["lunch_sales"] = parse_num(m.group(2))
-            continue
-
-        m = re.match(r"^(dinner|cena):(.+)$", low)
-        if m:
-            section = "dinner"
-            out["dinner_sales"] = parse_num(m.group(2))
-            continue
-
-        m = re.match(r"^(pax|covers|guests|comensales):(.+)$", low)
-        if m and section in ("lunch", "dinner"):
-            out[f"{section}_pax"] = parse_int(m.group(2))
-            continue
-
-        # ignore "Average pax" lines (we compute)
-        if low.startswith("average") or low.startswith("avg"):
-            continue
-
-        m = re.match(r"^(walk in|walk-in|walkins|walk-ins|sin reserva):(.+)$", low)
-        if m and section in ("lunch", "dinner"):
-            out[f"{section}_walkins"] = parse_int(m.group(2))
-            continue
-
-        m = re.match(r"^(no show|no-show|noshows|no-shows|no asist|no se present):(.+)$", low)
-        if m and section in ("lunch", "dinner"):
-            out[f"{section}_noshows"] = parse_int(m.group(2))
-            continue
-
-    if not out["day"]:
-        raise ValueError("Missing Day")
-
-    if out["total_sales"] is None:
-        if out["lunch_sales"] is not None or out["dinner_sales"] is not None:
-            out["total_sales"] = float(out["lunch_sales"] or 0) + float(out["dinner_sales"] or 0)
-        else:
-            raise ValueError("Missing total sales")
-
-    return out
-
 
 # =========================
 # CORE QUERIES
@@ -580,102 +377,12 @@ def upsert_daily(day_: date, sales: float, covers: int):
             )
         conn.commit()
 
-
-def upsert_daily_full(
-    day_: date,
-    *,
-    total_sales: float,
-    visa: float | None,
-    cash: float | None,
-    tips: float | None,
-    lunch_sales: float | None,
-    lunch_pax: int | None,
-    lunch_walkins: int | None,
-    lunch_noshows: int | None,
-    dinner_sales: float | None,
-    dinner_pax: int | None,
-    dinner_walkins: int | None,
-    dinner_noshows: int | None,
-):
-    covers_total = int((lunch_pax or 0) + (dinner_pax or 0))
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO daily_stats (
-                    day, sales, covers,
-                    visa, cash, tips,
-                    lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
-                    dinner_sales, dinner_pax, dinner_walkins, dinner_noshows
-                )
-                VALUES (
-                    %s, %s, %s,
-                    %s, %s, %s,
-                    %s, %s, %s, %s,
-                    %s, %s, %s, %s
-                )
-                ON CONFLICT (day)
-                DO UPDATE SET
-                    sales = EXCLUDED.sales,
-                    covers = EXCLUDED.covers,
-                    visa = EXCLUDED.visa,
-                    cash = EXCLUDED.cash,
-                    tips = EXCLUDED.tips,
-                    lunch_sales = EXCLUDED.lunch_sales,
-                    lunch_pax = EXCLUDED.lunch_pax,
-                    lunch_walkins = EXCLUDED.lunch_walkins,
-                    lunch_noshows = EXCLUDED.lunch_noshows,
-                    dinner_sales = EXCLUDED.dinner_sales,
-                    dinner_pax = EXCLUDED.dinner_pax,
-                    dinner_walkins = EXCLUDED.dinner_walkins,
-                    dinner_noshows = EXCLUDED.dinner_noshows;
-                """,
-                (
-                    day_,
-                    float(total_sales),
-                    covers_total if covers_total > 0 else None,
-                    visa,
-                    cash,
-                    tips,
-                    lunch_sales,
-                    lunch_pax,
-                    lunch_walkins,
-                    lunch_noshows,
-                    dinner_sales,
-                    dinner_pax,
-                    dinner_walkins,
-                    dinner_noshows,
-                ),
-            )
-        conn.commit()
-
-
 def get_daily(day_: date):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT sales, covers FROM daily_stats WHERE day=%s;", (day_,))
             row = cur.fetchone()
     return row
-
-
-def get_daily_full(day_: date):
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                    sales, covers,
-                    visa, cash, tips,
-                    lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
-                    dinner_sales, dinner_pax, dinner_walkins, dinner_noshows
-                FROM daily_stats
-                WHERE day=%s;
-                """,
-                (day_,),
-            )
-            row = cur.fetchone()
-    return row
-
 
 def sum_daily(p: Period):
     with get_conn() as conn:
@@ -691,68 +398,6 @@ def sum_daily(p: Period):
             row = cur.fetchone()
     total_sales, total_covers, days_with_data = row
     return float(total_sales), int(total_covers), int(days_with_data)
-
-
-def sum_full_fields(p: Period):
-    """
-    Sums extra fields for periods.
-    Returns a count of days that have ANY full-field data.
-    """
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                    COALESCE(SUM(tips),0),
-                    COALESCE(SUM(lunch_sales),0),
-                    COALESCE(SUM(dinner_sales),0),
-                    COALESCE(SUM(lunch_pax),0),
-                    COALESCE(SUM(dinner_pax),0),
-                    COALESCE(SUM(lunch_walkins),0),
-                    COALESCE(SUM(dinner_walkins),0),
-                    COALESCE(SUM(lunch_noshows),0),
-                    COALESCE(SUM(dinner_noshows),0),
-                    COUNT(*) FILTER (
-                        WHERE tips IS NOT NULL
-                           OR lunch_sales IS NOT NULL OR dinner_sales IS NOT NULL
-                           OR lunch_pax IS NOT NULL OR dinner_pax IS NOT NULL
-                           OR lunch_walkins IS NOT NULL OR dinner_walkins IS NOT NULL
-                           OR lunch_noshows IS NOT NULL OR dinner_noshows IS NOT NULL
-                           OR visa IS NOT NULL OR cash IS NOT NULL
-                    )
-                FROM daily_stats
-                WHERE day BETWEEN %s AND %s;
-                """,
-                (p.start, p.end),
-            )
-            row = cur.fetchone()
-
-    (
-        tips_sum,
-        lunch_sales_sum,
-        dinner_sales_sum,
-        lunch_pax_sum,
-        dinner_pax_sum,
-        lunch_walkins_sum,
-        dinner_walkins_sum,
-        lunch_noshows_sum,
-        dinner_noshows_sum,
-        full_days,
-    ) = row
-
-    return {
-        "tips_sum": float(tips_sum),
-        "lunch_sales_sum": float(lunch_sales_sum),
-        "dinner_sales_sum": float(dinner_sales_sum),
-        "lunch_pax_sum": int(lunch_pax_sum),
-        "dinner_pax_sum": int(dinner_pax_sum),
-        "lunch_walkins_sum": int(lunch_walkins_sum),
-        "dinner_walkins_sum": int(dinner_walkins_sum),
-        "lunch_noshows_sum": int(lunch_noshows_sum),
-        "dinner_noshows_sum": int(dinner_noshows_sum),
-        "full_days": int(full_days),
-    }
-
 
 def best_or_worst_day(p: Period, worst: bool = False):
     order = "ASC" if worst else "DESC"
@@ -771,7 +416,6 @@ def best_or_worst_day(p: Period, worst: bool = False):
             row = cur.fetchone()
     return row
 
-
 def insert_note_entry(day_: date, chat_id: int, user_id: int, text: str):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -784,7 +428,6 @@ def insert_note_entry(day_: date, chat_id: int, user_id: int, text: str):
             )
         conn.commit()
 
-
 def notes_for_day(day_: date) -> list[str]:
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -794,7 +437,6 @@ def notes_for_day(day_: date) -> list[str]:
             )
             rows = cur.fetchall()
     return [r[0] for r in rows]
-
 
 def notes_in_period(p: Period) -> list[tuple[date, str]]:
     with get_conn() as conn:
@@ -811,74 +453,141 @@ def notes_in_period(p: Period) -> list[tuple[date, str]]:
             rows = cur.fetchall()
     return [(r[0], r[1]) for r in rows]
 
+# ---- FULL DAILY QUERIES ----
+def upsert_full_day(
+    day_: date,
+    total_sales: float,
+    visa: float,
+    cash: float,
+    tips: float,
+    lunch_sales: float,
+    lunch_pax: int,
+    lunch_walkins: int,
+    lunch_noshows: int,
+    dinner_sales: float,
+    dinner_pax: int,
+    dinner_walkins: int,
+    dinner_noshows: int,
+):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO full_daily_stats (
+                    day, total_sales, visa, cash, tips,
+                    lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
+                    dinner_sales, dinner_pax, dinner_walkins, dinner_noshows
+                )
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (day) DO UPDATE SET
+                    total_sales=EXCLUDED.total_sales,
+                    visa=EXCLUDED.visa,
+                    cash=EXCLUDED.cash,
+                    tips=EXCLUDED.tips,
+                    lunch_sales=EXCLUDED.lunch_sales,
+                    lunch_pax=EXCLUDED.lunch_pax,
+                    lunch_walkins=EXCLUDED.lunch_walkins,
+                    lunch_noshows=EXCLUDED.lunch_noshows,
+                    dinner_sales=EXCLUDED.dinner_sales,
+                    dinner_pax=EXCLUDED.dinner_pax,
+                    dinner_walkins=EXCLUDED.dinner_walkins,
+                    dinner_noshows=EXCLUDED.dinner_noshows;
+                """,
+                (
+                    day_, total_sales, visa, cash, tips,
+                    lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
+                    dinner_sales, dinner_pax, dinner_walkins, dinner_noshows
+                ),
+            )
+        conn.commit()
 
-# =========================
-# REPORT MODE STATE
-# =========================
-def _report_map(app: Application) -> dict[str, dict]:
-    m = app.bot_data.get(REPORT_MODE_KEY)
-    if not isinstance(m, dict):
-        m = {}
-        app.bot_data[REPORT_MODE_KEY] = m
-    return m
+def get_full_day(day_: date):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT total_sales, visa, cash, tips,
+                       lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
+                       dinner_sales, dinner_pax, dinner_walkins, dinner_noshows
+                FROM full_daily_stats
+                WHERE day=%s;
+                """,
+                (day_,),
+            )
+            row = cur.fetchone()
+    return row
 
-
-def set_report_mode(app: Application, chat_id: int, user_id: int, day_: date | None):
-    key = f"{chat_id}:{user_id}"
-    _report_map(app)[key] = {
-        "on": True,
-        "day": day_.isoformat() if day_ else None,
-        "ts": now_local().isoformat(),
+def sum_full_in_period(p: Period):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    COUNT(*) AS full_days,
+                    COALESCE(SUM(total_sales),0),
+                    COALESCE(SUM(tips),0),
+                    COALESCE(SUM(lunch_sales),0),
+                    COALESCE(SUM(lunch_pax),0),
+                    COALESCE(SUM(lunch_walkins),0),
+                    COALESCE(SUM(lunch_noshows),0),
+                    COALESCE(SUM(dinner_sales),0),
+                    COALESCE(SUM(dinner_pax),0),
+                    COALESCE(SUM(dinner_walkins),0),
+                    COALESCE(SUM(dinner_noshows),0)
+                FROM full_daily_stats
+                WHERE day BETWEEN %s AND %s;
+                """,
+                (p.start, p.end),
+            )
+            row = cur.fetchone()
+    (
+        full_days,
+        total_sales, tips,
+        lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
+        dinner_sales, dinner_pax, dinner_walkins, dinner_noshows,
+    ) = row
+    return {
+        "full_days": int(full_days),
+        "total_sales": float(total_sales),
+        "tips": float(tips),
+        "lunch_sales": float(lunch_sales),
+        "lunch_pax": int(lunch_pax),
+        "lunch_walkins": int(lunch_walkins),
+        "lunch_noshows": int(lunch_noshows),
+        "dinner_sales": float(dinner_sales),
+        "dinner_pax": int(dinner_pax),
+        "dinner_walkins": int(dinner_walkins),
+        "dinner_noshows": int(dinner_noshows),
     }
 
-
-def clear_report_mode(app: Application, chat_id: int, user_id: int):
-    key = f"{chat_id}:{user_id}"
-    _report_map(app).pop(key, None)
-
-
-def get_report_mode(app: Application, chat_id: int, user_id: int):
-    key = f"{chat_id}:{user_id}"
-    return _report_map(app).get(key)
-
-
 # =========================
-# FULL MODE STATE
+# STATE MAP HELPERS
 # =========================
-def _full_map(app: Application) -> dict[str, dict]:
-    m = app.bot_data.get(FULL_MODE_KEY)
+def _map_get(app: Application, key: str) -> dict[str, dict]:
+    m = app.bot_data.get(key)
     if not isinstance(m, dict):
         m = {}
-        app.bot_data[FULL_MODE_KEY] = m
+        app.bot_data[key] = m
     return m
 
+def set_mode(app: Application, keyname: str, chat_id: int, user_id: int, payload: dict):
+    k = f"{chat_id}:{user_id}"
+    _map_get(app, keyname)[k] = payload
 
-def set_full_mode(app: Application, chat_id: int, user_id: int, day_: date | None):
-    key = f"{chat_id}:{user_id}"
-    _full_map(app)[key] = {
-        "on": True,
-        "day": day_.isoformat() if day_ else None,
-        "ts": now_local().isoformat(),
-    }
+def get_mode(app: Application, keyname: str, chat_id: int, user_id: int):
+    k = f"{chat_id}:{user_id}"
+    return _map_get(app, keyname).get(k)
 
-
-def clear_full_mode(app: Application, chat_id: int, user_id: int):
-    key = f"{chat_id}:{user_id}"
-    _full_map(app).pop(key, None)
-
-
-def get_full_mode(app: Application, chat_id: int, user_id: int):
-    key = f"{chat_id}:{user_id}"
-    return _full_map(app).get(key)
-
+def clear_mode(app: Application, keyname: str, chat_id: int, user_id: int):
+    k = f"{chat_id}:{user_id}"
+    _map_get(app, keyname).pop(k, None)
 
 # =========================
-# PERMISSION BY CHAT ROLE
+# PERMISSIONS BY ROLE
 # =========================
 def current_chat_role(update: Update) -> str | None:
     c = update.effective_chat
     return get_chat_role(c.id) if c else None
-
 
 def allow_sales_cmd(update: Update) -> bool:
     role = current_chat_role(update)
@@ -886,132 +595,131 @@ def allow_sales_cmd(update: Update) -> bool:
         return True
     return is_admin(update)
 
-
 def allow_notes_cmd(update: Update) -> bool:
     role = current_chat_role(update)
     if role in (ROLE_OPS_ADMIN, ROLE_MANAGER_INPUT):
         return True
     return is_admin(update)
 
+def allow_full_cmd(update: Update) -> bool:
+    role = current_chat_role(update)
+    if role in (ROLE_OPS_ADMIN, ROLE_MANAGER_INPUT):
+        return True
+    return is_admin(update)
 
 # =========================
-# RENDER HELPERS
+# FULL DAILY PARSING
 # =========================
-def fmt_eur(x: float | None) -> str:
-    if x is None:
-        return "—"
-    try:
-        return f"€{float(x):.2f}"
-    except:
-        return "—"
+def _num(s: str) -> float:
+    s = (s or "").strip()
+    s = s.replace("€", "").replace(" ", "")
+    if re.fullmatch(r"[\d\.]+,\d+", s):
+        s = s.replace(".", "")
+    s = s.replace(",", ".")
+    return float(s)
 
+def _int(s: str) -> int:
+    s = (s or "").strip()
+    s = re.sub(r"[^\d\-]", "", s)
+    return int(s)
 
-def fmt_int(x: int | None) -> str:
-    if x is None:
-        return "—"
-    try:
-        return str(int(x))
-    except:
-        return "—"
+FULL_EXAMPLE = (
+    "Example:\n"
+    "Day: 24/01/2026\n"
+    "Total Sales Day: 7199,50\n"
+    "Visa: 6400,30\n"
+    "Cash: 799,20\n"
+    "Tips: 103,60\n\n"
+    "Lunch: 2341,30\n"
+    "Pax: 50\n"
+    "Walk in: 3\n"
+    "No show: 7\n\n"
+    "Dinner: 4858,20\n"
+    "Pax: 106\n"
+    "Walk in: 2\n"
+    "No show: 4\n"
+)
 
+def parse_full_report_block(text: str) -> dict:
+    t = (text or "").strip()
+    if not t:
+        raise ValueError("Empty")
 
-def safe_div(a: float, b: float) -> float:
-    return (a / b) if b else 0.0
+    def find_line(prefixes: list[str]) -> str | None:
+        for line in t.splitlines():
+            raw = line.strip()
+            for pfx in prefixes:
+                if raw.lower().startswith(pfx.lower()):
+                    return raw.split(":", 1)[1].strip() if ":" in raw else raw[len(pfx):].strip()
+        return None
 
+    day_str = find_line(["Day"])
+    if not day_str:
+        raise ValueError("Missing Day")
+    day_ = parse_any_date(day_str)
 
-def render_day_report(day_: date, row_full, notes_texts: list[str], *, title: str) -> str:
-    if not row_full:
-        sales_line = "Sales: —\nCovers: —\nAvg ticket: —"
-        notes_block = "No notes submitted." if not notes_texts else "\n\n— — —\n\n".join(notes_texts)
-        return (
-            f"{title}\n"
-            f"Business day: {day_.isoformat()}\n\n"
-            f"{sales_line}\n\n"
-            f"📝 Notes:\n{notes_block}"
-        )
+    total_sales = _num(find_line(["Total Sales Day", "Total Sales"]) or "")
+    visa = _num(find_line(["Visa"]) or "0")
+    cash = _num(find_line(["Cash"]) or "0")
+    tips = _num(find_line(["Tips"]) or "0")
 
-    (
-        sales, covers,
-        visa, cash, tips,
-        lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
-        dinner_sales, dinner_pax, dinner_walkins, dinner_noshows
-    ) = row_full
+    def parse_section(section_name: str) -> tuple[float, int, int, int]:
+        lines = [ln.strip() for ln in t.splitlines()]
+        idx = None
+        for i, ln in enumerate(lines):
+            if ln.lower().startswith(section_name.lower() + ":"):
+                idx = i
+                break
+        if idx is None:
+            raise ValueError(f"Missing {section_name} section")
 
-    sales = float(sales or 0)
-    covers = int(covers or 0)
-    avg_total = safe_div(sales, covers)
+        sales_val = _num(lines[idx].split(":", 1)[1].strip())
 
-    has_full = any(
-        x is not None for x in (
-            visa, cash, tips,
-            lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
-            dinner_sales, dinner_pax, dinner_walkins, dinner_noshows
-        )
-    )
+        pax = walkins = noshows = None
+        for j in range(idx + 1, min(idx + 10, len(lines))):
+            ln = lines[j].strip()
+            if not ln:
+                continue
+            low = ln.lower()
+            if low.startswith("pax"):
+                pax = _int(ln.split(":", 1)[1])
+            elif low.startswith("walk in") or low.startswith("walk-in") or low.startswith("walkin"):
+                walkins = _int(ln.split(":", 1)[1])
+            elif low.startswith("no show") or low.startswith("no-show") or low.startswith("noshow"):
+                noshows = _int(ln.split(":", 1)[1])
+            if low.startswith("dinner:") or low.startswith("lunch:"):
+                break
 
-    notes_block = "No notes submitted." if not notes_texts else "\n\n— — —\n\n".join(notes_texts)
+        if pax is None or walkins is None or noshows is None:
+            raise ValueError(f"Incomplete {section_name} fields (need Pax, Walk in, No show)")
+        return float(sales_val), int(pax), int(walkins), int(noshows)
 
-    if not has_full:
-        return (
-            f"{title}\n"
-            f"Business day: {day_.isoformat()}\n\n"
-            f"Sales: {fmt_eur(sales)}\n"
-            f"Covers: {covers}\n"
-            f"Avg ticket: {fmt_eur(avg_total)}\n\n"
-            f"📝 Notes:\n{notes_block}"
-        )
+    lunch_sales, lunch_pax, lunch_walkins, lunch_noshows = parse_section("Lunch")
+    dinner_sales, dinner_pax, dinner_walkins, dinner_noshows = parse_section("Dinner")
 
-    lp = int(lunch_pax or 0)
-    dp = int(dinner_pax or 0)
-    pax_total = lp + dp
-    l_avg = safe_div(float(lunch_sales or 0), lp) if lp else 0.0
-    d_avg = safe_div(float(dinner_sales or 0), dp) if dp else 0.0
-
-    walkins_total = int(lunch_walkins or 0) + int(dinner_walkins or 0)
-    noshows_total = int(lunch_noshows or 0) + int(dinner_noshows or 0)
-
-    lines = [
-        f"{title}",
-        f"Business day: {day_.isoformat()}",
-        "",
-        f"Revenue: {fmt_eur(sales)}",
-        f"Visa: {fmt_eur(visa)}",
-        f"Cash: {fmt_eur(cash)}",
-        f"Tips: {fmt_eur(tips)}",
-        "",
-        "🍽 LUNCH",
-        f"Sales: {fmt_eur(lunch_sales)}",
-        f"Guests: {fmt_int(lunch_pax)}",
-        f"Avg ticket: {fmt_eur(l_avg)}",
-        f"Walk-ins: {fmt_int(lunch_walkins)}",
-        f"No-shows: {fmt_int(lunch_noshows)}",
-        "",
-        "🌙 DINNER",
-        f"Sales: {fmt_eur(dinner_sales)}",
-        f"Guests: {fmt_int(dinner_pax)}",
-        f"Avg ticket: {fmt_eur(d_avg)}",
-        f"Walk-ins: {fmt_int(dinner_walkins)}",
-        f"No-shows: {fmt_int(dinner_noshows)}",
-        "",
-        "Totals",
-        f"Guests: {pax_total if pax_total else covers}",
-        f"Avg ticket: {fmt_eur(avg_total)}",
-        f"Walk-ins: {walkins_total}",
-        f"No-shows: {noshows_total}",
-        "",
-        f"📝 Notes:\n{notes_block}",
-    ]
-    return "\n".join(lines)
-
+    return {
+        "day": day_,
+        "total_sales": float(total_sales),
+        "visa": float(visa),
+        "cash": float(cash),
+        "tips": float(tips),
+        "lunch_sales": float(lunch_sales),
+        "lunch_pax": int(lunch_pax),
+        "lunch_walkins": int(lunch_walkins),
+        "lunch_noshows": int(lunch_noshows),
+        "dinner_sales": float(dinner_sales),
+        "dinner_pax": int(dinner_pax),
+        "dinner_walkins": int(dinner_walkins),
+        "dinner_noshows": int(dinner_noshows),
+    }
 
 # =========================
-# COMMANDS
+# HELP TEXT
 # =========================
 HELP_TEXT = (
     "📌 Norah Ops commands\n\n"
     "Sales:\n"
-    "/setdaily SALES COVERS  (uses business day)\n"
-    "/setfull  (paste full daily report as next message)\n"
+    "/setdaily SALES COVERS  (business day)\n"
     "/edit YYYY-MM-DD SALES COVERS\n"
     "/daily\n"
     "/month\n"
@@ -1019,8 +727,13 @@ HELP_TEXT = (
     "/range YYYY-MM-DD YYYY-MM-DD\n"
     "/bestday\n"
     "/worstday\n\n"
+    "Full daily (Manager input):\n"
+    "/setfull (paste full report next message)\n"
+    "/setfullguided (guided Q&A, always lunch+dinner)\n"
+    "/confirmfull\n"
+    "/cancelfull\n\n"
     "Notes:\n"
-    "/report  (then send notes as next message)\n"
+    "/report (send notes as next message)\n"
     "/cancelreport\n"
     "/reportdaily\n"
     "/reportday YYYY-MM-DD\n\n"
@@ -1030,7 +743,7 @@ HELP_TEXT = (
     "/soldout 30\n"
     "/complaints 30\n\n"
     "Setup (ADMIN):\n"
-    "/setowners  (legacy: run in Owners Silent once)\n"
+    "/setowners\n"
     "/ownerslist\n"
     "/removeowners\n"
     "/setchatrole OPS_ADMIN | OWNERS_SILENT | MANAGER_INPUT | OWNERS_REQUESTS\n"
@@ -1040,16 +753,15 @@ HELP_TEXT = (
     "/whoami\n"
 )
 
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 Norah Ops is online.\n\n" + HELP_TEXT)
-
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(HELP_TEXT)
 
-
-# ---- Chat role setup ----
+# =========================
+# CHAT ROLE SETUP
+# =========================
 async def setchatrole_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard_admin(update):
         return
@@ -1067,12 +779,10 @@ async def setchatrole_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     title = getattr(chat, "title", None)
     set_chat_role(chat.id, role, ctype=chat.type, title=title)
 
-    # Keep legacy owners list in sync
     if role == ROLE_OWNERS_SILENT:
         add_owner_chat_legacy(chat.id)
 
     await update.message.reply_text(f"✅ Chat role set: {role}\nChat ID: {chat.id}")
-
 
 async def chats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard_admin(update):
@@ -1086,8 +796,6 @@ async def chats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"{role} | {cid} | {ctype or '-'} | {title or '-'}")
     await update.message.reply_text("Chats:\n" + "\n".join(lines))
 
-
-# ---- Legacy owners setup ----
 async def setowners(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard_admin(update):
         return
@@ -1099,16 +807,14 @@ async def setowners(update: Update, context: ContextTypes.DEFAULT_TYPE):
     set_chat_role(chat.id, ROLE_OWNERS_SILENT, ctype=chat.type, title=title)
     await update.message.reply_text(f"✅ Owners chat registered: {chat.id}")
 
-
 async def ownerslist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard_admin(update):
         return
     ids = owners_silent_chat_ids()
     if not ids:
-        await update.message.reply_text("Owners chats: NONE. Run /setowners (legacy) or /setchatrole OWNERS_SILENT.")
+        await update.message.reply_text("Owners chats: NONE. Run /setowners or /setchatrole OWNERS_SILENT.")
         return
     await update.message.reply_text("Owners chats:\n" + "\n".join(str(x) for x in ids))
-
 
 async def removeowners(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard_admin(update):
@@ -1119,8 +825,9 @@ async def removeowners(update: Update, context: ContextTypes.DEFAULT_TYPE):
     remove_owner_chat_legacy(chat.id)
     await update.message.reply_text(f"🗑️ Removed this chat from owners list: {chat.id}")
 
-
-# --- DEBUG ---
+# =========================
+# DEBUG
+# =========================
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
@@ -1134,7 +841,6 @@ async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🏷️ Chat role: {role}\n"
         f"🔐 Admin: {'YES' if is_admin(update) else 'NO'}"
     )
-
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -1184,71 +890,61 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(msg)
 
+# =========================
+# SALES COMMANDS
+# =========================
+def _append_full_analytics_block(p: Period) -> str:
+    agg = sum_full_in_period(p)
+    full_days = agg["full_days"]
+    if full_days <= 0:
+        return ""
 
-# --- SALES ---
+    lunch_avg = (agg["lunch_sales"] / agg["lunch_pax"]) if agg["lunch_pax"] else 0.0
+    dinner_avg = (agg["dinner_sales"] / agg["dinner_pax"]) if agg["dinner_pax"] else 0.0
+
+    covers_full = agg["lunch_pax"] + agg["dinner_pax"]
+    tips_pct = (agg["tips"] / agg["total_sales"] * 100.0) if agg["total_sales"] else 0.0
+    tip_per_cover = (agg["tips"] / covers_full) if covers_full else 0.0
+    avg_tips_day = (agg["tips"] / full_days) if full_days else 0.0
+
+    walkins_total = agg["lunch_walkins"] + agg["dinner_walkins"]
+    noshows_total = agg["lunch_noshows"] + agg["dinner_noshows"]
+    walkins_rate = (walkins_total / covers_full * 100.0) if covers_full else 0.0
+    avg_walkins_day = (walkins_total / full_days) if full_days else 0.0
+    avg_noshows_day = (noshows_total / full_days) if full_days else 0.0
+
+    return (
+        "\n\n🍽️ Service split (weighted)\n"
+        f"Lunch avg ticket: €{lunch_avg:.2f}\n"
+        f"Dinner avg ticket: €{dinner_avg:.2f}\n"
+        "\n💶 Tips\n"
+        f"Total tips: €{agg['tips']:.2f}\n"
+        f"Avg tips/day: €{avg_tips_day:.2f}\n"
+        f"Tip/cover: €{tip_per_cover:.2f}\n"
+        f"Tips % of sales: {tips_pct:.1f}%\n"
+        "\n🚶 Walk-ins / No-shows\n"
+        f"Total walk-ins: {walkins_total}\n"
+        f"Avg walk-ins/day: {avg_walkins_day:.2f}\n"
+        f"Walk-ins rate: {walkins_rate:.1f}%\n"
+        f"Total no-shows: {noshows_total}\n"
+        f"Avg no-shows/day: {avg_noshows_day:.2f}"
+    )
+
 async def setdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allow_sales_cmd(update):
         return
-
     if len(context.args) < 2:
         await update.message.reply_text("Usage: /setdaily SALES COVERS\nExample: /setdaily 2450 118")
         return
-
     try:
         sales = float(context.args[0])
         covers = int(context.args[1])
     except:
         await update.message.reply_text("Usage: /setdaily SALES COVERS\nExample: /setdaily 2450 118")
         return
-
     day_ = business_day_today()
     upsert_daily(day_, sales, covers)
     await update.message.reply_text(f"Saved ✅  Day: {day_.isoformat()} | Sales: €{sales:.2f} | Covers: {covers}")
-
-
-async def setfull(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /setfull  (then paste the full report as the NEXT message)
-    Optional override:
-      /setfull YYYY-MM-DD
-    """
-    if not allow_sales_cmd(update):
-        return
-
-    chat = update.effective_chat
-    user = update.effective_user
-    if not chat or not user:
-        return
-
-    day_override: date | None = None
-    if context.args:
-        try:
-            day_override = parse_day_any(context.args[0])
-        except:
-            await update.message.reply_text("Usage: /setfull  (or /setfull YYYY-MM-DD)\nThen paste the full report as the next message.")
-            return
-
-    set_full_mode(context.application, chat.id, user.id, day_override)
-    await update.message.reply_text(
-        "✅ Full daily mode ON.\n"
-        "Now paste the full daily report as your NEXT message.\n\n"
-        "Example:\n"
-        "Day: 24/01/2026\n"
-        "Total Sales Day: 7199,50\n"
-        "Visa: 6400,30\n"
-        "Cash: 799,20\n"
-        "Tips: 103,60\n\n"
-        "Lunch: 2341,30\n"
-        "Pax: 50\n"
-        "Walk in: 3\n"
-        "No show: 7\n\n"
-        "Dinner: 4858,20\n"
-        "Pax: 106\n"
-        "Walk in: 2\n"
-        "No show: 4\n\n"
-        "To cancel: /cancelreport"
-    )
-
 
 async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allow_sales_cmd(update):
@@ -1266,57 +962,28 @@ async def edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_daily(day_, sales, covers)
     await update.message.reply_text(f"Edited ✅  Day: {day_.isoformat()} | Sales: €{sales:.2f} | Covers: {covers}")
 
-
 async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allow_sales_cmd(update):
         return
     day_ = business_day_today()
-    row = get_daily_full(day_)
+    row = get_daily(day_)
     if not row:
-        await update.message.reply_text(f"No data for business day {day_.isoformat()} yet. Use: /setdaily 2450 118  OR  /setfull")
+        await update.message.reply_text(f"No data for business day {day_.isoformat()} yet. Use: /setdaily 2450 118")
         return
-    msg = render_day_report(day_, row, notes_for_day(day_), title="📊 Norah Daily Report")
-    await update.message.reply_text(msg)
-
-
-def _append_full_analytics_block(msg: str, p: Period, total_sales: float, days_with_data: int) -> str:
-    extras = sum_full_fields(p)
-    full_days = extras["full_days"]
-    if full_days <= 0:
-        return msg
-
-    walkins_total = extras["lunch_walkins_sum"] + extras["dinner_walkins_sum"]
-    noshows_total = extras["lunch_noshows_sum"] + extras["dinner_noshows_sum"]
-    pax_total = extras["lunch_pax_sum"] + extras["dinner_pax_sum"]
-    tips_total = extras["tips_sum"]
-
-    lunch_avg = safe_div(extras["lunch_sales_sum"], extras["lunch_pax_sum"])
-    dinner_avg = safe_div(extras["dinner_sales_sum"], extras["dinner_pax_sum"])
-
-    denom_days = full_days if full_days else days_with_data
-    avg_walkins_per_day = safe_div(walkins_total, denom_days)
-    walkins_rate = safe_div(walkins_total, pax_total)
-    avg_tips_per_day = safe_div(tips_total, denom_days)
-    tip_per_cover = safe_div(tips_total, pax_total)
-    tips_rate = safe_div(tips_total, total_sales)
-
-    msg += (
-        f"\n\n🍽 Service split (weighted)\n"
-        f"Lunch avg ticket: €{lunch_avg:.2f}\n"
-        f"Dinner avg ticket: €{dinner_avg:.2f}\n"
-        f"\n💶 Tips\n"
-        f"Total tips: €{tips_total:.2f}\n"
-        f"Avg tips/day: €{avg_tips_per_day:.2f}\n"
-        f"Tip/cover: €{tip_per_cover:.2f}\n"
-        f"Tips % of sales: {tips_rate*100:.1f}%\n"
-        f"\n🚶 Walk-ins / No-shows\n"
-        f"Total walk-ins: {walkins_total}\n"
-        f"Avg walk-ins/day: {avg_walkins_per_day:.2f}\n"
-        f"Walk-ins rate: {walkins_rate*100:.1f}%\n"
-        f"Total no-shows: {noshows_total}\n"
+    sales, covers = row
+    sales = float(sales or 0)
+    covers = int(covers or 0)
+    avg = (sales / covers) if covers else 0.0
+    p = Period(day_, day_)
+    msg = (
+        f"📊 Norah Daily Report\n\n"
+        f"Business day: {day_.isoformat()}\n"
+        f"Sales: €{sales:.2f}\n"
+        f"Covers: {covers}\n"
+        f"Avg ticket: €{avg:.2f}"
     )
-    return msg
-
+    msg += _append_full_analytics_block(p)
+    await update.message.reply_text(msg)
 
 async def month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allow_sales_cmd(update):
@@ -1325,8 +992,7 @@ async def month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start = date(end.year, end.month, 1)
     p = Period(start=start, end=end)
     total_sales, total_covers, days_with_data = sum_daily(p)
-    avg_ticket = safe_div(total_sales, total_covers)
-
+    avg_ticket = (total_sales / total_covers) if total_covers else 0.0
     msg = (
         f"📈 Norah Month-to-Date\n"
         f"Period: {p.start.isoformat()} → {p.end.isoformat()} ({daterange_days(p)} day(s))\n\n"
@@ -1335,10 +1001,8 @@ async def month(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Total covers: {total_covers}\n"
         f"Avg ticket: €{avg_ticket:.2f}"
     )
-
-    msg = _append_full_analytics_block(msg, p, total_sales, days_with_data)
+    msg += _append_full_analytics_block(p)
     await update.message.reply_text(msg)
-
 
 async def last(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allow_sales_cmd(update):
@@ -1352,8 +1016,7 @@ async def last(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /last 7   OR   /last 6M   OR   /last 1Y")
         return
     total_sales, total_covers, days_with_data = sum_daily(p)
-    avg_ticket = safe_div(total_sales, total_covers)
-
+    avg_ticket = (total_sales / total_covers) if total_covers else 0.0
     msg = (
         f"📊 Norah Summary\n"
         f"Period: {p.start.isoformat()} → {p.end.isoformat()} ({daterange_days(p)} day(s))\n\n"
@@ -1362,10 +1025,8 @@ async def last(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Total covers: {total_covers}\n"
         f"Avg ticket: €{avg_ticket:.2f}"
     )
-
-    msg = _append_full_analytics_block(msg, p, total_sales, days_with_data)
+    msg += _append_full_analytics_block(p)
     await update.message.reply_text(msg)
-
 
 async def range_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allow_sales_cmd(update):
@@ -1383,8 +1044,7 @@ async def range_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     p = Period(start=start, end=end)
     total_sales, total_covers, days_with_data = sum_daily(p)
-    avg_ticket = safe_div(total_sales, total_covers)
-
+    avg_ticket = (total_sales / total_covers) if total_covers else 0.0
     msg = (
         f"📊 Norah Range Report\n"
         f"Period: {p.start.isoformat()} → {p.end.isoformat()} ({daterange_days(p)} day(s))\n\n"
@@ -1393,10 +1053,8 @@ async def range_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Total covers: {total_covers}\n"
         f"Avg ticket: €{avg_ticket:.2f}"
     )
-
-    msg = _append_full_analytics_block(msg, p, total_sales, days_with_data)
+    msg += _append_full_analytics_block(p)
     await update.message.reply_text(msg)
-
 
 async def bestday(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allow_sales_cmd(update):
@@ -1407,12 +1065,10 @@ async def bestday(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No sales data found yet.")
         return
     d, sales, covers = row
-    avg = safe_div(float(sales), int(covers or 0))
+    avg = (float(sales) / int(covers)) if covers else 0.0
     await update.message.reply_text(
-        f"🏆 Best day (last 30)\n"
-        f"Day: {d}\nSales: €{float(sales):.2f}\nCovers: {int(covers)}\nAvg ticket: €{avg:.2f}"
+        f"🏆 Best day (last 30)\nDay: {d}\nSales: €{float(sales):.2f}\nCovers: {int(covers)}\nAvg ticket: €{avg:.2f}"
     )
-
 
 async def worstday(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allow_sales_cmd(update):
@@ -1423,14 +1079,14 @@ async def worstday(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No sales data found yet.")
         return
     d, sales, covers = row
-    avg = safe_div(float(sales), int(covers or 0))
+    avg = (float(sales) / int(covers)) if covers else 0.0
     await update.message.reply_text(
-        f"🧯 Worst day (last 30)\n"
-        f"Day: {d}\nSales: €{float(sales):.2f}\nCovers: {int(covers)}\nAvg ticket: €{avg:.2f}"
+        f"🧯 Worst day (last 30)\nDay: {d}\nSales: €{float(sales):.2f}\nCovers: {int(covers)}\nAvg ticket: €{avg:.2f}"
     )
 
-
-# --- NOTES ---
+# =========================
+# NOTES COMMANDS
+# =========================
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allow_notes_cmd(update):
         return
@@ -1439,14 +1095,10 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not chat or not user:
         return
     day_ = business_day_today()
-    set_report_mode(context.application, chat.id, user.id, day_)
+    set_mode(context.application, REPORT_MODE_KEY, chat.id, user.id, {"on": True, "day": day_.isoformat()})
     await update.message.reply_text(
-        f"✅ Report mode ON.\n"
-        f"Now send the notes as your NEXT message.\n"
-        f"Business day: {day_.isoformat()}\n\n"
-        f"To cancel: /cancelreport"
+        f"✅ Report mode ON.\nNow send the notes as your NEXT message.\nBusiness day: {day_.isoformat()}\n\nTo cancel: /cancelreport"
     )
-
 
 async def cancelreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allow_notes_cmd(update):
@@ -1455,10 +1107,8 @@ async def cancelreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not chat or not user:
         return
-    clear_report_mode(context.application, chat.id, user.id)
-    clear_full_mode(context.application, chat.id, user.id)
-    await update.message.reply_text("❎ Mode cancelled.")
-
+    clear_mode(context.application, REPORT_MODE_KEY, chat.id, user.id)
+    await update.message.reply_text("❎ Report mode cancelled.")
 
 async def reportdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allow_notes_cmd(update):
@@ -1466,13 +1116,10 @@ async def reportdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     day_ = business_day_today()
     texts = notes_for_day(day_)
     if not texts:
-        await update.message.reply_text(
-            f"No notes saved for business day {day_.isoformat()} yet.\nUse /report to submit notes."
-        )
+        await update.message.reply_text(f"No notes saved for business day {day_.isoformat()} yet.\nUse /report to submit notes.")
         return
     joined = "\n\n— — —\n\n".join(texts)
     await update.message.reply_text(f"📝 Notes for business day {day_.isoformat()}:\n\n{joined}")
-
 
 async def reportday(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allow_notes_cmd(update):
@@ -1492,8 +1139,7 @@ async def reportday(update: Update, context: ContextTypes.DEFAULT_TYPE):
     joined = "\n\n— — —\n\n".join(texts)
     await update.message.reply_text(f"📝 Notes for {day_.isoformat()}:\n\n{joined}")
 
-
-# --- NOTES ANALYTICS ---
+# Notes analytics
 async def noteslast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allow_sales_cmd(update):
         return
@@ -1505,20 +1151,16 @@ async def noteslast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("Usage: /noteslast 30   (or 6M / 1Y)")
         return
-
     rows = notes_in_period(p)
     if not rows:
         await update.message.reply_text("No notes found for that period yet.")
         return
-
     counter = Counter()
     for _, txt in rows:
         counter.update(tokenize(txt))
-
     top = counter.most_common(12)
     lines = [f"{w}: {c}" for w, c in top] if top else ["(no keywords yet)"]
     await update.message.reply_text("📊 Notes trends:\n" + "\n".join(lines))
-
 
 async def findnote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allow_sales_cmd(update):
@@ -1530,26 +1172,21 @@ async def findnote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not keyword:
         await update.message.reply_text("Usage: /findnote keyword")
         return
-
     p = period_ending_today("1Y")
     rows = notes_in_period(p)
     matches: list[date] = []
     for d, txt in rows:
         if keyword in (txt or "").lower():
             matches.append(d)
-
     if not matches:
         await update.message.reply_text(f"No notes found containing: {keyword}")
         return
-
     uniq = []
     for d in matches:
         if d not in uniq:
             uniq.append(d)
-
     show = uniq[-10:]
     await update.message.reply_text(f"🔎 Matches for '{keyword}':\n" + "\n".join(d.isoformat() for d in show))
-
 
 async def soldout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allow_sales_cmd(update):
@@ -1562,25 +1199,20 @@ async def soldout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("Usage: /soldout 30")
         return
-
     rows = notes_in_period(p)
     if not rows:
         await update.message.reply_text("No notes found for that period yet.")
         return
-
     counter = Counter()
     for _, txt in rows:
         t = (txt or "").lower()
         if "sold out" in t or "agotad" in t:
             counter.update(tokenize(txt))
-
     top = counter.most_common(12)
     if not top:
         await update.message.reply_text("No 'sold out' items detected yet for that period.")
         return
-
     await update.message.reply_text("🍽️ Sold-out signals:\n" + "\n".join(f"{w}: {c}" for w, c in top))
-
 
 async def complaints(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allow_sales_cmd(update):
@@ -1593,121 +1225,202 @@ async def complaints(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("Usage: /complaints 30")
         return
-
     rows = notes_in_period(p)
     if not rows:
         await update.message.reply_text("No notes found for that period yet.")
         return
-
     counter = Counter()
     for _, txt in rows:
         t = (txt or "").lower()
         if "complaint" in t or "queja" in t:
             counter.update(tokenize(txt))
-
     top = counter.most_common(12)
     if not top:
         await update.message.reply_text("No complaint keywords detected yet for that period.")
         return
-
     await update.message.reply_text("⚠️ Complaint signals:\n" + "\n".join(f"{w}: {c}" for w, c in top))
 
+# =========================
+# FULL DAILY: /setfull + GUIDED MODE
+# =========================
+GUIDED_STEPS = [
+    ("day", "Day (DD/MM/YYYY or YYYY-MM-DD)?"),
+    ("total_sales", "Total Sales Day?"),
+    ("visa", "Visa total?"),
+    ("cash", "Cash total?"),
+    ("tips", "Tips total?"),
+    ("lunch_sales", "Lunch sales?"),
+    ("lunch_pax", "Lunch pax?"),
+    ("lunch_walkins", "Lunch walk-ins?"),
+    ("lunch_noshows", "Lunch no-shows?"),
+    ("dinner_sales", "Dinner sales?"),
+    ("dinner_pax", "Dinner pax?"),
+    ("dinner_walkins", "Dinner walk-ins?"),
+    ("dinner_noshows", "Dinner no-shows?"),
+]
+
+async def setfull(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allow_full_cmd(update):
+        return
+    chat = update.effective_chat
+    user = update.effective_user
+    clear_mode(context.application, GUIDED_FULL_KEY, chat.id, user.id)
+    set_mode(context.application, FULL_MODE_KEY, chat.id, user.id, {"on": True})
+    await update.message.reply_text(
+        "✅ Full daily mode ON.\nNow paste the full daily report as your NEXT message.\n\n"
+        f"{FULL_EXAMPLE}\n"
+        "To cancel: /cancelfull"
+    )
+
+async def setfullguided(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allow_full_cmd(update):
+        return
+    chat = update.effective_chat
+    user = update.effective_user
+    clear_mode(context.application, FULL_MODE_KEY, chat.id, user.id)
+    set_mode(context.application, GUIDED_FULL_KEY, chat.id, user.id, {"on": True, "step": 0, "data": {}, "awaiting_confirm": False})
+    await update.message.reply_text(
+        "✅ Guided full-day mode ON.\nReply to each question.\nTo cancel: /cancelfull\n\n"
+        f"Q1) {GUIDED_STEPS[0][1]}"
+    )
+
+async def cancelfull(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allow_full_cmd(update):
+        return
+    chat = update.effective_chat
+    user = update.effective_user
+    clear_mode(context.application, FULL_MODE_KEY, chat.id, user.id)
+    clear_mode(context.application, GUIDED_FULL_KEY, chat.id, user.id)
+    await update.message.reply_text("❎ Full daily mode cancelled.")
+
+async def confirmfull(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allow_full_cmd(update):
+        return
+    chat = update.effective_chat
+    user = update.effective_user
+    st = get_mode(context.application, GUIDED_FULL_KEY, chat.id, user.id)
+    if not st or not st.get("on") or not st.get("awaiting_confirm"):
+        await update.message.reply_text("No guided preview to confirm. Use /setfullguided.")
+        return
+    d = st["data"]
+    covers = int(d["lunch_pax"] + d["dinner_pax"])
+    upsert_full_day(
+        d["day"],
+        d["total_sales"], d["visa"], d["cash"], d["tips"],
+        d["lunch_sales"], d["lunch_pax"], d["lunch_walkins"], d["lunch_noshows"],
+        d["dinner_sales"], d["dinner_pax"], d["dinner_walkins"], d["dinner_noshows"],
+    )
+    upsert_daily(d["day"], float(d["total_sales"]), covers)
+    clear_mode(context.application, GUIDED_FULL_KEY, chat.id, user.id)
+    await update.message.reply_text(f"✅ Saved full daily report for {d['day'].isoformat()}.")
 
 # =========================
-# TEXT HANDLER (captures full after /setfull AND notes after /report)
+# TEXT HANDLER
 # =========================
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
-
     chat = update.effective_chat
     user = update.effective_user
     if not chat or not user:
         return
-
     msg_text = (update.message.text or "").strip()
     if not msg_text:
         return
 
-    # 1) FULL mode capture
-    fm = get_full_mode(context.application, chat.id, user.id)
-    if fm and fm.get("on"):
-        if not allow_sales_cmd(update):
-            clear_full_mode(context.application, chat.id, user.id)
+    # Guided full flow
+    st = get_mode(context.application, GUIDED_FULL_KEY, chat.id, user.id)
+    if st and st.get("on"):
+        if st.get("awaiting_confirm"):
+            await update.message.reply_text("Please confirm with /confirmfull or cancel with /cancelfull.")
             return
+
+        step = int(st.get("step", 0))
+        field, question = GUIDED_STEPS[step]
+        data = st.get("data") or {}
 
         try:
-            parsed = parse_full_report_block(msg_text)
-
-            day_override = fm.get("day")
-            day_ = parse_yyyy_mm_dd(day_override) if day_override else parsed["day"]
-
-            total_sales = float(parsed["total_sales"] or 0)
-
-            upsert_daily_full(
-                day_,
-                total_sales=total_sales,
-                visa=parsed["visa"],
-                cash=parsed["cash"],
-                tips=parsed["tips"],
-                lunch_sales=parsed["lunch_sales"],
-                lunch_pax=parsed["lunch_pax"],
-                lunch_walkins=parsed["lunch_walkins"],
-                lunch_noshows=parsed["lunch_noshows"],
-                dinner_sales=parsed["dinner_sales"],
-                dinner_pax=parsed["dinner_pax"],
-                dinner_walkins=parsed["dinner_walkins"],
-                dinner_noshows=parsed["dinner_noshows"],
-            )
-
-            clear_full_mode(context.application, chat.id, user.id)
-
-            lp = int(parsed["lunch_pax"] or 0)
-            dp = int(parsed["dinner_pax"] or 0)
-            pax_total = lp + dp
-            avg_total = safe_div(total_sales, pax_total) if pax_total else 0.0
-
-            walkins_total = int(parsed["lunch_walkins"] or 0) + int(parsed["dinner_walkins"] or 0)
-            noshows_total = int(parsed["lunch_noshows"] or 0) + int(parsed["dinner_noshows"] or 0)
-
-            await update.message.reply_text(
-                "Saved ✅ Full daily report\n"
-                f"Day: {day_.isoformat()}\n"
-                f"Revenue: €{total_sales:.2f}\n"
-                f"Pax total: {pax_total if pax_total else '—'}\n"
-                f"Avg ticket total: €{avg_total:.2f}\n"
-                f"Walk-ins total: {walkins_total}\n"
-                f"No-shows total: {noshows_total}\n"
-                f"Tips: {fmt_eur(parsed['tips'])}"
-            )
-        except Exception as e:
-            await update.message.reply_text(
-                "❌ Could not parse that full report.\n"
-                "Please keep the same format and include at least:\n"
-                "- Day: dd/mm/yyyy\n"
-                "- Total Sales Day: ...\n"
-                "- Lunch: ... and Dinner: ... with Pax\n\n"
-                f"Error: {str(e)[:120]}"
-            )
-        return
-
-    # 2) NOTES report-mode capture
-    rm = get_report_mode(context.application, chat.id, user.id)
-    if rm and rm.get("on"):
-        if not allow_notes_cmd(update):
-            clear_report_mode(context.application, chat.id, user.id)
+            if field == "day":
+                data[field] = parse_any_date(msg_text)
+            elif field in ("total_sales", "visa", "cash", "tips", "lunch_sales", "dinner_sales"):
+                data[field] = _num(msg_text)
+            else:
+                data[field] = _int(msg_text)
+        except:
+            await update.message.reply_text(f"Couldn't understand '{msg_text}'. Try again.\n\n{question}")
             return
 
+        step += 1
+        st["data"] = data
+        st["step"] = step
+
+        if step >= len(GUIDED_STEPS):
+            # show preview and ask confirm
+            covers = int(data["lunch_pax"] + data["dinner_pax"])
+            avg_total = (data["total_sales"] / covers) if covers else 0.0
+            lunch_avg = (data["lunch_sales"] / data["lunch_pax"]) if data["lunch_pax"] else 0.0
+            dinner_avg = (data["dinner_sales"] / data["dinner_pax"]) if data["dinner_pax"] else 0.0
+            walkins_total = data["lunch_walkins"] + data["dinner_walkins"]
+            noshows_total = data["lunch_noshows"] + data["dinner_noshows"]
+            tips_pct = (data["tips"] / data["total_sales"] * 100.0) if data["total_sales"] else 0.0
+
+            st["awaiting_confirm"] = True
+            set_mode(context.application, GUIDED_FULL_KEY, chat.id, user.id, st)
+
+            await update.message.reply_text(
+                "📌 Full Day Preview\n"
+                f"Day: {data['day'].isoformat()}\n\n"
+                f"Total sales: €{data['total_sales']:.2f}\n"
+                f"Visa: €{data['visa']:.2f}\n"
+                f"Cash: €{data['cash']:.2f}\n"
+                f"Tips: €{data['tips']:.2f} ({tips_pct:.1f}%)\n\n"
+                f"🍽️ Lunch: €{data['lunch_sales']:.2f} | Pax {data['lunch_pax']} | Avg €{lunch_avg:.2f} | Walk-ins {data['lunch_walkins']} | No-shows {data['lunch_noshows']}\n"
+                f"🌙 Dinner: €{data['dinner_sales']:.2f} | Pax {data['dinner_pax']} | Avg €{dinner_avg:.2f} | Walk-ins {data['dinner_walkins']} | No-shows {data['dinner_noshows']}\n\n"
+                f"Covers total: {covers} | Avg ticket total: €{avg_total:.2f}\n"
+                f"Walk-ins total: {walkins_total} | No-shows total: {noshows_total}\n\n"
+                "If correct: /confirmfull\nIf not: /cancelfull"
+            )
+            return
+
+        set_mode(context.application, GUIDED_FULL_KEY, chat.id, user.id, st)
+        await update.message.reply_text(f"Q{step+1}) {GUIDED_STEPS[step][1]}")
+        return
+
+    # Paste full report flow
+    fm = get_mode(context.application, FULL_MODE_KEY, chat.id, user.id)
+    if fm and fm.get("on"):
+        try:
+            d = parse_full_report_block(msg_text)
+        except:
+            await update.message.reply_text(
+                "❌ I couldn't parse that report. Please paste again in this format:\n\n"
+                f"{FULL_EXAMPLE}\n"
+                "To cancel: /cancelfull"
+            )
+            return
+        covers = int(d["lunch_pax"] + d["dinner_pax"])
+        upsert_full_day(
+            d["day"],
+            d["total_sales"], d["visa"], d["cash"], d["tips"],
+            d["lunch_sales"], d["lunch_pax"], d["lunch_walkins"], d["lunch_noshows"],
+            d["dinner_sales"], d["dinner_pax"], d["dinner_walkins"], d["dinner_noshows"],
+        )
+        upsert_daily(d["day"], float(d["total_sales"]), covers)
+        clear_mode(context.application, FULL_MODE_KEY, chat.id, user.id)
+        await update.message.reply_text(f"✅ Saved full daily report for {d['day'].isoformat()}.")
+        return
+
+    # Notes capture
+    rm = get_mode(context.application, REPORT_MODE_KEY, chat.id, user.id)
+    if rm and rm.get("on"):
         day_str = rm.get("day")
         day_ = parse_yyyy_mm_dd(day_str) if day_str else business_day_today()
-
         insert_note_entry(day_, chat.id, user.id, msg_text)
-        clear_report_mode(context.application, chat.id, user.id)
-
+        clear_mode(context.application, REPORT_MODE_KEY, chat.id, user.id)
         await update.message.reply_text(f"Saved 📝 Notes for business day {day_.isoformat()}.")
         return
 
-    # 3) Keep OWNERS_SILENT clean
+    # Keep owners silent clean
     if get_chat_role(chat.id) == ROLE_OWNERS_SILENT and not user.is_bot:
         try:
             await update.message.reply_text(
@@ -1718,7 +1431,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         return
 
-
 # =========================
 # SCHEDULED POSTS
 # =========================
@@ -1726,90 +1438,81 @@ async def send_weekly_digest(context: ContextTypes.DEFAULT_TYPE):
     chats = owners_silent_chat_ids()
     if not chats:
         return
-
     p7 = period_ending_today("7")
     total_sales_7, total_covers_7, _ = sum_daily(p7)
-    avg_ticket_7 = safe_div(total_sales_7, total_covers_7)
-
-    prev_end = p7.start - timedelta(days=1)
-    prev_start = prev_end - timedelta(days=6)
-    pprev = Period(prev_start, prev_end)
-    total_sales_prev, total_covers_prev, _ = sum_daily(pprev)
-    avg_ticket_prev = safe_div(total_sales_prev, total_covers_prev)
-
-    def pct(a, b):
-        if b == 0:
-            return None
-        return (a - b) / b * 100.0
-
-    sales_delta = pct(total_sales_7, total_sales_prev)
-    ticket_delta = pct(avg_ticket_7, avg_ticket_prev)
-
-    best = best_or_worst_day(p7, worst=False)
-    worst = best_or_worst_day(p7, worst=True)
-
-    rows = notes_in_period(p7)
-    counter = Counter()
-    for _, txt in rows:
-        counter.update(tokenize(txt))
-    top_words = counter.most_common(8)
-    top_words_str = ", ".join(f"{w}({c})" for w, c in top_words) if top_words else "—"
-
-    alerts = []
-    if sales_delta is not None and sales_delta <= -10:
-        alerts.append(f"Sales down {sales_delta:.0f}% vs previous 7 days")
-    if ticket_delta is not None and ticket_delta <= -10:
-        alerts.append(f"Avg ticket down {ticket_delta:.0f}% vs previous 7 days")
-    if any("music" in (t or "").lower() or "ruido" in (t or "").lower() for _, t in rows):
-        alerts.append("Noise/music mentioned in notes")
-
-    alerts_str = "• " + "\n• ".join(alerts) if alerts else "None ✅"
-
-    best_str = f"{best[0]} €{float(best[1]):.0f}" if best else "—"
-    worst_str = f"{worst[0]} €{float(worst[1]):.0f}" if worst else "—"
-
+    avg_ticket_7 = (total_sales_7 / total_covers_7) if total_covers_7 else 0.0
     msg = (
         f"🗓️ Norah Weekly Digest\n"
         f"Period: {p7.start.isoformat()} → {p7.end.isoformat()}\n\n"
         f"Sales: €{total_sales_7:.2f}\n"
         f"Covers: {total_covers_7}\n"
-        f"Avg ticket: €{avg_ticket_7:.2f}\n"
+        f"Avg ticket: €{avg_ticket_7:.2f}"
     )
-    if sales_delta is not None:
-        msg += f"Sales vs prev 7d: {sales_delta:+.0f}%\n"
-    if ticket_delta is not None:
-        msg += f"Avg ticket vs prev 7d: {ticket_delta:+.0f}%\n"
-
-    msg += (
-        f"\nBest day: {best_str}\n"
-        f"Worst day: {worst_str}\n"
-        f"\nTop note keywords: {top_words_str}\n"
-        f"\nAlerts:\n{alerts_str}"
-    )
-
     for chat_id in chats:
         try:
             await context.bot.send_message(chat_id=chat_id, text=msg)
         except Exception as e:
             print(f"Weekly digest send failed for chat {chat_id}: {e}")
 
-
 async def send_daily_post_to_owners(context: ContextTypes.DEFAULT_TYPE):
     chats = owners_silent_chat_ids()
     if not chats:
         return
-
     report_day = previous_business_day(now_local())
-    row_full = get_daily_full(report_day)
+    sales_row = get_daily(report_day)
+    full_row = get_full_day(report_day)
     notes_texts = notes_for_day(report_day)
 
-    msg = render_day_report(report_day, row_full, notes_texts, title="📌 Norah Daily Post")
+    sales_line = "Sales: —\nCovers: —\nAvg ticket: —"
+    if sales_row:
+        sales, covers = sales_row
+        sales = float(sales or 0)
+        covers = int(covers or 0)
+        avg = (sales / covers) if covers else 0.0
+        sales_line = f"Sales: €{sales:.2f}\nCovers: {covers}\nAvg ticket: €{avg:.2f}"
+
+    full_block = ""
+    if full_row:
+        (
+            total_sales, visa, cash, tips,
+            lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
+            dinner_sales, dinner_pax, dinner_walkins, dinner_noshows
+        ) = full_row
+
+        lunch_avg = (float(lunch_sales) / int(lunch_pax)) if lunch_pax else 0.0
+        dinner_avg = (float(dinner_sales) / int(dinner_pax)) if dinner_pax else 0.0
+        tips_pct = (float(tips) / float(total_sales) * 100.0) if total_sales else 0.0
+        walkins_total = int((lunch_walkins or 0) + (dinner_walkins or 0))
+        noshows_total = int((lunch_noshows or 0) + (dinner_noshows or 0))
+
+        full_block = (
+            "\n\n🍽️ Service split\n"
+            f"Lunch: €{float(lunch_sales):.2f} | Pax {int(lunch_pax)} | Avg €{lunch_avg:.2f} | Walk-ins {int(lunch_walkins)} | No-shows {int(lunch_noshows)}\n"
+            f"Dinner: €{float(dinner_sales):.2f} | Pax {int(dinner_pax)} | Avg €{dinner_avg:.2f} | Walk-ins {int(dinner_walkins)} | No-shows {int(dinner_noshows)}\n"
+            "\n💶 Payments\n"
+            f"Visa: €{float(visa):.2f}\nCash: €{float(cash):.2f}\n"
+            f"Tips: €{float(tips):.2f} ({tips_pct:.1f}%)\n"
+            "\n🚶 Walk-ins / No-shows\n"
+            f"Walk-ins total: {walkins_total}\n"
+            f"No-shows total: {noshows_total}"
+        )
+
+    notes_block = "No notes submitted."
+    if notes_texts:
+        notes_block = "\n\n— — —\n\n".join(notes_texts)
+
+    msg = (
+        f"📌 Norah Daily Post\n"
+        f"Business day: {report_day.isoformat()}\n\n"
+        f"{sales_line}{full_block}\n\n"
+        f"📝 Notes:\n{notes_block}"
+    )
+
     for chat_id in chats:
         try:
             await context.bot.send_message(chat_id=chat_id, text=msg)
         except Exception as e:
             print(f"Daily post send failed for chat {chat_id}: {e}")
-
 
 # =========================
 # MAIN
@@ -1822,24 +1525,19 @@ def main():
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
 
-    # Setup
     app.add_handler(CommandHandler("setchatrole", setchatrole_cmd))
     app.add_handler(CommandHandler("chats", chats_cmd))
     app.add_handler(CommandHandler("setowners", setowners))
     app.add_handler(CommandHandler("ownerslist", ownerslist))
     app.add_handler(CommandHandler("removeowners", removeowners))
 
-    # Debug
     app.add_handler(CommandHandler("whoami", whoami))
     app.add_handler(CommandHandler("ping", ping))
 
-    # Sales
     app.add_handler(CommandHandler("setdaily", setdaily))
-    app.add_handler(CommandHandler("setfull", setfull))
     app.add_handler(CommandHandler("edit", edit))
     app.add_handler(CommandHandler("daily", daily))
     app.add_handler(CommandHandler("month", month))
@@ -1848,27 +1546,29 @@ def main():
     app.add_handler(CommandHandler("bestday", bestday))
     app.add_handler(CommandHandler("worstday", worstday))
 
-    # Notes
     app.add_handler(CommandHandler("report", report))
     app.add_handler(CommandHandler("cancelreport", cancelreport))
     app.add_handler(CommandHandler("reportdaily", reportdaily))
     app.add_handler(CommandHandler("reportday", reportday))
 
-    # Notes analytics
     app.add_handler(CommandHandler("noteslast", noteslast))
     app.add_handler(CommandHandler("findnote", findnote))
     app.add_handler(CommandHandler("soldout", soldout))
     app.add_handler(CommandHandler("complaints", complaints))
 
-    # Text handler
+    # Full daily
+    app.add_handler(CommandHandler("setfull", setfull))
+    app.add_handler(CommandHandler("setfullguided", setfullguided))
+    app.add_handler(CommandHandler("confirmfull", confirmfull))
+    app.add_handler(CommandHandler("cancelfull", cancelfull))
+
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
-    # Schedules
     if app.job_queue is not None:
         app.job_queue.run_daily(
             send_weekly_digest,
             time=time(hour=WEEKLY_DIGEST_HOUR, minute=0, tzinfo=TZ),
-            days=(0,),  # Monday
+            days=(0,),
             name="weekly_digest_monday",
         )
         app.job_queue.run_daily(
@@ -1878,7 +1578,6 @@ def main():
         )
 
     app.run_polling(allowed_updates=Update.ALL_TYPES)
-
 
 if __name__ == "__main__":
     main()
