@@ -561,6 +561,16 @@ def sum_full_in_period(p: Period):
     }
 
 # =========================
+# PATCH 1: Owners formatting helpers
+# =========================
+def euro_comma(x: float) -> str:
+    s = f"{float(x):.2f}"
+    return s.replace(".", ",")
+
+def fmt_day_ddmmyyyy(d: date) -> str:
+    return d.strftime("%d/%m/%Y")
+
+# =========================
 # STATE MAP HELPERS
 # =========================
 def _map_get(app: Application, key: str) -> dict[str, dict]:
@@ -1328,6 +1338,34 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg_text:
         return
 
+    # =========================
+    # PATCH 2: Auto-detect pasted report (no /setfull required)
+    # Only in OPS_ADMIN or MANAGER_INPUT chats
+    # =========================
+    role = get_chat_role(chat.id)
+    if role in (ROLE_OPS_ADMIN, ROLE_MANAGER_INPUT):
+        low = msg_text.lower()
+        if ("day:" in low) and ("total sales" in low) and ("lunch" in low) and ("dinner" in low):
+            try:
+                d = parse_full_report_block(msg_text)
+                covers = int(d["lunch_pax"] + d["dinner_pax"])
+                upsert_full_day(
+                    d["day"],
+                    d["total_sales"], d["visa"], d["cash"], d["tips"],
+                    d["lunch_sales"], d["lunch_pax"], d["lunch_walkins"], d["lunch_noshows"],
+                    d["dinner_sales"], d["dinner_pax"], d["dinner_walkins"], d["dinner_noshows"],
+                )
+                upsert_daily(d["day"], float(d["total_sales"]), covers)
+                await update.message.reply_text(f"✅ Saved full daily report for {d['day'].isoformat()}.")
+                return
+            except:
+                await update.message.reply_text(
+                    "❌ This looks like a full daily report, but I couldn't parse it.\n\n"
+                    "Please paste it in this exact format:\n\n"
+                    f"{FULL_EXAMPLE}"
+                )
+                return
+
     # Guided full flow
     st = get_mode(context.application, GUIDED_FULL_KEY, chat.id, user.id)
     if st and st.get("on"):
@@ -1355,7 +1393,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         st["step"] = step
 
         if step >= len(GUIDED_STEPS):
-            # show preview and ask confirm
             covers = int(data["lunch_pax"] + data["dinner_pax"])
             avg_total = (data["total_sales"] / covers) if covers else 0.0
             lunch_avg = (data["lunch_sales"] / data["lunch_pax"]) if data["lunch_pax"] else 0.0
@@ -1454,24 +1491,22 @@ async def send_weekly_digest(context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             print(f"Weekly digest send failed for chat {chat_id}: {e}")
 
+# =========================
+# PATCH 3: Owners daily post formatted exactly like your template
+# =========================
 async def send_daily_post_to_owners(context: ContextTypes.DEFAULT_TYPE):
     chats = owners_silent_chat_ids()
     if not chats:
         return
+
     report_day = previous_business_day(now_local())
-    sales_row = get_daily(report_day)
     full_row = get_full_day(report_day)
     notes_texts = notes_for_day(report_day)
 
-    sales_line = "Sales: —\nCovers: —\nAvg ticket: —"
-    if sales_row:
-        sales, covers = sales_row
-        sales = float(sales or 0)
-        covers = int(covers or 0)
-        avg = (sales / covers) if covers else 0.0
-        sales_line = f"Sales: €{sales:.2f}\nCovers: {covers}\nAvg ticket: €{avg:.2f}"
+    notes_block = "No notes submitted."
+    if notes_texts:
+        notes_block = "\n\n— — —\n\n".join(notes_texts)
 
-    full_block = ""
     if full_row:
         (
             total_sales, visa, cash, tips,
@@ -1481,32 +1516,46 @@ async def send_daily_post_to_owners(context: ContextTypes.DEFAULT_TYPE):
 
         lunch_avg = (float(lunch_sales) / int(lunch_pax)) if lunch_pax else 0.0
         dinner_avg = (float(dinner_sales) / int(dinner_pax)) if dinner_pax else 0.0
-        tips_pct = (float(tips) / float(total_sales) * 100.0) if total_sales else 0.0
-        walkins_total = int((lunch_walkins or 0) + (dinner_walkins or 0))
-        noshows_total = int((lunch_noshows or 0) + (dinner_noshows or 0))
 
-        full_block = (
-            "\n\n🍽️ Service split\n"
-            f"Lunch: €{float(lunch_sales):.2f} | Pax {int(lunch_pax)} | Avg €{lunch_avg:.2f} | Walk-ins {int(lunch_walkins)} | No-shows {int(lunch_noshows)}\n"
-            f"Dinner: €{float(dinner_sales):.2f} | Pax {int(dinner_pax)} | Avg €{dinner_avg:.2f} | Walk-ins {int(dinner_walkins)} | No-shows {int(dinner_noshows)}\n"
-            "\n💶 Payments\n"
-            f"Visa: €{float(visa):.2f}\nCash: €{float(cash):.2f}\n"
-            f"Tips: €{float(tips):.2f} ({tips_pct:.1f}%)\n"
-            "\n🚶 Walk-ins / No-shows\n"
-            f"Walk-ins total: {walkins_total}\n"
-            f"No-shows total: {noshows_total}"
+        msg = (
+            f"📌 Norah Daily Post\n"
+            f"Day: {fmt_day_ddmmyyyy(report_day)}\n"
+            f"Total Sales Day: {euro_comma(total_sales)}\n\n"
+            f"Visa: {euro_comma(visa)}\n"
+            f"Cash: {euro_comma(cash)}\n"
+            f"Tips: {euro_comma(tips)}\n\n"
+            f"Lunch: {euro_comma(lunch_sales)}\n"
+            f"Pax: {int(lunch_pax)}\n"
+            f"Average pax: {euro_comma(lunch_avg)}\n"
+            f"Walk in: {int(lunch_walkins)}\n"
+            f"No show: {int(lunch_noshows)}\n\n"
+            f"Dinner: {euro_comma(dinner_sales)}\n"
+            f"Pax: {int(dinner_pax)}\n"
+            f"Average pax: {euro_comma(dinner_avg)}\n"
+            f"Walk in: {int(dinner_walkins)}\n"
+            f"No show: {int(dinner_noshows)}\n\n"
+            f"📝 Notes:\n{notes_block}"
         )
-
-    notes_block = "No notes submitted."
-    if notes_texts:
-        notes_block = "\n\n— — —\n\n".join(notes_texts)
-
-    msg = (
-        f"📌 Norah Daily Post\n"
-        f"Business day: {report_day.isoformat()}\n\n"
-        f"{sales_line}{full_block}\n\n"
-        f"📝 Notes:\n{notes_block}"
-    )
+    else:
+        msg = (
+            f"📌 Norah Daily Post\n"
+            f"Day: {fmt_day_ddmmyyyy(report_day)}\n"
+            f"Total Sales Day: —\n\n"
+            f"Visa: —\n"
+            f"Cash: —\n"
+            f"Tips: —\n\n"
+            f"Lunch: —\n"
+            f"Pax: —\n"
+            f"Average pax: —\n"
+            f"Walk in: —\n"
+            f"No show: —\n\n"
+            f"Dinner: —\n"
+            f"Pax: —\n"
+            f"Average pax: —\n"
+            f"Walk in: —\n"
+            f"No show: —\n\n"
+            f"📝 Notes:\n{notes_block}"
+        )
 
     for chat_id in chats:
         try:
