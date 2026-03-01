@@ -571,6 +571,120 @@ def fmt_day_ddmmyyyy(d: date) -> str:
     return d.strftime("%d/%m/%Y")
 
 # =========================
+# PATCH 1.5: Spanish normalization helpers (SAFE)
+# =========================
+def normalize_spanish_full_report(text: str) -> str:
+    """
+    Converts common Spanish labels to the English schema used by parse_full_report_block().
+    Content/values remain unchanged. This keeps parsing deterministic.
+    """
+    if not text:
+        return text
+
+    out = text
+
+    # Normalize label words (case-insensitive). Keep it conservative.
+    replacements = {
+        # Day
+        r"^\s*d[ií]a\s*:": "Day:",
+
+        # Totals
+        r"^\s*ventas?\s*totales?\s*(del\s*d[ií]a)?\s*:": "Total Sales Day:",
+        r"^\s*total\s*ventas\s*:": "Total Sales Day:",
+        r"^\s*total\s*del\s*d[ií]a\s*:": "Total Sales Day:",
+
+        # Payments
+        r"^\s*tarjeta\s*:": "Visa:",
+        r"^\s*visa\s*:": "Visa:",
+        r"^\s*efectivo\s*:": "Cash:",
+        r"^\s*cash\s*:": "Cash:",
+        r"^\s*propinas?\s*:": "Tips:",
+        r"^\s*tips\s*:": "Tips:",
+
+        # Services
+        r"^\s*comida\s*:": "Lunch:",
+        r"^\s*almuerzo\s*:": "Lunch:",
+        r"^\s*lunch\s*:": "Lunch:",
+        r"^\s*cena\s*:": "Dinner:",
+        r"^\s*dinner\s*:": "Dinner:",
+
+        # Pax
+        r"^\s*personas?\s*:": "Pax:",
+        r"^\s*comensales\s*:": "Pax:",
+        r"^\s*pax\s*:": "Pax:",
+
+        # Walk-ins
+        r"^\s*sin\s*reserva\s*:": "Walk in:",
+        r"^\s*walk[-\s]?ins?\s*:": "Walk in:",
+        r"^\s*walk\s*in\s*:": "Walk in:",
+
+        # No-shows
+        r"^\s*ausentes?\s*:": "No show:",
+        r"^\s*no\s*show\s*:": "No show:",
+        r"^\s*no[-\s]?shows?\s*:": "No show:",
+        r"^\s*no\s*asistieron\s*:": "No show:",
+    }
+
+    for pat, rep in replacements.items():
+        out = re.sub(pat, rep, out, flags=re.IGNORECASE | re.MULTILINE)
+
+    return out
+
+def normalize_notes_report(text: str) -> str:
+    """
+    Normalizes Spanish headings to English headings for better consistency.
+    Keeps the manager's content as-is.
+    """
+    if not text:
+        return text
+
+    out = text
+
+    subs = {
+        r"^\s*incidentes\s*:": "Incidents:",
+        r"^\s*incidencias\s*:": "Incidents:",
+
+        r"^\s*personal\s*:": "Staff:",
+        r"^\s*equipo\s*:": "Staff:",
+        r"^\s*staff\s*:": "Staff:",
+
+        r"^\s*agotad[oa]s?\s*:": "Sold out:",
+        r"^\s*agotado\s*:": "Sold out:",
+        r"^\s*sold\s*out\s*:": "Sold out:",
+
+        r"^\s*quejas\s*:": "Complaints:",
+        r"^\s*reclamaciones\s*:": "Complaints:",
+        r"^\s*complaints\s*:": "Complaints:",
+    }
+
+    for pat, rep in subs.items():
+        out = re.sub(pat, rep, out, flags=re.IGNORECASE | re.MULTILINE)
+
+    return out
+
+def looks_like_notes_report(text: str) -> bool:
+    """
+    Conservative detector to avoid false triggers.
+    Requires at least 3 of the 4 sections (Incidents/Staff/Sold out/Complaints) with ':' present.
+    """
+    t = (text or "").lower()
+
+    def has_any(prefixes: list[str]) -> bool:
+        return any(p in t for p in prefixes)
+
+    hits = 0
+    if has_any(["incidents:", "incidentes:", "incidencias:"]):
+        hits += 1
+    if has_any(["staff:", "personal:", "equipo:"]):
+        hits += 1
+    if has_any(["sold out:", "agotad", "agotado:"]):
+        hits += 1
+    if has_any(["complaints:", "quejas:", "reclamaciones:"]):
+        hits += 1
+
+    return hits >= 3
+
+# =========================
 # STATE MAP HELPERS
 # =========================
 def _map_get(app: Application, key: str) -> dict[str, dict]:
@@ -1102,8 +1216,19 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     chat = update.effective_chat
     user = update.effective_user
-    if not chat or not user:
+    if not chat or not user or not update.message:
         return
+
+    # PATCH: If user sends "/report" with text in the SAME message, save it immediately.
+    raw = (update.message.text or "").strip()
+    # Handles: "/report blah blah" OR "/report\nblah blah"
+    tail = raw[len("/report"):].strip() if raw.lower().startswith("/report") else ""
+    if tail:
+        day_ = business_day_today()
+        insert_note_entry(day_, chat.id, user.id, normalize_notes_report(tail))
+        await update.message.reply_text(f"Saved 📝 Notes for business day {day_.isoformat()}.")
+        return
+
     day_ = business_day_today()
     set_mode(context.application, REPORT_MODE_KEY, chat.id, user.id, {"on": True, "day": day_.isoformat()})
     await update.message.reply_text(
@@ -1338,16 +1463,31 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg_text:
         return
 
+    role = get_chat_role(chat.id)
+
     # =========================
-    # PATCH 2: Auto-detect pasted report (no /setfull required)
+    # PATCH A: Auto-detect NOTES report (no /report required)
     # Only in OPS_ADMIN or MANAGER_INPUT chats
     # =========================
-    role = get_chat_role(chat.id)
     if role in (ROLE_OPS_ADMIN, ROLE_MANAGER_INPUT):
-        low = msg_text.lower()
+        if looks_like_notes_report(msg_text):
+            day_ = business_day_today()
+            normalized = normalize_notes_report(msg_text)
+            insert_note_entry(day_, chat.id, user.id, normalized)
+            await update.message.reply_text(f"Saved 📝 Notes for business day {day_.isoformat()}.")
+            return
+
+    # =========================
+    # PATCH B: Auto-detect FULL daily report (no /setfull required)
+    # Supports Spanish labels safely by normalizing them first.
+    # Only in OPS_ADMIN or MANAGER_INPUT chats
+    # =========================
+    if role in (ROLE_OPS_ADMIN, ROLE_MANAGER_INPUT):
+        normalized_full = normalize_spanish_full_report(msg_text)
+        low = normalized_full.lower()
         if ("day:" in low) and ("total sales" in low) and ("lunch" in low) and ("dinner" in low):
             try:
-                d = parse_full_report_block(msg_text)
+                d = parse_full_report_block(normalized_full)
                 covers = int(d["lunch_pax"] + d["dinner_pax"])
                 upsert_full_day(
                     d["day"],
@@ -1361,7 +1501,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 await update.message.reply_text(
                     "❌ This looks like a full daily report, but I couldn't parse it.\n\n"
-                    "Please paste it in this exact format:\n\n"
+                    "Please paste it in this exact format (English or Spanish labels are OK):\n\n"
                     f"{FULL_EXAMPLE}"
                 )
                 return
@@ -1423,11 +1563,11 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Q{step+1}) {GUIDED_STEPS[step][1]}")
         return
 
-    # Paste full report flow
+    # Paste full report flow (explicit /setfull mode)
     fm = get_mode(context.application, FULL_MODE_KEY, chat.id, user.id)
     if fm and fm.get("on"):
         try:
-            d = parse_full_report_block(msg_text)
+            d = parse_full_report_block(normalize_spanish_full_report(msg_text))
         except:
             await update.message.reply_text(
                 "❌ I couldn't parse that report. Please paste again in this format:\n\n"
@@ -1447,12 +1587,12 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Saved full daily report for {d['day'].isoformat()}.")
         return
 
-    # Notes capture
+    # Notes capture (explicit /report mode)
     rm = get_mode(context.application, REPORT_MODE_KEY, chat.id, user.id)
     if rm and rm.get("on"):
         day_str = rm.get("day")
         day_ = parse_yyyy_mm_dd(day_str) if day_str else business_day_today()
-        insert_note_entry(day_, chat.id, user.id, msg_text)
+        insert_note_entry(day_, chat.id, user.id, normalize_notes_report(msg_text))
         clear_mode(context.application, REPORT_MODE_KEY, chat.id, user.id)
         await update.message.reply_text(f"Saved 📝 Notes for business day {day_.isoformat()}.")
         return
