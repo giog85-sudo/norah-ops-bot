@@ -286,14 +286,20 @@ def previous_business_day(ts: datetime | None = None) -> date:
     ts = ts or now_local()
     return business_day_for(ts) - timedelta(days=1)
 
+def normalize_date_separators(s: str) -> str:
+    # Convert common Unicode dashes to ASCII hyphen-minus
+    return (s or "").strip().replace("–", "-").replace("—", "-").replace("−", "-")
+
 def parse_yyyy_mm_dd(s: str) -> date:
+    s = normalize_date_separators(s)
     return datetime.strptime(s, "%Y-%m-%d").date()
 
 def parse_dd_mm_yyyy(s: str) -> date:
+    s = normalize_date_separators(s)
     return datetime.strptime(s, "%d/%m/%Y").date()
 
 def parse_any_date(s: str) -> date:
-    s = (s or "").strip()
+    s = normalize_date_separators(s)
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
         return parse_yyyy_mm_dd(s)
     if re.fullmatch(r"\d{2}/\d{2}/\d{4}", s):
@@ -561,7 +567,7 @@ def sum_full_in_period(p: Period):
     }
 
 # =========================
-# PATCH 1: Owners formatting helpers
+# Owners formatting helpers
 # =========================
 def euro_comma(x: float) -> str:
     s = f"{float(x):.2f}"
@@ -569,120 +575,6 @@ def euro_comma(x: float) -> str:
 
 def fmt_day_ddmmyyyy(d: date) -> str:
     return d.strftime("%d/%m/%Y")
-
-# =========================
-# PATCH 1.5: Spanish normalization helpers (SAFE)
-# =========================
-def normalize_spanish_full_report(text: str) -> str:
-    """
-    Converts common Spanish labels to the English schema used by parse_full_report_block().
-    Content/values remain unchanged. This keeps parsing deterministic.
-    """
-    if not text:
-        return text
-
-    out = text
-
-    # Normalize label words (case-insensitive). Keep it conservative.
-    replacements = {
-        # Day
-        r"^\s*d[ií]a\s*:": "Day:",
-
-        # Totals
-        r"^\s*ventas?\s*totales?\s*(del\s*d[ií]a)?\s*:": "Total Sales Day:",
-        r"^\s*total\s*ventas\s*:": "Total Sales Day:",
-        r"^\s*total\s*del\s*d[ií]a\s*:": "Total Sales Day:",
-
-        # Payments
-        r"^\s*tarjeta\s*:": "Visa:",
-        r"^\s*visa\s*:": "Visa:",
-        r"^\s*efectivo\s*:": "Cash:",
-        r"^\s*cash\s*:": "Cash:",
-        r"^\s*propinas?\s*:": "Tips:",
-        r"^\s*tips\s*:": "Tips:",
-
-        # Services
-        r"^\s*comida\s*:": "Lunch:",
-        r"^\s*almuerzo\s*:": "Lunch:",
-        r"^\s*lunch\s*:": "Lunch:",
-        r"^\s*cena\s*:": "Dinner:",
-        r"^\s*dinner\s*:": "Dinner:",
-
-        # Pax
-        r"^\s*personas?\s*:": "Pax:",
-        r"^\s*comensales\s*:": "Pax:",
-        r"^\s*pax\s*:": "Pax:",
-
-        # Walk-ins
-        r"^\s*sin\s*reserva\s*:": "Walk in:",
-        r"^\s*walk[-\s]?ins?\s*:": "Walk in:",
-        r"^\s*walk\s*in\s*:": "Walk in:",
-
-        # No-shows
-        r"^\s*ausentes?\s*:": "No show:",
-        r"^\s*no\s*show\s*:": "No show:",
-        r"^\s*no[-\s]?shows?\s*:": "No show:",
-        r"^\s*no\s*asistieron\s*:": "No show:",
-    }
-
-    for pat, rep in replacements.items():
-        out = re.sub(pat, rep, out, flags=re.IGNORECASE | re.MULTILINE)
-
-    return out
-
-def normalize_notes_report(text: str) -> str:
-    """
-    Normalizes Spanish headings to English headings for better consistency.
-    Keeps the manager's content as-is.
-    """
-    if not text:
-        return text
-
-    out = text
-
-    subs = {
-        r"^\s*incidentes\s*:": "Incidents:",
-        r"^\s*incidencias\s*:": "Incidents:",
-
-        r"^\s*personal\s*:": "Staff:",
-        r"^\s*equipo\s*:": "Staff:",
-        r"^\s*staff\s*:": "Staff:",
-
-        r"^\s*agotad[oa]s?\s*:": "Sold out:",
-        r"^\s*agotado\s*:": "Sold out:",
-        r"^\s*sold\s*out\s*:": "Sold out:",
-
-        r"^\s*quejas\s*:": "Complaints:",
-        r"^\s*reclamaciones\s*:": "Complaints:",
-        r"^\s*complaints\s*:": "Complaints:",
-    }
-
-    for pat, rep in subs.items():
-        out = re.sub(pat, rep, out, flags=re.IGNORECASE | re.MULTILINE)
-
-    return out
-
-def looks_like_notes_report(text: str) -> bool:
-    """
-    Conservative detector to avoid false triggers.
-    Requires at least 3 of the 4 sections (Incidents/Staff/Sold out/Complaints) with ':' present.
-    """
-    t = (text or "").lower()
-
-    def has_any(prefixes: list[str]) -> bool:
-        return any(p in t for p in prefixes)
-
-    hits = 0
-    if has_any(["incidents:", "incidentes:", "incidencias:"]):
-        hits += 1
-    if has_any(["staff:", "personal:", "equipo:"]):
-        hits += 1
-    if has_any(["sold out:", "agotad", "agotado:"]):
-        hits += 1
-    if has_any(["complaints:", "quejas:", "reclamaciones:"]):
-        hits += 1
-
-    return hits >= 3
 
 # =========================
 # STATE MAP HELPERS
@@ -732,7 +624,7 @@ def allow_full_cmd(update: Update) -> bool:
     return is_admin(update)
 
 # =========================
-# FULL DAILY PARSING
+# FULL DAILY PARSING (English + Spanish labels)
 # =========================
 def _num(s: str) -> float:
     s = (s or "").strip()
@@ -777,49 +669,60 @@ def parse_full_report_block(text: str) -> dict:
                     return raw.split(":", 1)[1].strip() if ":" in raw else raw[len(pfx):].strip()
         return None
 
-    day_str = find_line(["Day"])
+    # Day (English / Spanish)
+    day_str = find_line(["Day", "Día", "Dia", "Fecha"])
     if not day_str:
         raise ValueError("Missing Day")
     day_ = parse_any_date(day_str)
 
-    total_sales = _num(find_line(["Total Sales Day", "Total Sales"]) or "")
-    visa = _num(find_line(["Visa"]) or "0")
-    cash = _num(find_line(["Cash"]) or "0")
-    tips = _num(find_line(["Tips"]) or "0")
+    # Totals
+    total_sales = _num(find_line(["Total Sales Day", "Total Sales", "Ventas Totales Día", "Ventas Totales", "Ventas"]) or "")
+    visa = _num(find_line(["Visa", "Tarjeta", "Card"]) or "0")
+    cash = _num(find_line(["Cash", "Efectivo"]) or "0")
+    tips = _num(find_line(["Tips", "Propinas"]) or "0")
 
-    def parse_section(section_name: str) -> tuple[float, int, int, int]:
+    def parse_section(section_names: list[str]) -> tuple[float, int, int, int]:
         lines = [ln.strip() for ln in t.splitlines()]
         idx = None
+        matched_name = None
         for i, ln in enumerate(lines):
-            if ln.lower().startswith(section_name.lower() + ":"):
-                idx = i
+            low = ln.lower()
+            for nm in section_names:
+                if low.startswith(nm.lower() + ":"):
+                    idx = i
+                    matched_name = nm
+                    break
+            if idx is not None:
                 break
         if idx is None:
-            raise ValueError(f"Missing {section_name} section")
+            raise ValueError(f"Missing section {section_names[0]}")
 
         sales_val = _num(lines[idx].split(":", 1)[1].strip())
 
         pax = walkins = noshows = None
-        for j in range(idx + 1, min(idx + 10, len(lines))):
+        for j in range(idx + 1, min(idx + 12, len(lines))):
             ln = lines[j].strip()
             if not ln:
                 continue
             low = ln.lower()
-            if low.startswith("pax"):
-                pax = _int(ln.split(":", 1)[1])
-            elif low.startswith("walk in") or low.startswith("walk-in") or low.startswith("walkin"):
-                walkins = _int(ln.split(":", 1)[1])
-            elif low.startswith("no show") or low.startswith("no-show") or low.startswith("noshow"):
-                noshows = _int(ln.split(":", 1)[1])
-            if low.startswith("dinner:") or low.startswith("lunch:"):
+
+            # stop if next section begins
+            if any(low.startswith(x.lower() + ":") for x in ["dinner", "cena", "lunch", "almuerzo", "comida"]):
                 break
 
+            if low.startswith("pax") or low.startswith("personas"):
+                pax = _int(ln.split(":", 1)[1])
+            elif low.startswith("walk in") or low.startswith("walk-in") or low.startswith("walkin") or low.startswith("sin reserva") or low.startswith("sin-reserva"):
+                walkins = _int(ln.split(":", 1)[1])
+            elif low.startswith("no show") or low.startswith("no-show") or low.startswith("noshow") or low.startswith("no se presentó") or low.startswith("no se presento"):
+                noshows = _int(ln.split(":", 1)[1])
+
         if pax is None or walkins is None or noshows is None:
-            raise ValueError(f"Incomplete {section_name} fields (need Pax, Walk in, No show)")
+            raise ValueError(f"Incomplete section {matched_name or section_names[0]} (need Pax/Personas, Walk-in/Sin reserva, No-show/No se presentó)")
         return float(sales_val), int(pax), int(walkins), int(noshows)
 
-    lunch_sales, lunch_pax, lunch_walkins, lunch_noshows = parse_section("Lunch")
-    dinner_sales, dinner_pax, dinner_walkins, dinner_noshows = parse_section("Dinner")
+    lunch_sales, lunch_pax, lunch_walkins, lunch_noshows = parse_section(["Lunch", "Almuerzo", "Comida"])
+    dinner_sales, dinner_pax, dinner_walkins, dinner_noshows = parse_section(["Dinner", "Cena"])
 
     return {
         "day": day_,
@@ -836,6 +739,43 @@ def parse_full_report_block(text: str) -> dict:
         "dinner_walkins": int(dinner_walkins),
         "dinner_noshows": int(dinner_noshows),
     }
+
+# =========================
+# NOTES: auto-detect manager report blocks (English + Spanish)
+# =========================
+NOTES_HINTS = [
+    "incidents", "incident", "staff", "sold out", "sold-out", "complaints",
+    "incidencias", "incidencia", "personal", "agotado", "agotados", "quejas", "queja",
+]
+
+def extract_day_from_notes(text: str) -> date | None:
+    # Optional header: "Day: 26/02/2026" or "Fecha: 2026-02-26"
+    for line in (text or "").splitlines()[:6]:
+        raw = line.strip()
+        if ":" not in raw:
+            continue
+        k, v = raw.split(":", 1)
+        k = k.strip().lower()
+        v = v.strip()
+        if k in ("day", "día", "dia", "fecha"):
+            try:
+                return parse_any_date(v)
+            except:
+                return None
+    return None
+
+def looks_like_notes_report(text: str) -> bool:
+    t = (text or "").strip()
+    if len(t) < 12:
+        return False
+    low = t.lower()
+    hits = sum(1 for h in NOTES_HINTS if h in low)
+    # require at least 2 hits OR one hit + multi-line structure
+    if hits >= 2:
+        return True
+    if hits >= 1 and ("\n" in t):
+        return True
+    return False
 
 # =========================
 # HELP TEXT
@@ -861,6 +801,8 @@ HELP_TEXT = (
     "/cancelreport\n"
     "/reportdaily\n"
     "/reportday YYYY-MM-DD\n\n"
+    "Owners repost (ADMIN):\n"
+    "/postday YYYY-MM-DD  (or DD/MM/YYYY)\n\n"
     "Notes analytics:\n"
     "/noteslast 30 (or 6M / 1Y)\n"
     "/findnote keyword\n"
@@ -1216,19 +1158,8 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     chat = update.effective_chat
     user = update.effective_user
-    if not chat or not user or not update.message:
+    if not chat or not user:
         return
-
-    # PATCH: If user sends "/report" with text in the SAME message, save it immediately.
-    raw = (update.message.text or "").strip()
-    # Handles: "/report blah blah" OR "/report\nblah blah"
-    tail = raw[len("/report"):].strip() if raw.lower().startswith("/report") else ""
-    if tail:
-        day_ = business_day_today()
-        insert_note_entry(day_, chat.id, user.id, normalize_notes_report(tail))
-        await update.message.reply_text(f"Saved 📝 Notes for business day {day_.isoformat()}.")
-        return
-
     day_ = business_day_today()
     set_mode(context.application, REPORT_MODE_KEY, chat.id, user.id, {"on": True, "day": day_.isoformat()})
     await update.message.reply_text(
@@ -1450,196 +1381,9 @@ async def confirmfull(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Saved full daily report for {d['day'].isoformat()}.")
 
 # =========================
-# TEXT HANDLER
+# Owners post builder + scheduled post
 # =========================
-async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        return
-    chat = update.effective_chat
-    user = update.effective_user
-    if not chat or not user:
-        return
-    msg_text = (update.message.text or "").strip()
-    if not msg_text:
-        return
-
-    role = get_chat_role(chat.id)
-
-    # =========================
-    # PATCH A: Auto-detect NOTES report (no /report required)
-    # Only in OPS_ADMIN or MANAGER_INPUT chats
-    # =========================
-    if role in (ROLE_OPS_ADMIN, ROLE_MANAGER_INPUT):
-        if looks_like_notes_report(msg_text):
-            day_ = business_day_today()
-            normalized = normalize_notes_report(msg_text)
-            insert_note_entry(day_, chat.id, user.id, normalized)
-            await update.message.reply_text(f"Saved 📝 Notes for business day {day_.isoformat()}.")
-            return
-
-    # =========================
-    # PATCH B: Auto-detect FULL daily report (no /setfull required)
-    # Supports Spanish labels safely by normalizing them first.
-    # Only in OPS_ADMIN or MANAGER_INPUT chats
-    # =========================
-    if role in (ROLE_OPS_ADMIN, ROLE_MANAGER_INPUT):
-        normalized_full = normalize_spanish_full_report(msg_text)
-        low = normalized_full.lower()
-        if ("day:" in low) and ("total sales" in low) and ("lunch" in low) and ("dinner" in low):
-            try:
-                d = parse_full_report_block(normalized_full)
-                covers = int(d["lunch_pax"] + d["dinner_pax"])
-                upsert_full_day(
-                    d["day"],
-                    d["total_sales"], d["visa"], d["cash"], d["tips"],
-                    d["lunch_sales"], d["lunch_pax"], d["lunch_walkins"], d["lunch_noshows"],
-                    d["dinner_sales"], d["dinner_pax"], d["dinner_walkins"], d["dinner_noshows"],
-                )
-                upsert_daily(d["day"], float(d["total_sales"]), covers)
-                await update.message.reply_text(f"✅ Saved full daily report for {d['day'].isoformat()}.")
-                return
-            except:
-                await update.message.reply_text(
-                    "❌ This looks like a full daily report, but I couldn't parse it.\n\n"
-                    "Please paste it in this exact format (English or Spanish labels are OK):\n\n"
-                    f"{FULL_EXAMPLE}"
-                )
-                return
-
-    # Guided full flow
-    st = get_mode(context.application, GUIDED_FULL_KEY, chat.id, user.id)
-    if st and st.get("on"):
-        if st.get("awaiting_confirm"):
-            await update.message.reply_text("Please confirm with /confirmfull or cancel with /cancelfull.")
-            return
-
-        step = int(st.get("step", 0))
-        field, question = GUIDED_STEPS[step]
-        data = st.get("data") or {}
-
-        try:
-            if field == "day":
-                data[field] = parse_any_date(msg_text)
-            elif field in ("total_sales", "visa", "cash", "tips", "lunch_sales", "dinner_sales"):
-                data[field] = _num(msg_text)
-            else:
-                data[field] = _int(msg_text)
-        except:
-            await update.message.reply_text(f"Couldn't understand '{msg_text}'. Try again.\n\n{question}")
-            return
-
-        step += 1
-        st["data"] = data
-        st["step"] = step
-
-        if step >= len(GUIDED_STEPS):
-            covers = int(data["lunch_pax"] + data["dinner_pax"])
-            avg_total = (data["total_sales"] / covers) if covers else 0.0
-            lunch_avg = (data["lunch_sales"] / data["lunch_pax"]) if data["lunch_pax"] else 0.0
-            dinner_avg = (data["dinner_sales"] / data["dinner_pax"]) if data["dinner_pax"] else 0.0
-            walkins_total = data["lunch_walkins"] + data["dinner_walkins"]
-            noshows_total = data["lunch_noshows"] + data["dinner_noshows"]
-            tips_pct = (data["tips"] / data["total_sales"] * 100.0) if data["total_sales"] else 0.0
-
-            st["awaiting_confirm"] = True
-            set_mode(context.application, GUIDED_FULL_KEY, chat.id, user.id, st)
-
-            await update.message.reply_text(
-                "📌 Full Day Preview\n"
-                f"Day: {data['day'].isoformat()}\n\n"
-                f"Total sales: €{data['total_sales']:.2f}\n"
-                f"Visa: €{data['visa']:.2f}\n"
-                f"Cash: €{data['cash']:.2f}\n"
-                f"Tips: €{data['tips']:.2f} ({tips_pct:.1f}%)\n\n"
-                f"🍽️ Lunch: €{data['lunch_sales']:.2f} | Pax {data['lunch_pax']} | Avg €{lunch_avg:.2f} | Walk-ins {data['lunch_walkins']} | No-shows {data['lunch_noshows']}\n"
-                f"🌙 Dinner: €{data['dinner_sales']:.2f} | Pax {data['dinner_pax']} | Avg €{dinner_avg:.2f} | Walk-ins {data['dinner_walkins']} | No-shows {data['dinner_noshows']}\n\n"
-                f"Covers total: {covers} | Avg ticket total: €{avg_total:.2f}\n"
-                f"Walk-ins total: {walkins_total} | No-shows total: {noshows_total}\n\n"
-                "If correct: /confirmfull\nIf not: /cancelfull"
-            )
-            return
-
-        set_mode(context.application, GUIDED_FULL_KEY, chat.id, user.id, st)
-        await update.message.reply_text(f"Q{step+1}) {GUIDED_STEPS[step][1]}")
-        return
-
-    # Paste full report flow (explicit /setfull mode)
-    fm = get_mode(context.application, FULL_MODE_KEY, chat.id, user.id)
-    if fm and fm.get("on"):
-        try:
-            d = parse_full_report_block(normalize_spanish_full_report(msg_text))
-        except:
-            await update.message.reply_text(
-                "❌ I couldn't parse that report. Please paste again in this format:\n\n"
-                f"{FULL_EXAMPLE}\n"
-                "To cancel: /cancelfull"
-            )
-            return
-        covers = int(d["lunch_pax"] + d["dinner_pax"])
-        upsert_full_day(
-            d["day"],
-            d["total_sales"], d["visa"], d["cash"], d["tips"],
-            d["lunch_sales"], d["lunch_pax"], d["lunch_walkins"], d["lunch_noshows"],
-            d["dinner_sales"], d["dinner_pax"], d["dinner_walkins"], d["dinner_noshows"],
-        )
-        upsert_daily(d["day"], float(d["total_sales"]), covers)
-        clear_mode(context.application, FULL_MODE_KEY, chat.id, user.id)
-        await update.message.reply_text(f"✅ Saved full daily report for {d['day'].isoformat()}.")
-        return
-
-    # Notes capture (explicit /report mode)
-    rm = get_mode(context.application, REPORT_MODE_KEY, chat.id, user.id)
-    if rm and rm.get("on"):
-        day_str = rm.get("day")
-        day_ = parse_yyyy_mm_dd(day_str) if day_str else business_day_today()
-        insert_note_entry(day_, chat.id, user.id, normalize_notes_report(msg_text))
-        clear_mode(context.application, REPORT_MODE_KEY, chat.id, user.id)
-        await update.message.reply_text(f"Saved 📝 Notes for business day {day_.isoformat()}.")
-        return
-
-    # Keep owners silent clean
-    if get_chat_role(chat.id) == ROLE_OWNERS_SILENT and not user.is_bot:
-        try:
-            await update.message.reply_text(
-                "🧾 This is the silent Owners group.\nPlease post requests in *Norah Owners Requests*.",
-                parse_mode="Markdown",
-            )
-        except:
-            pass
-        return
-
-# =========================
-# SCHEDULED POSTS
-# =========================
-async def send_weekly_digest(context: ContextTypes.DEFAULT_TYPE):
-    chats = owners_silent_chat_ids()
-    if not chats:
-        return
-    p7 = period_ending_today("7")
-    total_sales_7, total_covers_7, _ = sum_daily(p7)
-    avg_ticket_7 = (total_sales_7 / total_covers_7) if total_covers_7 else 0.0
-    msg = (
-        f"🗓️ Norah Weekly Digest\n"
-        f"Period: {p7.start.isoformat()} → {p7.end.isoformat()}\n\n"
-        f"Sales: €{total_sales_7:.2f}\n"
-        f"Covers: {total_covers_7}\n"
-        f"Avg ticket: €{avg_ticket_7:.2f}"
-    )
-    for chat_id in chats:
-        try:
-            await context.bot.send_message(chat_id=chat_id, text=msg)
-        except Exception as e:
-            print(f"Weekly digest send failed for chat {chat_id}: {e}")
-
-# =========================
-# PATCH 3: Owners daily post formatted exactly like your template
-# =========================
-async def send_daily_post_to_owners(context: ContextTypes.DEFAULT_TYPE):
-    chats = owners_silent_chat_ids()
-    if not chats:
-        return
-
-    report_day = previous_business_day(now_local())
+def build_owners_post_for_day(report_day: date) -> str:
     full_row = get_full_day(report_day)
     notes_texts = notes_for_day(report_day)
 
@@ -1696,12 +1440,238 @@ async def send_daily_post_to_owners(context: ContextTypes.DEFAULT_TYPE):
             f"No show: —\n\n"
             f"📝 Notes:\n{notes_block}"
         )
+    return msg
 
+async def send_daily_post_to_owners(context: ContextTypes.DEFAULT_TYPE):
+    chats = owners_silent_chat_ids()
+    if not chats:
+        return
+    report_day = previous_business_day(now_local())
+    msg = build_owners_post_for_day(report_day)
     for chat_id in chats:
         try:
             await context.bot.send_message(chat_id=chat_id, text=msg)
         except Exception as e:
             print(f"Daily post send failed for chat {chat_id}: {e}")
+
+async def send_weekly_digest(context: ContextTypes.DEFAULT_TYPE):
+    chats = owners_silent_chat_ids()
+    if not chats:
+        return
+    p7 = period_ending_today("7")
+    total_sales_7, total_covers_7, _ = sum_daily(p7)
+    avg_ticket_7 = (total_sales_7 / total_covers_7) if total_covers_7 else 0.0
+    msg = (
+        f"🗓️ Norah Weekly Digest\n"
+        f"Period: {p7.start.isoformat()} → {p7.end.isoformat()}\n\n"
+        f"Sales: €{total_sales_7:.2f}\n"
+        f"Covers: {total_covers_7}\n"
+        f"Avg ticket: €{avg_ticket_7:.2f}"
+    )
+    for chat_id in chats:
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=msg)
+        except Exception as e:
+            print(f"Weekly digest send failed for chat {chat_id}: {e}")
+
+# =========================
+# ADMIN: /postday
+# =========================
+async def postday(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await guard_admin(update):
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /postday YYYY-MM-DD  (or DD/MM/YYYY)")
+        return
+    raw = " ".join(context.args).strip()
+    try:
+        d = parse_any_date(raw)
+    except:
+        await update.message.reply_text("Usage: /postday YYYY-MM-DD  (or DD/MM/YYYY)")
+        return
+
+    chats = owners_silent_chat_ids()
+    if not chats:
+        await update.message.reply_text("No Owners Silent chats registered. Use /setowners or /setchatrole OWNERS_SILENT.")
+        return
+
+    msg = build_owners_post_for_day(d)
+    sent = 0
+    for chat_id in chats:
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=msg)
+            sent += 1
+        except Exception as e:
+            print(f"postday send failed for chat {chat_id}: {e}")
+
+    await update.message.reply_text(f"✅ Posted owners report for {d.isoformat()} to {sent} owners chat(s).")
+
+# =========================
+# TEXT HANDLER
+# =========================
+async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+    msg_text = (update.message.text or "").strip()
+    if not msg_text:
+        return
+
+    role = get_chat_role(chat.id)
+
+    # ---------------------------------------------------------
+    # Auto-save FULL daily report (no /setfull) in OPS_ADMIN/MANAGER_INPUT
+    # ---------------------------------------------------------
+    if role in (ROLE_OPS_ADMIN, ROLE_MANAGER_INPUT):
+        low = msg_text.lower()
+        # allow english + spanish signals
+        looks_full = (
+            ("day:" in low or "día:" in low or "dia:" in low or "fecha:" in low)
+            and ("total sales" in low or "ventas" in low)
+            and (("lunch" in low) or ("almuerzo" in low) or ("comida" in low))
+            and (("dinner" in low) or ("cena" in low))
+        )
+        if looks_full:
+            try:
+                d = parse_full_report_block(msg_text)
+                covers = int(d["lunch_pax"] + d["dinner_pax"])
+                upsert_full_day(
+                    d["day"],
+                    d["total_sales"], d["visa"], d["cash"], d["tips"],
+                    d["lunch_sales"], d["lunch_pax"], d["lunch_walkins"], d["lunch_noshows"],
+                    d["dinner_sales"], d["dinner_pax"], d["dinner_walkins"], d["dinner_noshows"],
+                )
+                upsert_daily(d["day"], float(d["total_sales"]), covers)
+                await update.message.reply_text(f"✅ Saved full daily report for {d['day'].isoformat()}.")
+                return
+            except:
+                await update.message.reply_text(
+                    "❌ This looks like a full daily report, but I couldn't parse it.\n\n"
+                    "Please paste it in this exact format (English or Spanish labels are OK):\n\n"
+                    f"{FULL_EXAMPLE}"
+                )
+                return
+
+    # ---------------------------------------------------------
+    # Guided full flow
+    # ---------------------------------------------------------
+    st = get_mode(context.application, GUIDED_FULL_KEY, chat.id, user.id)
+    if st and st.get("on"):
+        if st.get("awaiting_confirm"):
+            await update.message.reply_text("Please confirm with /confirmfull or cancel with /cancelfull.")
+            return
+
+        step = int(st.get("step", 0))
+        field, question = GUIDED_STEPS[step]
+        data = st.get("data") or {}
+
+        try:
+            if field == "day":
+                data[field] = parse_any_date(msg_text)
+            elif field in ("total_sales", "visa", "cash", "tips", "lunch_sales", "dinner_sales"):
+                data[field] = _num(msg_text)
+            else:
+                data[field] = _int(msg_text)
+        except:
+            await update.message.reply_text(f"Couldn't understand '{msg_text}'. Try again.\n\n{question}")
+            return
+
+        step += 1
+        st["data"] = data
+        st["step"] = step
+
+        if step >= len(GUIDED_STEPS):
+            covers = int(data["lunch_pax"] + data["dinner_pax"])
+            avg_total = (data["total_sales"] / covers) if covers else 0.0
+            lunch_avg = (data["lunch_sales"] / data["lunch_pax"]) if data["lunch_pax"] else 0.0
+            dinner_avg = (data["dinner_sales"] / data["dinner_pax"]) if data["dinner_pax"] else 0.0
+            walkins_total = data["lunch_walkins"] + data["dinner_walkins"]
+            noshows_total = data["lunch_noshows"] + data["dinner_noshows"]
+            tips_pct = (data["tips"] / data["total_sales"] * 100.0) if data["total_sales"] else 0.0
+
+            st["awaiting_confirm"] = True
+            set_mode(context.application, GUIDED_FULL_KEY, chat.id, user.id, st)
+
+            await update.message.reply_text(
+                "📌 Full Day Preview\n"
+                f"Day: {data['day'].isoformat()}\n\n"
+                f"Total sales: €{data['total_sales']:.2f}\n"
+                f"Visa: €{data['visa']:.2f}\n"
+                f"Cash: €{data['cash']:.2f}\n"
+                f"Tips: €{data['tips']:.2f} ({tips_pct:.1f}%)\n\n"
+                f"🍽️ Lunch: €{data['lunch_sales']:.2f} | Pax {data['lunch_pax']} | Avg €{lunch_avg:.2f} | Walk-ins {data['lunch_walkins']} | No-shows {data['lunch_noshows']}\n"
+                f"🌙 Dinner: €{data['dinner_sales']:.2f} | Pax {data['dinner_pax']} | Avg €{dinner_avg:.2f} | Walk-ins {data['dinner_walkins']} | No-shows {data['dinner_noshows']}\n\n"
+                f"Covers total: {covers} | Avg ticket total: €{avg_total:.2f}\n"
+                f"Walk-ins total: {walkins_total} | No-shows total: {noshows_total}\n\n"
+                "If correct: /confirmfull\nIf not: /cancelfull"
+            )
+            return
+
+        set_mode(context.application, GUIDED_FULL_KEY, chat.id, user.id, st)
+        await update.message.reply_text(f"Q{step+1}) {GUIDED_STEPS[step][1]}")
+        return
+
+    # ---------------------------------------------------------
+    # Paste full report flow (legacy /setfull)
+    # ---------------------------------------------------------
+    fm = get_mode(context.application, FULL_MODE_KEY, chat.id, user.id)
+    if fm and fm.get("on"):
+        try:
+            d = parse_full_report_block(msg_text)
+        except:
+            await update.message.reply_text(
+                "❌ I couldn't parse that report. Please paste again in this format:\n\n"
+                f"{FULL_EXAMPLE}\n"
+                "To cancel: /cancelfull"
+            )
+            return
+        covers = int(d["lunch_pax"] + d["dinner_pax"])
+        upsert_full_day(
+            d["day"],
+            d["total_sales"], d["visa"], d["cash"], d["tips"],
+            d["lunch_sales"], d["lunch_pax"], d["lunch_walkins"], d["lunch_noshows"],
+            d["dinner_sales"], d["dinner_pax"], d["dinner_walkins"], d["dinner_noshows"],
+        )
+        upsert_daily(d["day"], float(d["total_sales"]), covers)
+        clear_mode(context.application, FULL_MODE_KEY, chat.id, user.id)
+        await update.message.reply_text(f"✅ Saved full daily report for {d['day'].isoformat()}.")
+        return
+
+    # ---------------------------------------------------------
+    # Auto-notes in MANAGER_INPUT: save without /report
+    # ---------------------------------------------------------
+    if role == ROLE_MANAGER_INPUT and not user.is_bot:
+        if looks_like_notes_report(msg_text):
+            d = extract_day_from_notes(msg_text) or business_day_today()
+            insert_note_entry(d, chat.id, user.id, msg_text)
+            await update.message.reply_text(f"Saved 📝 Notes for business day {d.isoformat()}.")
+            return
+
+    # ---------------------------------------------------------
+    # Notes capture (legacy /report mode)
+    # ---------------------------------------------------------
+    rm = get_mode(context.application, REPORT_MODE_KEY, chat.id, user.id)
+    if rm and rm.get("on"):
+        day_str = rm.get("day")
+        day_ = parse_yyyy_mm_dd(day_str) if day_str else business_day_today()
+        insert_note_entry(day_, chat.id, user.id, msg_text)
+        clear_mode(context.application, REPORT_MODE_KEY, chat.id, user.id)
+        await update.message.reply_text(f"Saved 📝 Notes for business day {day_.isoformat()}.")
+        return
+
+    # Keep owners silent clean
+    if get_chat_role(chat.id) == ROLE_OWNERS_SILENT and not user.is_bot:
+        try:
+            await update.message.reply_text(
+                "🧾 This is the silent Owners group.\nPlease post requests in *Norah Owners Requests*.",
+                parse_mode="Markdown",
+            )
+        except:
+            pass
+        return
 
 # =========================
 # MAIN
@@ -1750,6 +1720,9 @@ def main():
     app.add_handler(CommandHandler("setfullguided", setfullguided))
     app.add_handler(CommandHandler("confirmfull", confirmfull))
     app.add_handler(CommandHandler("cancelfull", cancelfull))
+
+    # Admin repost
+    app.add_handler(CommandHandler("postday", postday))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
