@@ -367,8 +367,47 @@ def tokenize(text: str) -> list[str]:
     return [w for w in words if w not in STOPWORDS and len(w) >= 3]
 
 # =========================
-# CORE QUERIES
+# NOTE TAG SYSTEM
 # =========================
+# Supported tags and their aliases (all matched case-insensitively)
+NOTE_TAGS = {
+    "SOLD OUT":    ["[sold out]", "[soldout]", "[agotado]", "[sin existencias]"],
+    "COMPLAINT":   ["[complaint]", "[complaints]", "[queja]", "[quejas]", "[reclamacion]"],
+    "STAFF":       ["[staff]", "[personal]", "[equipo]"],
+    "MAINTENANCE": ["[maintenance]", "[mantenimiento]", "[technical]", "[tecnico]"],
+    "INCIDENT":    ["[incident]", "[incidente]", "[problema]"],
+}
+
+TAG_EMOJIS = {
+    "SOLD OUT":    "🍽️",
+    "COMPLAINT":   "⚠️",
+    "STAFF":       "👥",
+    "MAINTENANCE": "🔧",
+    "INCIDENT":    "🚨",
+}
+
+def extract_note_tags(text: str) -> list[str]:
+    """Return list of canonical tag names found in the note text."""
+    tl = (text or "").lower()
+    found = []
+    for canonical, aliases in NOTE_TAGS.items():
+        if any(alias in tl for alias in aliases):
+            found.append(canonical)
+    return found
+
+def extract_tag_content(text: str, tag: str) -> str:
+    """Return text that follows the tag marker, stripping the tag itself."""
+    tl = text.lower()
+    aliases = NOTE_TAGS.get(tag, [])
+    for alias in aliases:
+        idx = tl.find(alias)
+        if idx != -1:
+            return text[idx + len(alias):].strip()
+    return text.strip()
+
+def notes_have_any_tag(rows: list[tuple]) -> bool:
+    """Return True if any note in rows contains a structured tag."""
+    return any(extract_note_tags(txt) for _, txt in rows)
 def upsert_daily(day_: date, sales: float, covers: int):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -1299,7 +1338,16 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     day_ = business_day_today()
     set_mode(context.application, REPORT_MODE_KEY, chat.id, user.id, {"on": True, "day": day_.isoformat()})
     await update.message.reply_text(
-        f"✅ Report mode ON.\nNow send the notes as your NEXT message.\nBusiness day: {day_.isoformat()}\n\nTo cancel: /cancelreport"
+        f"✅ Report mode ON. Send your notes as the next message.\n"
+        f"Business day: {day_.isoformat()}\n\n"
+        f"📌 Use tags to categorize notes:\n"
+        f"  [SOLD OUT] item name\n"
+        f"  [COMPLAINT] description\n"
+        f"  [STAFF] description\n"
+        f"  [MAINTENANCE] description\n"
+        f"  [INCIDENT] description\n\n"
+        f"You can include multiple tags in one message.\n"
+        f"To cancel: /cancelreport"
     )
 
 async def cancelreport(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1405,16 +1453,32 @@ async def soldout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not rows:
         await update.message.reply_text("No notes found for that period yet.")
         return
-    counter = Counter()
-    for _, txt in rows:
-        t = (txt or "").lower()
-        if "sold out" in t or "agotad" in t:
-            counter.update(tokenize(txt))
-    top = counter.most_common(12)
+
+    # Tag-based extraction (preferred)
+    tagged_texts = [(d, txt) for d, txt in rows if "SOLD OUT" in extract_note_tags(txt)]
+    if tagged_texts:
+        counter = Counter()
+        for _, txt in tagged_texts:
+            content = extract_tag_content(txt, "SOLD OUT")
+            counter.update(tokenize(content))
+        top = counter.most_common(12)
+        source = f"({len(tagged_texts)} tagged notes)"
+    else:
+        # Fallback: keyword matching
+        counter = Counter()
+        for _, txt in rows:
+            t = (txt or "").lower()
+            if "sold out" in t or "agotad" in t:
+                counter.update(tokenize(txt))
+        top = counter.most_common(12)
+        source = "(keyword fallback — consider using [SOLD OUT] tags)"
+
     if not top:
-        await update.message.reply_text("No 'sold out' items detected yet for that period.")
+        await update.message.reply_text("No sold-out items detected for that period.")
         return
-    await update.message.reply_text("🍽️ Sold-out signals:\n" + "\n".join(f"{w}: {c}" for w, c in top))
+    await update.message.reply_text(
+        f"🍽️ Sold-out items {source}:\n" + "\n".join(f"{w}: {c}" for w, c in top)
+    )
 
 async def complaints(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allow_sales_cmd(update):
@@ -1431,20 +1495,111 @@ async def complaints(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not rows:
         await update.message.reply_text("No notes found for that period yet.")
         return
-    counter = Counter()
-    for _, txt in rows:
-        t = (txt or "").lower()
-        if "complaint" in t or "queja" in t:
-            counter.update(tokenize(txt))
-    top = counter.most_common(12)
-    if not top:
-        await update.message.reply_text("No complaint keywords detected yet for that period.")
-        return
-    await update.message.reply_text("⚠️ Complaint signals:\n" + "\n".join(f"{w}: {c}" for w, c in top))
 
-# =========================
-# NEW ANALYTICS COMMANDS
-# =========================
+    # Tag-based extraction (preferred)
+    tagged_texts = [(d, txt) for d, txt in rows if "COMPLAINT" in extract_note_tags(txt)]
+    if tagged_texts:
+        counter = Counter()
+        for _, txt in tagged_texts:
+            content = extract_tag_content(txt, "COMPLAINT")
+            counter.update(tokenize(content))
+        top = counter.most_common(12)
+        source = f"({len(tagged_texts)} tagged notes)"
+    else:
+        # Fallback: keyword matching
+        counter = Counter()
+        for _, txt in rows:
+            t = (txt or "").lower()
+            if "complaint" in t or "queja" in t:
+                counter.update(tokenize(txt))
+        top = counter.most_common(12)
+        source = "(keyword fallback — consider using [COMPLAINT] tags)"
+
+    if not top:
+        await update.message.reply_text("No complaint signals detected for that period.")
+        return
+    await update.message.reply_text(
+        f"⚠️ Complaint signals {source}:\n" + "\n".join(f"{w}: {c}" for w, c in top)
+    )
+
+async def tagstats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show a breakdown of all tagged notes over a period."""
+    if not allow_sales_cmd(update):
+        return
+    try:
+        p = period_ending_today(context.args[0]) if context.args else period_ending_today("30")
+    except:
+        await update.message.reply_text("Usage: /tagstats  or  /tagstats 60")
+        return
+    rows = notes_in_period(p)
+    if not rows:
+        await update.message.reply_text("No notes found for that period yet.")
+        return
+
+    counts: dict[str, int] = {tag: 0 for tag in NOTE_TAGS}
+    untagged = 0
+    for _, txt in rows:
+        found = extract_note_tags(txt)
+        if found:
+            for tag in found:
+                counts[tag] += 1
+        else:
+            untagged += 1
+
+    total = len(rows)
+    tagged_total = sum(counts.values())
+    lines = [
+        f"🏷️ Tag Summary ({fmt_day_ddmmyyyy(p.start)} → {fmt_day_ddmmyyyy(p.end)})\n",
+        f"Total notes: {total}  |  Tagged: {tagged_total}  |  Untagged: {untagged}\n",
+    ]
+    for tag, count in counts.items():
+        if count > 0:
+            emoji = TAG_EMOJIS.get(tag, "•")
+            lines.append(f"{emoji} [{tag}]: {count}")
+    if tagged_total == 0:
+        lines.append("No tagged notes yet. Encourage the manager to use tags like [COMPLAINT], [SOLD OUT], etc.")
+    await update.message.reply_text("\n".join(lines))
+
+async def staffnotes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show recent notes tagged with [STAFF]."""
+    if not allow_sales_cmd(update):
+        return
+    try:
+        p = period_ending_today(context.args[0]) if context.args else period_ending_today("30")
+    except:
+        await update.message.reply_text("Usage: /staffnotes  or  /staffnotes 60")
+        return
+    rows = notes_in_period(p)
+    if not rows:
+        await update.message.reply_text("No notes found for that period yet.")
+        return
+
+    tagged = [(d, txt) for d, txt in rows if "STAFF" in extract_note_tags(txt)]
+    if not tagged:
+        await update.message.reply_text(
+            f"No [STAFF] tagged notes in the last period.\n"
+            f"(keyword fallback — consider using [STAFF] tags)\n\n"
+            + _keyword_staff_fallback(rows)
+        )
+        return
+
+    lines = [f"👥 Staff Notes ({len(tagged)} entries)\n"]
+    for d, txt in tagged[-10:]:  # show last 10
+        content = extract_tag_content(txt, "STAFF")
+        lines.append(f"📆 {fmt_day_ddmmyyyy(d)}: {content[:120]}")
+    await update.message.reply_text("\n".join(lines))
+
+def _keyword_staff_fallback(rows: list[tuple]) -> str:
+    keywords = ["staff", "personal", "sick", "enfermo", "ausente", "absent", "late", "tarde"]
+    matches = [(d, txt) for d, txt in rows if any(k in (txt or "").lower() for k in keywords)]
+    if not matches:
+        return "(no staff-related notes found via keywords either)"
+    lines = []
+    for d, txt in matches[-5:]:
+        lines.append(f"📆 {fmt_day_ddmmyyyy(d)}: {txt[:120]}")
+    return "\n".join(lines)
+
+
 
 def _fmt_snapshot(day_: date, label: str) -> str:
     """Format a full single-day snapshot for /today and /yesterday."""
@@ -2108,7 +2263,9 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if looks_like_notes_report(msg_text):
             d = extract_day_from_notes(msg_text) or business_day_today()
             insert_note_entry(d, chat.id, user.id, msg_text)
-            await update.message.reply_text(f"Saved 📝 Notes for business day {d.isoformat()}.")
+            detected = extract_note_tags(msg_text)
+            tag_line = f"\nTags detected: {', '.join(detected)}" if detected else ""
+            await update.message.reply_text(f"Saved 📝 Notes for business day {d.isoformat()}.{tag_line}")
             return
 
     # ---------------------------------------------------------
@@ -2120,7 +2277,9 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         day_ = parse_yyyy_mm_dd(day_str) if day_str else business_day_today()
         insert_note_entry(day_, chat.id, user.id, msg_text)
         clear_mode(context.application, REPORT_MODE_KEY, chat.id, user.id)
-        await update.message.reply_text(f"Saved 📝 Notes for business day {day_.isoformat()}.")
+        detected = extract_note_tags(msg_text)
+        tag_line = f"\nTags detected: {', '.join(detected)}" if detected else ""
+        await update.message.reply_text(f"Saved 📝 Notes for business day {day_.isoformat()}.{tag_line}")
         return
 
     # Keep owners silent clean
@@ -2175,6 +2334,8 @@ def main():
     app.add_handler(CommandHandler("findnote", findnote))
     app.add_handler(CommandHandler("soldout", soldout))
     app.add_handler(CommandHandler("complaints", complaints))
+    app.add_handler(CommandHandler("tagstats", tagstats_cmd))
+    app.add_handler(CommandHandler("staffnotes", staffnotes_cmd))
 
     # Full daily
     app.add_handler(CommandHandler("setfull", setfull))
