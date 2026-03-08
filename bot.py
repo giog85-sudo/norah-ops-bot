@@ -578,7 +578,9 @@ def get_full_days_for_weekday(weekday: int, before_or_on: date, limit: int) -> l
             cur.execute(
                 """
                 SELECT day, total_sales,
-                       lunch_pax, dinner_pax,
+                       lunch_sales, lunch_pax, lunch_noshows,
+                       dinner_sales, dinner_pax, dinner_noshows,
+                       tips,
                        (COALESCE(lunch_pax,0) + COALESCE(dinner_pax,0)) AS covers
                 FROM full_daily_stats
                 WHERE EXTRACT(ISODOW FROM day) = %s AND day <= %s
@@ -590,15 +592,26 @@ def get_full_days_for_weekday(weekday: int, before_or_on: date, limit: int) -> l
             rows = cur.fetchall()
     result = []
     for r in rows:
-        covers = int(r[4] or 0)
+        covers = int(r[9] or 0)
         sales = float(r[1] or 0)
+        lunch_pax = int(r[3] or 0)
+        dinner_pax = int(r[6] or 0)
+        lunch_sales = float(r[2] or 0)
+        dinner_sales = float(r[5] or 0)
         result.append({
             "day": r[0],
             "total_sales": sales,
-            "lunch_pax": int(r[2] or 0),
-            "dinner_pax": int(r[3] or 0),
+            "lunch_sales": lunch_sales,
+            "lunch_pax": lunch_pax,
+            "lunch_noshows": int(r[4] or 0),
+            "dinner_sales": dinner_sales,
+            "dinner_pax": dinner_pax,
+            "dinner_noshows": int(r[7] or 0),
+            "tips": float(r[8] or 0),
             "covers": covers,
             "avg_ticket": (sales / covers) if covers else 0.0,
+            "lunch_avg": (lunch_sales / lunch_pax) if lunch_pax else 0.0,
+            "dinner_avg": (dinner_sales / dinner_pax) if dinner_pax else 0.0,
         })
     return result
 
@@ -609,7 +622,9 @@ def get_full_days_in_period(p: Period) -> list[dict]:
             cur.execute(
                 """
                 SELECT day, total_sales,
-                       lunch_pax, dinner_pax,
+                       lunch_sales, lunch_pax, lunch_noshows,
+                       dinner_sales, dinner_pax, dinner_noshows,
+                       tips,
                        (COALESCE(lunch_pax,0) + COALESCE(dinner_pax,0)) AS covers
                 FROM full_daily_stats
                 WHERE day BETWEEN %s AND %s
@@ -620,15 +635,26 @@ def get_full_days_in_period(p: Period) -> list[dict]:
             rows = cur.fetchall()
     result = []
     for r in rows:
-        covers = int(r[4] or 0)
+        covers = int(r[9] or 0)
         sales = float(r[1] or 0)
+        lunch_pax = int(r[3] or 0)
+        dinner_pax = int(r[6] or 0)
+        lunch_sales = float(r[2] or 0)
+        dinner_sales = float(r[5] or 0)
         result.append({
             "day": r[0],
             "total_sales": sales,
-            "lunch_pax": int(r[2] or 0),
-            "dinner_pax": int(r[3] or 0),
+            "lunch_sales": lunch_sales,
+            "lunch_pax": lunch_pax,
+            "lunch_noshows": int(r[4] or 0),
+            "dinner_sales": dinner_sales,
+            "dinner_pax": dinner_pax,
+            "dinner_noshows": int(r[7] or 0),
+            "tips": float(r[8] or 0),
             "covers": covers,
             "avg_ticket": (sales / covers) if covers else 0.0,
+            "lunch_avg": (lunch_sales / lunch_pax) if lunch_pax else 0.0,
+            "dinner_avg": (dinner_sales / dinner_pax) if dinner_pax else 0.0,
         })
     return result
 
@@ -641,7 +667,9 @@ def get_full_days_for_dates(dates: list[date]) -> dict:
             cur.execute(
                 """
                 SELECT day, total_sales,
-                       lunch_pax, dinner_pax,
+                       lunch_sales, lunch_pax, lunch_noshows,
+                       dinner_sales, dinner_pax, dinner_noshows,
+                       tips,
                        (COALESCE(lunch_pax,0) + COALESCE(dinner_pax,0)) AS covers
                 FROM full_daily_stats
                 WHERE day = ANY(%s);
@@ -651,15 +679,26 @@ def get_full_days_for_dates(dates: list[date]) -> dict:
             rows = cur.fetchall()
     result = {}
     for r in rows:
-        covers = int(r[4] or 0)
+        covers = int(r[9] or 0)
         sales = float(r[1] or 0)
+        lunch_pax = int(r[3] or 0)
+        dinner_pax = int(r[6] or 0)
+        lunch_sales = float(r[2] or 0)
+        dinner_sales = float(r[5] or 0)
         result[r[0]] = {
             "day": r[0],
             "total_sales": sales,
-            "lunch_pax": int(r[2] or 0),
-            "dinner_pax": int(r[3] or 0),
+            "lunch_sales": lunch_sales,
+            "lunch_pax": lunch_pax,
+            "lunch_noshows": int(r[4] or 0),
+            "dinner_sales": dinner_sales,
+            "dinner_pax": dinner_pax,
+            "dinner_noshows": int(r[7] or 0),
+            "tips": float(r[8] or 0),
             "covers": covers,
             "avg_ticket": (sales / covers) if covers else 0.0,
+            "lunch_avg": (lunch_sales / lunch_pax) if lunch_pax else 0.0,
+            "dinner_avg": (dinner_sales / dinner_pax) if dinner_pax else 0.0,
         }
     return result
 
@@ -1440,10 +1479,32 @@ def _sum_period_rows(rows: list[dict]) -> dict:
     """Aggregate a list of daily row dicts into period totals."""
     sales = sum(r["total_sales"] for r in rows)
     covers = sum(r["covers"] for r in rows)
+    lunch_sales = sum(r.get("lunch_sales", 0) for r in rows)
+    lunch_pax = sum(r.get("lunch_pax", 0) for r in rows)
+    dinner_sales = sum(r.get("dinner_sales", 0) for r in rows)
+    dinner_pax = sum(r.get("dinner_pax", 0) for r in rows)
+    lunch_noshows = sum(r.get("lunch_noshows", 0) for r in rows)
+    dinner_noshows = sum(r.get("dinner_noshows", 0) for r in rows)
+    tips = sum(r.get("tips", 0) for r in rows)
+    total_noshows = lunch_noshows + dinner_noshows
+    noshow_rate = (total_noshows / (covers + total_noshows) * 100) if (covers + total_noshows) > 0 else 0.0
+    tips_pct = (tips / sales * 100) if sales else 0.0
     return {
         "sales": sales,
         "covers": covers,
         "avg_ticket": (sales / covers) if covers else 0.0,
+        "lunch_sales": lunch_sales,
+        "lunch_pax": lunch_pax,
+        "lunch_avg": (lunch_sales / lunch_pax) if lunch_pax else 0.0,
+        "dinner_sales": dinner_sales,
+        "dinner_pax": dinner_pax,
+        "dinner_avg": (dinner_sales / dinner_pax) if dinner_pax else 0.0,
+        "lunch_noshows": lunch_noshows,
+        "dinner_noshows": dinner_noshows,
+        "total_noshows": total_noshows,
+        "noshow_rate": noshow_rate,
+        "tips": tips,
+        "tips_pct": tips_pct,
         "days": len(rows),
     }
 
@@ -1510,17 +1571,27 @@ async def weekcompare_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         f"📊 Week Comparison\n\n"
         f"This week ({fmt_day_ddmmyyyy(this_mon)} → {fmt_day_ddmmyyyy(today)}):\n"
-        f"  Sales: €{a['sales']:.2f}\n"
-        f"  Covers: {a['covers']}  |  Avg ticket: €{a['avg_ticket']:.2f}\n"
+        f"  Sales: €{a['sales']:.2f}  |  Covers: {a['covers']}\n"
+        f"  Avg ticket: €{a['avg_ticket']:.2f}\n"
+        f"  🌞 Lunch avg: €{a['lunch_avg']:.2f}  |  🌙 Dinner avg: €{a['dinner_avg']:.2f}\n"
+        f"  💶 Tips: €{a['tips']:.2f} ({a['tips_pct']:.1f}% of sales)\n"
+        f"  🚫 No-shows: {a['total_noshows']} ({a['noshow_rate']:.1f}%)\n"
         f"  Days w/ data: {a['days']}\n\n"
         f"Last week ({fmt_day_ddmmyyyy(last_mon)} → {fmt_day_ddmmyyyy(last_equiv)}):\n"
-        f"  Sales: €{b['sales']:.2f}\n"
-        f"  Covers: {b['covers']}  |  Avg ticket: €{b['avg_ticket']:.2f}\n"
+        f"  Sales: €{b['sales']:.2f}  |  Covers: {b['covers']}\n"
+        f"  Avg ticket: €{b['avg_ticket']:.2f}\n"
+        f"  🌞 Lunch avg: €{b['lunch_avg']:.2f}  |  🌙 Dinner avg: €{b['dinner_avg']:.2f}\n"
+        f"  💶 Tips: €{b['tips']:.2f} ({b['tips_pct']:.1f}% of sales)\n"
+        f"  🚫 No-shows: {b['total_noshows']} ({b['noshow_rate']:.1f}%)\n"
         f"  Days w/ data: {b['days']}\n\n"
         f"📈 vs last week:\n"
         f"  Sales: {_pct_delta(a['sales'], b['sales'])}\n"
         f"  Covers: {_pct_delta(a['covers'], b['covers'])}\n"
-        f"  Avg ticket: {_pct_delta(a['avg_ticket'], b['avg_ticket'])}"
+        f"  Avg ticket: {_pct_delta(a['avg_ticket'], b['avg_ticket'])}\n"
+        f"  Lunch avg: {_pct_delta(a['lunch_avg'], b['lunch_avg'])}\n"
+        f"  Dinner avg: {_pct_delta(a['dinner_avg'], b['dinner_avg'])}\n"
+        f"  Tips %: {_pct_delta(a['tips_pct'], b['tips_pct'])}\n"
+        f"  No-show rate: {_pct_delta(a['noshow_rate'], b['noshow_rate'])}"
     )
     await update.message.reply_text(msg)
 
@@ -1542,17 +1613,27 @@ async def monthcompare_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         f"📊 Month Comparison\n\n"
         f"This month ({fmt_day_ddmmyyyy(this_start)} → {fmt_day_ddmmyyyy(today)}):\n"
-        f"  Sales: €{a['sales']:.2f}\n"
-        f"  Covers: {a['covers']}  |  Avg ticket: €{a['avg_ticket']:.2f}\n"
+        f"  Sales: €{a['sales']:.2f}  |  Covers: {a['covers']}\n"
+        f"  Avg ticket: €{a['avg_ticket']:.2f}\n"
+        f"  🌞 Lunch avg: €{a['lunch_avg']:.2f}  |  🌙 Dinner avg: €{a['dinner_avg']:.2f}\n"
+        f"  💶 Tips: €{a['tips']:.2f} ({a['tips_pct']:.1f}% of sales)\n"
+        f"  🚫 No-shows: {a['total_noshows']} ({a['noshow_rate']:.1f}%)\n"
         f"  Days w/ data: {a['days']}\n\n"
         f"Last month ({fmt_day_ddmmyyyy(last_start)} → {fmt_day_ddmmyyyy(last_equiv)}):\n"
-        f"  Sales: €{b['sales']:.2f}\n"
-        f"  Covers: {b['covers']}  |  Avg ticket: €{b['avg_ticket']:.2f}\n"
+        f"  Sales: €{b['sales']:.2f}  |  Covers: {b['covers']}\n"
+        f"  Avg ticket: €{b['avg_ticket']:.2f}\n"
+        f"  🌞 Lunch avg: €{b['lunch_avg']:.2f}  |  🌙 Dinner avg: €{b['dinner_avg']:.2f}\n"
+        f"  💶 Tips: €{b['tips']:.2f} ({b['tips_pct']:.1f}% of sales)\n"
+        f"  🚫 No-shows: {b['total_noshows']} ({b['noshow_rate']:.1f}%)\n"
         f"  Days w/ data: {b['days']}\n\n"
         f"📈 vs last month:\n"
         f"  Sales: {_pct_delta(a['sales'], b['sales'])}\n"
         f"  Covers: {_pct_delta(a['covers'], b['covers'])}\n"
-        f"  Avg ticket: {_pct_delta(a['avg_ticket'], b['avg_ticket'])}"
+        f"  Avg ticket: {_pct_delta(a['avg_ticket'], b['avg_ticket'])}\n"
+        f"  Lunch avg: {_pct_delta(a['lunch_avg'], b['lunch_avg'])}\n"
+        f"  Dinner avg: {_pct_delta(a['dinner_avg'], b['dinner_avg'])}\n"
+        f"  Tips %: {_pct_delta(a['tips_pct'], b['tips_pct'])}\n"
+        f"  No-show rate: {_pct_delta(a['noshow_rate'], b['noshow_rate'])}"
     )
     await update.message.reply_text(msg)
 
@@ -1575,17 +1656,27 @@ async def weekendcompare_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     msg = (
         f"📊 Weekend Comparison (Fri + Sat)\n\n"
         f"Last weekend ({fmt_day_ddmmyyyy(last_fri)} – {fmt_day_ddmmyyyy(last_sat)}):\n"
-        f"  Sales: €{a['sales']:.2f}\n"
-        f"  Covers: {a['covers']}  |  Avg ticket: €{a['avg_ticket']:.2f}\n"
+        f"  Sales: €{a['sales']:.2f}  |  Covers: {a['covers']}\n"
+        f"  Avg ticket: €{a['avg_ticket']:.2f}\n"
+        f"  🌞 Lunch avg: €{a['lunch_avg']:.2f}  |  🌙 Dinner avg: €{a['dinner_avg']:.2f}\n"
+        f"  💶 Tips: €{a['tips']:.2f} ({a['tips_pct']:.1f}% of sales)\n"
+        f"  🚫 No-shows: {a['total_noshows']} ({a['noshow_rate']:.1f}%)\n"
         f"  Days w/ data: {a['days']}\n\n"
         f"Previous weekend ({fmt_day_ddmmyyyy(prev_fri)} – {fmt_day_ddmmyyyy(prev_sat)}):\n"
-        f"  Sales: €{b['sales']:.2f}\n"
-        f"  Covers: {b['covers']}  |  Avg ticket: €{b['avg_ticket']:.2f}\n"
+        f"  Sales: €{b['sales']:.2f}  |  Covers: {b['covers']}\n"
+        f"  Avg ticket: €{b['avg_ticket']:.2f}\n"
+        f"  🌞 Lunch avg: €{b['lunch_avg']:.2f}  |  🌙 Dinner avg: €{b['dinner_avg']:.2f}\n"
+        f"  💶 Tips: €{b['tips']:.2f} ({b['tips_pct']:.1f}% of sales)\n"
+        f"  🚫 No-shows: {b['total_noshows']} ({b['noshow_rate']:.1f}%)\n"
         f"  Days w/ data: {b['days']}\n\n"
         f"📈 vs previous weekend:\n"
         f"  Sales: {_pct_delta(a['sales'], b['sales'])}\n"
         f"  Covers: {_pct_delta(a['covers'], b['covers'])}\n"
-        f"  Avg ticket: {_pct_delta(a['avg_ticket'], b['avg_ticket'])}"
+        f"  Avg ticket: {_pct_delta(a['avg_ticket'], b['avg_ticket'])}\n"
+        f"  Lunch avg: {_pct_delta(a['lunch_avg'], b['lunch_avg'])}\n"
+        f"  Dinner avg: {_pct_delta(a['dinner_avg'], b['dinner_avg'])}\n"
+        f"  Tips %: {_pct_delta(a['tips_pct'], b['tips_pct'])}\n"
+        f"  No-show rate: {_pct_delta(a['noshow_rate'], b['noshow_rate'])}"
     )
     await update.message.reply_text(msg)
 
@@ -1622,13 +1713,62 @@ async def weekdaymix_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         avg_sales = sum(r["total_sales"] for r in day_rows) / len(day_rows)
         avg_covers = sum(r["covers"] for r in day_rows) / len(day_rows)
         avg_ticket = (avg_sales / avg_covers) if avg_covers else 0.0
+        total_noshows = sum(r.get("lunch_noshows", 0) + r.get("dinner_noshows", 0) for r in day_rows)
+        total_bookings = sum(r["covers"] for r in day_rows) + total_noshows
+        noshow_rate = (total_noshows / total_bookings * 100) if total_bookings else 0.0
         lines.append(
             f"{day_names[wd]}  |  Avg sales: €{avg_sales:.0f}  |  "
-            f"Avg covers: {avg_covers:.0f}  |  Avg ticket: €{avg_ticket:.2f}  "
-            f"({len(day_rows)} days)"
+            f"Avg covers: {avg_covers:.0f}  |  Avg ticket: €{avg_ticket:.2f}  |  "
+            f"No-show: {noshow_rate:.1f}%  ({len(day_rows)} days)"
         )
     await update.message.reply_text("\n".join(lines))
 
+async def noshowrate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allow_sales_cmd(update):
+        return
+    try:
+        n_weeks = int(context.args[0]) if context.args else 8
+        if n_weeks < 1 or n_weeks > 52:
+            raise ValueError
+    except (ValueError, IndexError):
+        await update.message.reply_text("Usage: /noshowrate  or  /noshowrate 12  (last N weeks, default 8)")
+        return
+    today = business_day_today()
+    start = today - timedelta(weeks=n_weeks)
+    p = Period(start, today)
+    rows = get_full_days_in_period(p)
+    if not rows:
+        await update.message.reply_text(f"No data found in the last {n_weeks} weeks.")
+        return
+
+    day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    buckets: dict[int, list[dict]] = {i: [] for i in range(7)}
+    for r in rows:
+        wd = r["day"].weekday()
+        buckets[wd].append(r)
+
+    lines = [f"🚫 No-Show Rate by Weekday (last {n_weeks} weeks)\n"]
+    for wd in range(6):  # Mon–Sat
+        day_rows = buckets[wd]
+        if not day_rows:
+            lines.append(f"{day_names[wd]}  —  no data")
+            continue
+        lunch_ns = sum(r.get("lunch_noshows", 0) for r in day_rows)
+        dinner_ns = sum(r.get("dinner_noshows", 0) for r in day_rows)
+        lunch_pax = sum(r.get("lunch_pax", 0) for r in day_rows)
+        dinner_pax = sum(r.get("dinner_pax", 0) for r in day_rows)
+        total_ns = lunch_ns + dinner_ns
+        total_booked = lunch_pax + dinner_pax + total_ns
+        overall_rate = (total_ns / total_booked * 100) if total_booked else 0.0
+        lunch_rate = (lunch_ns / (lunch_pax + lunch_ns) * 100) if (lunch_pax + lunch_ns) else 0.0
+        dinner_rate = (dinner_ns / (dinner_pax + dinner_ns) * 100) if (dinner_pax + dinner_ns) else 0.0
+        avg_ns_per_day = total_ns / len(day_rows)
+        lines.append(
+            f"{day_names[wd]}  |  Overall: {overall_rate:.1f}%  |  "
+            f"🌞 Lunch: {lunch_rate:.1f}%  |  🌙 Dinner: {dinner_rate:.1f}%  |  "
+            f"Avg {avg_ns_per_day:.1f} no-shows/day  ({len(day_rows)} days)"
+        )
+    await update.message.reply_text("\n".join(lines))
 
 GUIDED_STEPS = [
     ("day", "Day (DD/MM/YYYY or YYYY-MM-DD)?"),
@@ -2053,6 +2193,7 @@ def main():
     app.add_handler(CommandHandler("monthcompare", monthcompare_cmd))
     app.add_handler(CommandHandler("weekendcompare", weekendcompare_cmd))
     app.add_handler(CommandHandler("weekdaymix", weekdaymix_cmd))
+    app.add_handler(CommandHandler("noshowrate", noshowrate_cmd))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
