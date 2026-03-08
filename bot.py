@@ -567,6 +567,103 @@ def sum_full_in_period(p: Period):
     }
 
 # =========================
+# NEW ANALYTICS DB HELPERS
+# =========================
+
+def get_full_days_for_weekday(weekday: int, before_or_on: date, limit: int) -> list[dict]:
+    """Return up to `limit` full_daily_stats rows for the given ISO weekday (Mon=1..Sun=7),
+    ordered most recent first, on or before `before_or_on`."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT day, total_sales,
+                       lunch_pax, dinner_pax,
+                       (COALESCE(lunch_pax,0) + COALESCE(dinner_pax,0)) AS covers
+                FROM full_daily_stats
+                WHERE EXTRACT(ISODOW FROM day) = %s AND day <= %s
+                ORDER BY day DESC
+                LIMIT %s;
+                """,
+                (weekday, before_or_on, limit),
+            )
+            rows = cur.fetchall()
+    result = []
+    for r in rows:
+        covers = int(r[4] or 0)
+        sales = float(r[1] or 0)
+        result.append({
+            "day": r[0],
+            "total_sales": sales,
+            "lunch_pax": int(r[2] or 0),
+            "dinner_pax": int(r[3] or 0),
+            "covers": covers,
+            "avg_ticket": (sales / covers) if covers else 0.0,
+        })
+    return result
+
+def get_full_days_in_period(p: Period) -> list[dict]:
+    """Return all full_daily_stats rows in period ordered by day ASC."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT day, total_sales,
+                       lunch_pax, dinner_pax,
+                       (COALESCE(lunch_pax,0) + COALESCE(dinner_pax,0)) AS covers
+                FROM full_daily_stats
+                WHERE day BETWEEN %s AND %s
+                ORDER BY day ASC;
+                """,
+                (p.start, p.end),
+            )
+            rows = cur.fetchall()
+    result = []
+    for r in rows:
+        covers = int(r[4] or 0)
+        sales = float(r[1] or 0)
+        result.append({
+            "day": r[0],
+            "total_sales": sales,
+            "lunch_pax": int(r[2] or 0),
+            "dinner_pax": int(r[3] or 0),
+            "covers": covers,
+            "avg_ticket": (sales / covers) if covers else 0.0,
+        })
+    return result
+
+def get_full_days_for_dates(dates: list[date]) -> dict:
+    """Return full_daily_stats rows keyed by date for the given list of dates."""
+    if not dates:
+        return {}
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT day, total_sales,
+                       lunch_pax, dinner_pax,
+                       (COALESCE(lunch_pax,0) + COALESCE(dinner_pax,0)) AS covers
+                FROM full_daily_stats
+                WHERE day = ANY(%s);
+                """,
+                (dates,),
+            )
+            rows = cur.fetchall()
+    result = {}
+    for r in rows:
+        covers = int(r[4] or 0)
+        sales = float(r[1] or 0)
+        result[r[0]] = {
+            "day": r[0],
+            "total_sales": sales,
+            "lunch_pax": int(r[2] or 0),
+            "dinner_pax": int(r[3] or 0),
+            "covers": covers,
+            "avg_ticket": (sales / covers) if covers else 0.0,
+        }
+    return result
+
+# =========================
 # Owners formatting helpers
 # =========================
 def euro_comma(x: float) -> str:
@@ -1307,8 +1404,232 @@ async def complaints(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⚠️ Complaint signals:\n" + "\n".join(f"{w}: {c}" for w, c in top))
 
 # =========================
-# FULL DAILY: /setfull + GUIDED MODE
+# NEW ANALYTICS COMMANDS
 # =========================
+
+def _fmt_snapshot(day_: date, label: str) -> str:
+    """Format a full single-day snapshot for /today and /yesterday."""
+    row = get_full_day(day_)
+    if not row:
+        return f"No data for {label} ({fmt_day_ddmmyyyy(day_)}) yet."
+    (total_sales, visa, cash, tips,
+     lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
+     dinner_sales, dinner_pax, dinner_walkins, dinner_noshows) = row
+    total_sales = float(total_sales or 0)
+    lunch_pax = int(lunch_pax or 0)
+    dinner_pax = int(dinner_pax or 0)
+    covers = lunch_pax + dinner_pax
+    avg_ticket = (total_sales / covers) if covers else 0.0
+    lunch_sales = float(lunch_sales or 0)
+    dinner_sales = float(dinner_sales or 0)
+    lunch_avg = (lunch_sales / lunch_pax) if lunch_pax else 0.0
+    dinner_avg = (dinner_sales / dinner_pax) if dinner_pax else 0.0
+    return (
+        f"📊 Norah — {label} ({fmt_day_ddmmyyyy(day_)})\n\n"
+        f"💰 Sales: €{total_sales:.2f}\n"
+        f"   Visa: €{float(visa or 0):.2f}  |  Cash: €{float(cash or 0):.2f}\n"
+        f"   Tips: €{float(tips or 0):.2f}\n\n"
+        f"👥 Covers: {covers}  |  Avg ticket: €{avg_ticket:.2f}\n\n"
+        f"🌞 Lunch: €{lunch_sales:.2f}  |  {lunch_pax} pax  |  Avg €{lunch_avg:.2f}\n"
+        f"   Walk-ins: {int(lunch_walkins or 0)}  |  No-shows: {int(lunch_noshows or 0)}\n\n"
+        f"🌙 Dinner: €{dinner_sales:.2f}  |  {dinner_pax} pax  |  Avg €{dinner_avg:.2f}\n"
+        f"   Walk-ins: {int(dinner_walkins or 0)}  |  No-shows: {int(dinner_noshows or 0)}"
+    )
+
+def _sum_period_rows(rows: list[dict]) -> dict:
+    """Aggregate a list of daily row dicts into period totals."""
+    sales = sum(r["total_sales"] for r in rows)
+    covers = sum(r["covers"] for r in rows)
+    return {
+        "sales": sales,
+        "covers": covers,
+        "avg_ticket": (sales / covers) if covers else 0.0,
+        "days": len(rows),
+    }
+
+def _pct_delta(va: float, vb: float) -> str:
+    if vb == 0:
+        return "n/a"
+    pct = (va - vb) / vb * 100
+    sign = "+" if pct >= 0 else ""
+    return f"{sign}{pct:.1f}%"
+
+def _last_monday(d: date) -> date:
+    return d - timedelta(days=d.weekday())
+
+async def today_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allow_sales_cmd(update):
+        return
+    await update.message.reply_text(_fmt_snapshot(business_day_today(), "Today"))
+
+async def yesterday_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allow_sales_cmd(update):
+        return
+    await update.message.reply_text(_fmt_snapshot(previous_business_day(), "Yesterday"))
+
+async def dow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allow_sales_cmd(update):
+        return
+    try:
+        n = int(context.args[0]) if context.args else 5
+        if n < 1 or n > 20:
+            raise ValueError
+    except (ValueError, IndexError):
+        await update.message.reply_text("Usage: /dow 5  (compare today with last N same weekdays, 1–20)")
+        return
+    today = business_day_today()
+    weekday = today.isoweekday()  # Mon=1..Sun=7
+    day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    day_name = day_names[weekday - 1]
+    rows = get_full_days_for_weekday(weekday, today, n + 1)
+    if not rows:
+        await update.message.reply_text(f"No {day_name} data found yet.")
+        return
+    lines = [f"📅 {day_name} comparison (last {len(rows)})\n"]
+    for r in rows:
+        tag = "  ← today" if r["day"] == today else ""
+        lines.append(
+            f"📆 {fmt_day_ddmmyyyy(r['day'])}{tag}\n"
+            f"   Sales: €{r['total_sales']:.2f}  |  Covers: {r['covers']}  |  Avg: €{r['avg_ticket']:.2f}"
+        )
+    await update.message.reply_text("\n".join(lines))
+
+async def weekcompare_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allow_sales_cmd(update):
+        return
+    today = business_day_today()
+    this_mon = _last_monday(today)
+    last_mon = this_mon - timedelta(days=7)
+    last_equiv = today - timedelta(days=7)
+
+    rows_this = get_full_days_in_period(Period(this_mon, today))
+    rows_last = get_full_days_in_period(Period(last_mon, last_equiv))
+    a = _sum_period_rows(rows_this)
+    b = _sum_period_rows(rows_last)
+
+    msg = (
+        f"📊 Week Comparison\n\n"
+        f"This week ({fmt_day_ddmmyyyy(this_mon)} → {fmt_day_ddmmyyyy(today)}):\n"
+        f"  Sales: €{a['sales']:.2f}\n"
+        f"  Covers: {a['covers']}  |  Avg ticket: €{a['avg_ticket']:.2f}\n"
+        f"  Days w/ data: {a['days']}\n\n"
+        f"Last week ({fmt_day_ddmmyyyy(last_mon)} → {fmt_day_ddmmyyyy(last_equiv)}):\n"
+        f"  Sales: €{b['sales']:.2f}\n"
+        f"  Covers: {b['covers']}  |  Avg ticket: €{b['avg_ticket']:.2f}\n"
+        f"  Days w/ data: {b['days']}\n\n"
+        f"📈 vs last week:\n"
+        f"  Sales: {_pct_delta(a['sales'], b['sales'])}\n"
+        f"  Covers: {_pct_delta(a['covers'], b['covers'])}\n"
+        f"  Avg ticket: {_pct_delta(a['avg_ticket'], b['avg_ticket'])}"
+    )
+    await update.message.reply_text(msg)
+
+async def monthcompare_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allow_sales_cmd(update):
+        return
+    today = business_day_today()
+    this_start = date(today.year, today.month, 1)
+
+    # Same day number last month
+    last_start = add_months(this_start, -1)
+    last_equiv = add_months(today, -1)
+
+    rows_this = get_full_days_in_period(Period(this_start, today))
+    rows_last = get_full_days_in_period(Period(last_start, last_equiv))
+    a = _sum_period_rows(rows_this)
+    b = _sum_period_rows(rows_last)
+
+    msg = (
+        f"📊 Month Comparison\n\n"
+        f"This month ({fmt_day_ddmmyyyy(this_start)} → {fmt_day_ddmmyyyy(today)}):\n"
+        f"  Sales: €{a['sales']:.2f}\n"
+        f"  Covers: {a['covers']}  |  Avg ticket: €{a['avg_ticket']:.2f}\n"
+        f"  Days w/ data: {a['days']}\n\n"
+        f"Last month ({fmt_day_ddmmyyyy(last_start)} → {fmt_day_ddmmyyyy(last_equiv)}):\n"
+        f"  Sales: €{b['sales']:.2f}\n"
+        f"  Covers: {b['covers']}  |  Avg ticket: €{b['avg_ticket']:.2f}\n"
+        f"  Days w/ data: {b['days']}\n\n"
+        f"📈 vs last month:\n"
+        f"  Sales: {_pct_delta(a['sales'], b['sales'])}\n"
+        f"  Covers: {_pct_delta(a['covers'], b['covers'])}\n"
+        f"  Avg ticket: {_pct_delta(a['avg_ticket'], b['avg_ticket'])}"
+    )
+    await update.message.reply_text(msg)
+
+async def weekendcompare_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allow_sales_cmd(update):
+        return
+    today = business_day_today()
+    # Find most recent Saturday on or before today
+    days_since_sat = (today.weekday() - 5) % 7  # Saturday=5 in weekday()
+    last_sat = today - timedelta(days=days_since_sat)
+    last_fri = last_sat - timedelta(days=1)
+    prev_sat = last_sat - timedelta(days=7)
+    prev_fri = prev_sat - timedelta(days=1)
+
+    rows_a = get_full_days_for_dates([last_fri, last_sat])
+    rows_b = get_full_days_for_dates([prev_fri, prev_sat])
+    a = _sum_period_rows(list(rows_a.values()))
+    b = _sum_period_rows(list(rows_b.values()))
+
+    msg = (
+        f"📊 Weekend Comparison (Fri + Sat)\n\n"
+        f"Last weekend ({fmt_day_ddmmyyyy(last_fri)} – {fmt_day_ddmmyyyy(last_sat)}):\n"
+        f"  Sales: €{a['sales']:.2f}\n"
+        f"  Covers: {a['covers']}  |  Avg ticket: €{a['avg_ticket']:.2f}\n"
+        f"  Days w/ data: {a['days']}\n\n"
+        f"Previous weekend ({fmt_day_ddmmyyyy(prev_fri)} – {fmt_day_ddmmyyyy(prev_sat)}):\n"
+        f"  Sales: €{b['sales']:.2f}\n"
+        f"  Covers: {b['covers']}  |  Avg ticket: €{b['avg_ticket']:.2f}\n"
+        f"  Days w/ data: {b['days']}\n\n"
+        f"📈 vs previous weekend:\n"
+        f"  Sales: {_pct_delta(a['sales'], b['sales'])}\n"
+        f"  Covers: {_pct_delta(a['covers'], b['covers'])}\n"
+        f"  Avg ticket: {_pct_delta(a['avg_ticket'], b['avg_ticket'])}"
+    )
+    await update.message.reply_text(msg)
+
+async def weekdaymix_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allow_sales_cmd(update):
+        return
+    try:
+        n_weeks = int(context.args[0]) if context.args else 8
+        if n_weeks < 1 or n_weeks > 52:
+            raise ValueError
+    except (ValueError, IndexError):
+        await update.message.reply_text("Usage: /weekdaymix  or  /weekdaymix 12  (last N weeks, default 8)")
+        return
+    today = business_day_today()
+    start = today - timedelta(weeks=n_weeks)
+    p = Period(start, today)
+    rows = get_full_days_in_period(p)
+    if not rows:
+        await update.message.reply_text(f"No data found in the last {n_weeks} weeks.")
+        return
+
+    day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    buckets: dict[int, list[dict]] = {i: [] for i in range(7)}
+    for r in rows:
+        wd = r["day"].weekday()  # Mon=0..Sun=6
+        buckets[wd].append(r)
+
+    lines = [f"📅 Weekday Mix (last {n_weeks} weeks)\n"]
+    for wd in range(6):  # Mon–Sat, skip Sun
+        day_rows = buckets[wd]
+        if not day_rows:
+            lines.append(f"{day_names[wd]}  —  no data")
+            continue
+        avg_sales = sum(r["total_sales"] for r in day_rows) / len(day_rows)
+        avg_covers = sum(r["covers"] for r in day_rows) / len(day_rows)
+        avg_ticket = (avg_sales / avg_covers) if avg_covers else 0.0
+        lines.append(
+            f"{day_names[wd]}  |  Avg sales: €{avg_sales:.0f}  |  "
+            f"Avg covers: {avg_covers:.0f}  |  Avg ticket: €{avg_ticket:.2f}  "
+            f"({len(day_rows)} days)"
+        )
+    await update.message.reply_text("\n".join(lines))
+
+
 GUIDED_STEPS = [
     ("day", "Day (DD/MM/YYYY or YYYY-MM-DD)?"),
     ("total_sales", "Total Sales Day?"),
@@ -1723,6 +2044,15 @@ def main():
 
     # Admin repost
     app.add_handler(CommandHandler("postday", postday))
+
+    # New analytics commands
+    app.add_handler(CommandHandler("today", today_cmd))
+    app.add_handler(CommandHandler("yesterday", yesterday_cmd))
+    app.add_handler(CommandHandler("dow", dow_cmd))
+    app.add_handler(CommandHandler("weekcompare", weekcompare_cmd))
+    app.add_handler(CommandHandler("monthcompare", monthcompare_cmd))
+    app.add_handler(CommandHandler("weekendcompare", weekendcompare_cmd))
+    app.add_handler(CommandHandler("weekdaymix", weekdaymix_cmd))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
