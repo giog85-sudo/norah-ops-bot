@@ -1134,9 +1134,54 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(msg)
 
-# =========================
-# SALES COMMANDS
-# =========================
+async def resetdb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin only — wipe all operational data, keep structure intact."""
+    if not await guard_admin(update, reply_in_private_only=False):
+        return
+    # Require confirmation argument to prevent accidents
+    if not context.args or context.args[0] != "CONFIRM":
+        await update.message.reply_text(
+            "⚠️ This will delete ALL data (sales, notes, stats).\n\n"
+            "To confirm, send:\n/resetdb CONFIRM"
+        )
+        return
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("TRUNCATE TABLE full_daily_stats;")
+            cur.execute("TRUNCATE TABLE daily_stats;")
+            cur.execute("TRUNCATE TABLE notes_entries;")
+        conn.commit()
+    await update.message.reply_text("✅ Database wiped. All sales and notes data deleted. Ready for real data.")
+
+async def deleteday_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin only — delete all data for a specific business day."""
+    if not await guard_admin(update, reply_in_private_only=False):
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /deleteday YYYY-MM-DD")
+        return
+    try:
+        day_ = parse_yyyy_mm_dd(context.args[0])
+    except:
+        await update.message.reply_text("Usage: /deleteday YYYY-MM-DD\nExample: /deleteday 2026-02-27")
+        return
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM full_daily_stats WHERE day = %s;", (day_,))
+            deleted_full = cur.rowcount
+            cur.execute("DELETE FROM daily_stats WHERE day = %s;", (day_,))
+            deleted_daily = cur.rowcount
+            cur.execute("DELETE FROM notes_entries WHERE day = %s;", (day_,))
+            deleted_notes = cur.rowcount
+        conn.commit()
+    await update.message.reply_text(
+        f"🗑️ Deleted data for {day_.isoformat()}:\n"
+        f"  Full stats: {deleted_full} row(s)\n"
+        f"  Daily stats: {deleted_daily} row(s)\n"
+        f"  Notes: {deleted_notes} row(s)"
+    )
+
+
 def _append_full_analytics_block(p: Period) -> str:
     agg = sum_full_in_period(p)
     full_days = agg["full_days"]
@@ -2322,6 +2367,8 @@ def main():
 
     app.add_handler(CommandHandler("whoami", whoami))
     app.add_handler(CommandHandler("ping", ping))
+    app.add_handler(CommandHandler("resetdb", resetdb_cmd))
+    app.add_handler(CommandHandler("deleteday", deleteday_cmd))
 
     app.add_handler(CommandHandler("setdaily", setdaily))
     app.add_handler(CommandHandler("edit", edit))
