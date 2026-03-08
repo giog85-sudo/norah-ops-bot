@@ -885,6 +885,9 @@ def parse_full_report_block(text: str) -> dict:
             if any(low.startswith(x.lower() + ":") for x in ["dinner", "cena", "lunch", "almuerzo", "comida"]):
                 break
 
+            if low.startswith("average pax") or low.startswith("avg pax") or low.startswith("avg ticket") or low.startswith("average ticket") or low.startswith("media pax") or low.startswith("ticket medio"):
+                continue  # bot calculates this — skip if GM still includes it
+
             if low.startswith("pax") or low.startswith("personas"):
                 pax = _int(ln.split(":", 1)[1])
             elif low.startswith("walk in") or low.startswith("walk-in") or low.startswith("walkin") or low.startswith("sin reserva") or low.startswith("sin-reserva"):
@@ -2016,22 +2019,25 @@ def build_owners_post_for_day(report_day: date) -> str:
 
         lunch_avg = (float(lunch_sales) / int(lunch_pax)) if lunch_pax else 0.0
         dinner_avg = (float(dinner_sales) / int(dinner_pax)) if dinner_pax else 0.0
+        total_covers = int(lunch_pax or 0) + int(dinner_pax or 0)
+        total_avg = (float(total_sales) / total_covers) if total_covers else 0.0
 
         msg = (
             f"📌 Norah Daily Post\n"
             f"Day: {fmt_day_ddmmyyyy(report_day)}\n"
-            f"Total Sales Day: {euro_comma(total_sales)}\n\n"
+            f"Total Sales Day: {euro_comma(total_sales)}\n"
+            f"Total Covers: {total_covers}  |  Avg Ticket: {euro_comma(total_avg)}\n\n"
             f"Visa: {euro_comma(visa)}\n"
             f"Cash: {euro_comma(cash)}\n"
             f"Tips: {euro_comma(tips)}\n\n"
             f"Lunch: {euro_comma(lunch_sales)}\n"
             f"Pax: {int(lunch_pax)}\n"
-            f"Average pax: {euro_comma(lunch_avg)}\n"
+            f"Avg Ticket: {euro_comma(lunch_avg)}\n"
             f"Walk in: {int(lunch_walkins)}\n"
             f"No show: {int(lunch_noshows)}\n\n"
             f"Dinner: {euro_comma(dinner_sales)}\n"
             f"Pax: {int(dinner_pax)}\n"
-            f"Average pax: {euro_comma(dinner_avg)}\n"
+            f"Avg Ticket: {euro_comma(dinner_avg)}\n"
             f"Walk in: {int(dinner_walkins)}\n"
             f"No show: {int(dinner_noshows)}\n\n"
             f"📝 Notes:\n{notes_block}"
@@ -2040,18 +2046,19 @@ def build_owners_post_for_day(report_day: date) -> str:
         msg = (
             f"📌 Norah Daily Post\n"
             f"Day: {fmt_day_ddmmyyyy(report_day)}\n"
-            f"Total Sales Day: —\n\n"
+            f"Total Sales Day: —\n"
+            f"Total Covers: —  |  Avg Ticket: —\n\n"
             f"Visa: —\n"
             f"Cash: —\n"
             f"Tips: —\n\n"
             f"Lunch: —\n"
             f"Pax: —\n"
-            f"Average pax: —\n"
+            f"Avg Ticket: —\n"
             f"Walk in: —\n"
             f"No show: —\n\n"
             f"Dinner: —\n"
             f"Pax: —\n"
-            f"Average pax: —\n"
+            f"Avg Ticket: —\n"
             f"Walk in: —\n"
             f"No show: —\n\n"
             f"📝 Notes:\n{notes_block}"
