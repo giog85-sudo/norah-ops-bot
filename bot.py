@@ -1,3 +1,4 @@
+import json
 import os
 import re
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ from telegram.ext import (
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 
 TZ_NAME = (os.getenv("TZ_NAME") or os.getenv("TIMEZONE") or "Europe/Madrid").strip() or "Europe/Madrid"
 CUTOFF_HOUR = int((os.getenv("CUTOFF_HOUR", "11").strip() or "11"))
@@ -287,7 +289,6 @@ def previous_business_day(ts: datetime | None = None) -> date:
     return business_day_for(ts) - timedelta(days=1)
 
 def normalize_date_separators(s: str) -> str:
-    # Convert common Unicode dashes to ASCII hyphen-minus
     return (s or "").strip().replace("–", "-").replace("—", "-").replace("−", "-")
 
 def parse_yyyy_mm_dd(s: str) -> date:
@@ -369,7 +370,6 @@ def tokenize(text: str) -> list[str]:
 # =========================
 # NOTE TAG SYSTEM
 # =========================
-# Supported tags and their aliases (all matched case-insensitively)
 NOTE_TAGS = {
     "SOLD OUT":    ["[sold out]", "[soldout]", "[agotado]", "[sin existencias]"],
     "COMPLAINT":   ["[complaint]", "[complaints]", "[queja]", "[quejas]", "[reclamacion]"],
@@ -387,7 +387,6 @@ TAG_EMOJIS = {
 }
 
 def extract_note_tags(text: str) -> list[str]:
-    """Return list of canonical tag names found in the note text."""
     tl = (text or "").lower()
     found = []
     for canonical, aliases in NOTE_TAGS.items():
@@ -396,7 +395,6 @@ def extract_note_tags(text: str) -> list[str]:
     return found
 
 def extract_tag_content(text: str, tag: str) -> str:
-    """Return text that follows the tag marker, stripping the tag itself."""
     tl = text.lower()
     aliases = NOTE_TAGS.get(tag, [])
     for alias in aliases:
@@ -406,8 +404,8 @@ def extract_tag_content(text: str, tag: str) -> str:
     return text.strip()
 
 def notes_have_any_tag(rows: list[tuple]) -> bool:
-    """Return True if any note in rows contains a structured tag."""
     return any(extract_note_tags(txt) for _, txt in rows)
+
 def upsert_daily(day_: date, sales: float, covers: int):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -610,8 +608,6 @@ def sum_full_in_period(p: Period):
 # =========================
 
 def get_full_days_for_weekday(weekday: int, before_or_on: date, limit: int) -> list[dict]:
-    """Return up to `limit` full_daily_stats rows for the given ISO weekday (Mon=1..Sun=7),
-    ordered most recent first, on or before `before_or_on`."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -655,7 +651,6 @@ def get_full_days_for_weekday(weekday: int, before_or_on: date, limit: int) -> l
     return result
 
 def get_full_days_in_period(p: Period) -> list[dict]:
-    """Return all full_daily_stats rows in period ordered by day ASC."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -698,7 +693,6 @@ def get_full_days_in_period(p: Period) -> list[dict]:
     return result
 
 def get_full_days_for_dates(dates: list[date]) -> dict:
-    """Return full_daily_stats rows keyed by date for the given list of dates."""
     if not dates:
         return {}
     with get_conn() as conn:
@@ -844,13 +838,11 @@ def parse_full_report_block(text: str) -> dict:
                     return raw.split(":", 1)[1].strip() if ":" in raw else raw[len(pfx):].strip()
         return None
 
-    # Day (English / Spanish)
     day_str = find_line(["Day", "Día", "Dia", "Fecha"])
     if not day_str:
         raise ValueError("Missing Day")
     day_ = parse_any_date(day_str)
 
-    # Totals
     total_sales = _num(find_line(["Total Sales Day", "Total Sales", "Ventas Totales Día", "Ventas Totales", "Ventas"]) or "")
     visa = _num(find_line(["Visa", "Tarjeta", "Card"]) or "0")
     cash = _num(find_line(["Cash", "Efectivo"]) or "0")
@@ -881,12 +873,11 @@ def parse_full_report_block(text: str) -> dict:
                 continue
             low = ln.lower()
 
-            # stop if next section begins
             if any(low.startswith(x.lower() + ":") for x in ["dinner", "cena", "lunch", "almuerzo", "comida"]):
                 break
 
             if low.startswith("average pax") or low.startswith("avg pax") or low.startswith("avg ticket") or low.startswith("average ticket") or low.startswith("media pax") or low.startswith("ticket medio"):
-                continue  # bot calculates this — skip if GM still includes it
+                continue
 
             if low.startswith("pax") or low.startswith("personas"):
                 pax = _int(ln.split(":", 1)[1])
@@ -919,7 +910,7 @@ def parse_full_report_block(text: str) -> dict:
     }
 
 # =========================
-# NOTES: auto-detect manager report blocks (English + Spanish)
+# NOTES: auto-detect manager report blocks
 # =========================
 NOTES_HINTS = [
     "incidents", "incident", "staff", "sold out", "sold-out", "complaints",
@@ -927,7 +918,6 @@ NOTES_HINTS = [
 ]
 
 def extract_day_from_notes(text: str) -> date | None:
-    # Optional header: "Day: 26/02/2026" or "Fecha: 2026-02-26"
     for line in (text or "").splitlines()[:6]:
         raw = line.strip()
         if ":" not in raw:
@@ -948,12 +938,347 @@ def looks_like_notes_report(text: str) -> bool:
         return False
     low = t.lower()
     hits = sum(1 for h in NOTES_HINTS if h in low)
-    # require at least 2 hits OR one hit + multi-line structure
     if hits >= 2:
         return True
     if hits >= 1 and ("\n" in t):
         return True
     return False
+
+# =========================
+# AI AGENT (OWNERS_REQUESTS)
+# =========================
+
+AGENT_TOOLS = [
+    {
+        "name": "get_today",
+        "description": "Get today's full sales and operational data (current business day).",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_yesterday",
+        "description": "Get yesterday's full sales and operational data (previous business day).",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_specific_day",
+        "description": "Get full sales and operational data for a specific date.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "description": "Date in YYYY-MM-DD format"}
+            },
+            "required": ["date"],
+        },
+    },
+    {
+        "name": "get_period_summary",
+        "description": "Get aggregated sales and operational summary for a date range.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start_date": {"type": "string", "description": "Start date YYYY-MM-DD"},
+                "end_date": {"type": "string", "description": "End date YYYY-MM-DD"},
+            },
+            "required": ["start_date", "end_date"],
+        },
+    },
+    {
+        "name": "get_week_comparison",
+        "description": "Compare this week's performance vs the same period last week.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_month_comparison",
+        "description": "Compare this month's performance vs the same period last month.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_weekend_comparison",
+        "description": "Compare last weekend (Fri+Sat) vs the previous weekend.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_weekday_history",
+        "description": "Get historical data for a specific day of the week (e.g., all recent Tuesdays). Use this to answer questions like 'how do our Fridays compare' or 'what's our typical Tuesday like'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "weekday": {
+                    "type": "integer",
+                    "description": "ISO weekday: 1=Monday, 2=Tuesday, 3=Wednesday, 4=Thursday, 5=Friday, 6=Saturday, 7=Sunday",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of past occurrences to return (default 6, max 12)",
+                },
+            },
+            "required": ["weekday"],
+        },
+    },
+    {
+        "name": "get_notes",
+        "description": "Get manager operational notes for a date range. Notes may contain incidents, complaints, sold-out items, staff issues, and other operational observations.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start_date": {"type": "string", "description": "Start date YYYY-MM-DD"},
+                "end_date": {"type": "string", "description": "End date YYYY-MM-DD"},
+            },
+            "required": ["start_date", "end_date"],
+        },
+    },
+]
+
+
+def _agent_row_to_dict(row, day_: date, label: str = "") -> dict:
+    (total_sales, visa, cash, tips,
+     lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
+     dinner_sales, dinner_pax, dinner_walkins, dinner_noshows) = row
+    covers = int((lunch_pax or 0) + (dinner_pax or 0))
+    lunch_pax = int(lunch_pax or 0)
+    dinner_pax = int(dinner_pax or 0)
+    return {
+        "date": day_.isoformat(),
+        **({"label": label} if label else {}),
+        "total_sales": float(total_sales or 0),
+        "visa": float(visa or 0),
+        "cash": float(cash or 0),
+        "tips": float(tips or 0),
+        "covers": covers,
+        "avg_ticket": (float(total_sales or 0) / covers) if covers else 0.0,
+        "lunch_sales": float(lunch_sales or 0),
+        "lunch_pax": lunch_pax,
+        "lunch_walkins": int(lunch_walkins or 0),
+        "lunch_noshows": int(lunch_noshows or 0),
+        "lunch_avg": (float(lunch_sales or 0) / lunch_pax) if lunch_pax else 0.0,
+        "dinner_sales": float(dinner_sales or 0),
+        "dinner_pax": dinner_pax,
+        "dinner_walkins": int(dinner_walkins or 0),
+        "dinner_noshows": int(dinner_noshows or 0),
+        "dinner_avg": (float(dinner_sales or 0) / dinner_pax) if dinner_pax else 0.0,
+    }
+
+
+def _exec_get_today() -> dict:
+    day_ = business_day_today()
+    row = get_full_day(day_)
+    if not row:
+        return {"error": f"No data for today ({day_.isoformat()}) yet."}
+    return _agent_row_to_dict(row, day_, "today")
+
+
+def _exec_get_yesterday() -> dict:
+    day_ = previous_business_day()
+    row = get_full_day(day_)
+    if not row:
+        return {"error": f"No data for yesterday ({day_.isoformat()}) yet."}
+    return _agent_row_to_dict(row, day_, "yesterday")
+
+
+def _exec_get_specific_day(date_str: str) -> dict:
+    try:
+        day_ = parse_yyyy_mm_dd(date_str)
+    except Exception:
+        return {"error": f"Invalid date: {date_str}. Use YYYY-MM-DD."}
+    row = get_full_day(day_)
+    if not row:
+        return {"error": f"No data for {date_str}."}
+    return _agent_row_to_dict(row, day_)
+
+
+def _exec_get_period_summary(start_date: str, end_date: str) -> dict:
+    try:
+        start = parse_yyyy_mm_dd(start_date)
+        end = parse_yyyy_mm_dd(end_date)
+    except Exception:
+        return {"error": "Invalid date format. Use YYYY-MM-DD."}
+    p = Period(start, end)
+    agg = sum_full_in_period(p)
+    covers = agg["lunch_pax"] + agg["dinner_pax"]
+    return {
+        "start_date": start_date,
+        "end_date": end_date,
+        "days_with_data": agg["full_days"],
+        "total_sales": agg["total_sales"],
+        "tips": agg["tips"],
+        "covers": covers,
+        "avg_ticket": (agg["total_sales"] / covers) if covers else 0.0,
+        "lunch_sales": agg["lunch_sales"],
+        "lunch_pax": agg["lunch_pax"],
+        "lunch_avg": (agg["lunch_sales"] / agg["lunch_pax"]) if agg["lunch_pax"] else 0.0,
+        "lunch_noshows": agg["lunch_noshows"],
+        "dinner_sales": agg["dinner_sales"],
+        "dinner_pax": agg["dinner_pax"],
+        "dinner_avg": (agg["dinner_sales"] / agg["dinner_pax"]) if agg["dinner_pax"] else 0.0,
+        "dinner_noshows": agg["dinner_noshows"],
+        "total_noshows": agg["lunch_noshows"] + agg["dinner_noshows"],
+    }
+
+
+def _exec_get_week_comparison() -> dict:
+    today = business_day_today()
+    this_mon = _last_monday(today)
+    last_mon = this_mon - timedelta(days=7)
+    last_equiv = today - timedelta(days=7)
+    a = _sum_period_rows(get_full_days_in_period(Period(this_mon, today)))
+    b = _sum_period_rows(get_full_days_in_period(Period(last_mon, last_equiv)))
+    return {
+        "this_week": {"start": this_mon.isoformat(), "end": today.isoformat(), **a},
+        "last_week": {"start": last_mon.isoformat(), "end": last_equiv.isoformat(), **b},
+    }
+
+
+def _exec_get_month_comparison() -> dict:
+    today = business_day_today()
+    this_start = date(today.year, today.month, 1)
+    last_start = add_months(this_start, -1)
+    last_equiv = add_months(today, -1)
+    a = _sum_period_rows(get_full_days_in_period(Period(this_start, today)))
+    b = _sum_period_rows(get_full_days_in_period(Period(last_start, last_equiv)))
+    return {
+        "this_month": {"start": this_start.isoformat(), "end": today.isoformat(), **a},
+        "last_month": {"start": last_start.isoformat(), "end": last_equiv.isoformat(), **b},
+    }
+
+
+def _exec_get_weekend_comparison() -> dict:
+    today = business_day_today()
+    days_since_sat = (today.weekday() - 5) % 7
+    last_sat = today - timedelta(days=days_since_sat)
+    last_fri = last_sat - timedelta(days=1)
+    prev_sat = last_sat - timedelta(days=7)
+    prev_fri = prev_sat - timedelta(days=1)
+    a = _sum_period_rows(list(get_full_days_for_dates([last_fri, last_sat]).values()))
+    b = _sum_period_rows(list(get_full_days_for_dates([prev_fri, prev_sat]).values()))
+    return {
+        "last_weekend": {"fri": last_fri.isoformat(), "sat": last_sat.isoformat(), **a},
+        "prev_weekend": {"fri": prev_fri.isoformat(), "sat": prev_sat.isoformat(), **b},
+    }
+
+
+def _exec_get_weekday_history(weekday: int, limit: int = 6) -> dict:
+    limit = min(max(1, limit), 12)
+    today = business_day_today()
+    day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    day_name = day_names[weekday - 1] if 1 <= weekday <= 7 else "Unknown"
+    rows = get_full_days_for_weekday(weekday, today, limit)
+    return {"weekday": weekday, "weekday_name": day_name, "entries": rows}
+
+
+def _exec_get_notes(start_date: str, end_date: str) -> dict:
+    try:
+        start = parse_yyyy_mm_dd(start_date)
+        end = parse_yyyy_mm_dd(end_date)
+    except Exception:
+        return {"error": "Invalid date format. Use YYYY-MM-DD."}
+    rows = notes_in_period(Period(start, end))
+    entries = [
+        {"date": d.isoformat(), "tags": extract_note_tags(txt), "text": txt[:600]}
+        for d, txt in rows[-20:]
+    ]
+    return {"start_date": start_date, "end_date": end_date, "total_notes": len(rows), "entries": entries}
+
+
+def execute_agent_tool(tool_name: str, tool_input: dict) -> str:
+    try:
+        if tool_name == "get_today":
+            result = _exec_get_today()
+        elif tool_name == "get_yesterday":
+            result = _exec_get_yesterday()
+        elif tool_name == "get_specific_day":
+            result = _exec_get_specific_day(tool_input.get("date", ""))
+        elif tool_name == "get_period_summary":
+            result = _exec_get_period_summary(
+                tool_input.get("start_date", ""), tool_input.get("end_date", "")
+            )
+        elif tool_name == "get_week_comparison":
+            result = _exec_get_week_comparison()
+        elif tool_name == "get_month_comparison":
+            result = _exec_get_month_comparison()
+        elif tool_name == "get_weekend_comparison":
+            result = _exec_get_weekend_comparison()
+        elif tool_name == "get_weekday_history":
+            result = _exec_get_weekday_history(
+                int(tool_input.get("weekday", 1)), int(tool_input.get("limit", 6))
+            )
+        elif tool_name == "get_notes":
+            result = _exec_get_notes(
+                tool_input.get("start_date", ""), tool_input.get("end_date", "")
+            )
+        else:
+            result = {"error": f"Unknown tool: {tool_name}"}
+    except Exception as e:
+        result = {"error": str(e)}
+    return json.dumps(result, default=str)
+
+
+def _build_agent_system_prompt() -> str:
+    today = business_day_today()
+    return (
+        f"You are Norah Ops, the analytics assistant for Norah, a restaurant in Madrid, Spain.\n\n"
+        f"Today's business date is {today.isoformat()} ({today.strftime('%A, %d %B %Y')}).\n\n"
+        "You have access to the restaurant's operational database with:\n"
+        "- Daily sales (total, visa, cash, tips)\n"
+        "- Covers split by lunch and dinner\n"
+        "- Average ticket (overall, lunch, dinner)\n"
+        "- Walk-ins and no-shows per service\n"
+        "- Manager operational notes (incidents, complaints, sold-out items, staff issues)\n\n"
+        "Be concise and analytical. Format currency as €X.XX. Always mention which date(s) the data refers to.\n"
+        "If data is missing for a requested period, say so clearly.\n\n"
+        "IMPORTANT: Detect the language of the user's message and always respond in that same language "
+        "(English, Spanish, or Russian). If unclear, default to English."
+    )
+
+
+async def handle_agent_query(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    if not ANTHROPIC_API_KEY:
+        await update.message.reply_text("⚠️ AI agent not configured (missing ANTHROPIC_API_KEY).")
+        return
+
+    import anthropic as _anthropic
+    client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+
+    messages = [{"role": "user", "content": text}]
+
+    try:
+        for _ in range(6):  # max iterations to prevent runaway loops
+            response = await client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=1000,
+                system=_build_agent_system_prompt(),
+                tools=AGENT_TOOLS,
+                messages=messages,
+            )
+
+            tool_uses = [b for b in response.content if b.type == "tool_use"]
+            text_blocks = [b for b in response.content if b.type == "text"]
+
+            if response.stop_reason == "end_turn" or not tool_uses:
+                final_text = "\n".join(b.text for b in text_blocks).strip()
+                if final_text:
+                    await update.message.reply_text(final_text)
+                return
+
+            # Execute all tool calls and continue the loop
+            messages.append({"role": "assistant", "content": response.content})
+            tool_results = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tu.id,
+                    "content": execute_agent_tool(tu.name, tu.input),
+                }
+                for tu in tool_uses
+            ]
+            messages.append({"role": "user", "content": tool_results})
+
+        await update.message.reply_text("⚠️ Could not complete the request. Please try rephrasing.")
+
+    except Exception as e:
+        print(f"Agent error: {e}")
+        await update.message.reply_text("⚠️ Something went wrong. Please try again.")
+
 
 # =========================
 # HELP TEXT
@@ -1111,11 +1436,13 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     allow_mode = "OPEN" if ACCESS_MODE == "OPEN" else ("OPEN (no ALLOWED_USER_IDS set)" if not ALLOWED_USER_IDS else "RESTRICTED")
     jobq = "YES" if context.application.job_queue is not None else "NO"
+    agent_status = "✅ configured" if ANTHROPIC_API_KEY else "❌ missing ANTHROPIC_API_KEY"
 
     msg = (
         "🏓 PONG — Norah Ops Health Check\n\n"
         f"Bot: ✅ running\n"
         f"DB: {'✅ OK' if db_ok else '❌ FAIL'}\n"
+        f"AI Agent: {agent_status}\n"
     )
     if not db_ok:
         msg += f"DB error: {db_err}\n"
@@ -1135,10 +1462,8 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 async def resetdb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin only — wipe all operational data, keep structure intact."""
     if not await guard_admin(update, reply_in_private_only=False):
         return
-    # Require confirmation argument to prevent accidents
     if not context.args or context.args[0] != "CONFIRM":
         await update.message.reply_text(
             "⚠️ This will delete ALL data (sales, notes, stats).\n\n"
@@ -1154,7 +1479,6 @@ async def resetdb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Database wiped. All sales and notes data deleted. Ready for real data.")
 
 async def deleteday_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin only — delete all data for a specific business day."""
     if not await guard_admin(update, reply_in_private_only=False):
         return
     if not context.args:
@@ -1502,7 +1826,6 @@ async def soldout(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No notes found for that period yet.")
         return
 
-    # Tag-based extraction (preferred)
     tagged_texts = [(d, txt) for d, txt in rows if "SOLD OUT" in extract_note_tags(txt)]
     if tagged_texts:
         counter = Counter()
@@ -1512,7 +1835,6 @@ async def soldout(update: Update, context: ContextTypes.DEFAULT_TYPE):
         top = counter.most_common(12)
         source = f"({len(tagged_texts)} tagged notes)"
     else:
-        # Fallback: keyword matching
         counter = Counter()
         for _, txt in rows:
             t = (txt or "").lower()
@@ -1544,7 +1866,6 @@ async def complaints(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No notes found for that period yet.")
         return
 
-    # Tag-based extraction (preferred)
     tagged_texts = [(d, txt) for d, txt in rows if "COMPLAINT" in extract_note_tags(txt)]
     if tagged_texts:
         counter = Counter()
@@ -1554,7 +1875,6 @@ async def complaints(update: Update, context: ContextTypes.DEFAULT_TYPE):
         top = counter.most_common(12)
         source = f"({len(tagged_texts)} tagged notes)"
     else:
-        # Fallback: keyword matching
         counter = Counter()
         for _, txt in rows:
             t = (txt or "").lower()
@@ -1571,7 +1891,6 @@ async def complaints(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def tagstats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show a breakdown of all tagged notes over a period."""
     if not allow_sales_cmd(update):
         return
     try:
@@ -1609,7 +1928,6 @@ async def tagstats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 async def staffnotes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show recent notes tagged with [STAFF]."""
     if not allow_sales_cmd(update):
         return
     try:
@@ -1632,7 +1950,7 @@ async def staffnotes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     lines = [f"👥 Staff Notes ({len(tagged)} entries)\n"]
-    for d, txt in tagged[-10:]:  # show last 10
+    for d, txt in tagged[-10:]:
         content = extract_tag_content(txt, "STAFF")
         lines.append(f"📆 {fmt_day_ddmmyyyy(d)}: {content[:120]}")
     await update.message.reply_text("\n".join(lines))
@@ -1648,9 +1966,7 @@ def _keyword_staff_fallback(rows: list[tuple]) -> str:
     return "\n".join(lines)
 
 
-
 def _fmt_snapshot(day_: date, label: str) -> str:
-    """Format a full single-day snapshot for /today and /yesterday."""
     row = get_full_day(day_)
     if not row:
         return f"No data for {label} ({fmt_day_ddmmyyyy(day_)}) yet."
@@ -1679,7 +1995,6 @@ def _fmt_snapshot(day_: date, label: str) -> str:
     )
 
 def _sum_period_rows(rows: list[dict]) -> dict:
-    """Aggregate a list of daily row dicts into period totals."""
     sales = sum(r["total_sales"] for r in rows)
     covers = sum(r["covers"] for r in rows)
     lunch_sales = sum(r.get("lunch_sales", 0) for r in rows)
@@ -1742,7 +2057,7 @@ async def dow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /dow 5  (compare today with last N same weekdays, 1–20)")
         return
     today = business_day_today()
-    weekday = today.isoweekday()  # Mon=1..Sun=7
+    weekday = today.isoweekday()
     day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     day_name = day_names[weekday - 1]
     rows = get_full_days_for_weekday(weekday, today, n + 1)
@@ -1803,8 +2118,6 @@ async def monthcompare_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     today = business_day_today()
     this_start = date(today.year, today.month, 1)
-
-    # Same day number last month
     last_start = add_months(this_start, -1)
     last_equiv = add_months(today, -1)
 
@@ -1844,8 +2157,7 @@ async def weekendcompare_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not allow_sales_cmd(update):
         return
     today = business_day_today()
-    # Find most recent Saturday on or before today
-    days_since_sat = (today.weekday() - 5) % 7  # Saturday=5 in weekday()
+    days_since_sat = (today.weekday() - 5) % 7
     last_sat = today - timedelta(days=days_since_sat)
     last_fri = last_sat - timedelta(days=1)
     prev_sat = last_sat - timedelta(days=7)
@@ -1904,11 +2216,11 @@ async def weekdaymix_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     buckets: dict[int, list[dict]] = {i: [] for i in range(7)}
     for r in rows:
-        wd = r["day"].weekday()  # Mon=0..Sun=6
+        wd = r["day"].weekday()
         buckets[wd].append(r)
 
     lines = [f"📅 Weekday Mix (last {n_weeks} weeks)\n"]
-    for wd in range(6):  # Mon–Sat, skip Sun
+    for wd in range(6):
         day_rows = buckets[wd]
         if not day_rows:
             lines.append(f"{day_names[wd]}  —  no data")
@@ -1951,7 +2263,7 @@ async def noshowrate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buckets[wd].append(r)
 
     lines = [f"🚫 No-Show Rate by Weekday (last {n_weeks} weeks)\n"]
-    for wd in range(6):  # Mon–Sat
+    for wd in range(6):
         day_rows = buckets[wd]
         if not day_rows:
             lines.append(f"{day_names[wd]}  —  no data")
@@ -2195,7 +2507,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ---------------------------------------------------------
     if role in (ROLE_OPS_ADMIN, ROLE_MANAGER_INPUT):
         low = msg_text.lower()
-        # allow english + spanish signals
         looks_full = (
             ("day:" in low or "día:" in low or "dia:" in low or "fecha:" in low)
             and ("total sales" in low or "ventas" in low)
@@ -2334,6 +2645,13 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Saved 📝 Notes for business day {day_.isoformat()}.{tag_line}")
         return
 
+    # ---------------------------------------------------------
+    # AI Agent — plain text queries in OWNERS_REQUESTS
+    # ---------------------------------------------------------
+    if role == ROLE_OWNERS_REQUESTS and not user.is_bot:
+        await handle_agent_query(update, context, msg_text)
+        return
+
     # Keep owners silent clean
     if get_chat_role(chat.id) == ROLE_OWNERS_SILENT and not user.is_bot:
         try:
@@ -2400,7 +2718,7 @@ def main():
     # Admin repost
     app.add_handler(CommandHandler("postday", postday))
 
-    # New analytics commands
+    # Analytics commands
     app.add_handler(CommandHandler("today", today_cmd))
     app.add_handler(CommandHandler("yesterday", yesterday_cmd))
     app.add_handler(CommandHandler("dow", dow_cmd))
