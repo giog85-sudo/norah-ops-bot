@@ -31,6 +31,18 @@ WEEKLY_DIGEST_HOUR = int((os.getenv("WEEKLY_DIGEST_HOUR", "9").strip() or "9"))
 DAILY_POST_HOUR = int((os.getenv("DAILY_POST_HOUR", "11").strip() or "11"))
 DAILY_POST_MINUTE = int((os.getenv("DAILY_POST_MINUTE", "5").strip() or "5"))
 
+ALERT_NOSHOW_MULTIPLIER        = float((os.getenv("ALERT_NOSHOW_MULTIPLIER",        "2.0").strip() or "2.0"))
+ALERT_SERVICE_IMBALANCE_PCT    = float((os.getenv("ALERT_SERVICE_IMBALANCE_PCT",    "65").strip()  or "65"))
+ALERT_REVENUE_VS_COVERS_DROP_PCT = float((os.getenv("ALERT_REVENUE_VS_COVERS_DROP_PCT", "20").strip() or "20"))
+ALERT_TIPS_DROP_PCT            = float((os.getenv("ALERT_TIPS_DROP_PCT",            "30").strip()  or "30"))
+ALERT_TICKET_EROSION_DAYS      = int((os.getenv("ALERT_TICKET_EROSION_DAYS",        "3").strip()   or "3"))
+ALERT_STRONG_DAY_MISS_PCT      = float((os.getenv("ALERT_STRONG_DAY_MISS_PCT",      "25").strip()  or "25"))
+ALERT_WEEK_PACE_PCT            = float((os.getenv("ALERT_WEEK_PACE_PCT",            "25").strip()  or "25"))
+ALERT_POSITIVE_REVENUE_PCT     = float((os.getenv("ALERT_POSITIVE_REVENUE_PCT",     "15").strip()  or "15"))
+ALERT_POSITIVE_COVERS_PCT      = float((os.getenv("ALERT_POSITIVE_COVERS_PCT",      "10").strip()  or "10"))
+ALERT_TOP_PERCENTILE           = float((os.getenv("ALERT_TOP_PERCENTILE",           "10").strip()  or "10"))
+ALERT_EVENING_HOUR             = int((os.getenv("ALERT_EVENING_HOUR",               "21").strip()  or "21"))
+
 ACCESS_MODE = (os.getenv("ACCESS_MODE", "RESTRICTED").strip().upper() or "RESTRICTED")
 ACCESS_MODE = "OPEN" if ACCESS_MODE == "OPEN" else "RESTRICTED"
 
@@ -735,6 +747,29 @@ def get_full_days_for_dates(dates: list[date]) -> dict:
         }
     return result
 
+def get_all_historical_sales() -> list[float]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT total_sales FROM full_daily_stats "
+                "WHERE total_sales IS NOT NULL ORDER BY total_sales ASC;"
+            )
+            rows = cur.fetchall()
+    return [float(r[0]) for r in rows]
+
+def get_all_historical_covers() -> list[int]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COALESCE(lunch_pax, 0) + COALESCE(dinner_pax, 0)
+                FROM full_daily_stats
+                ORDER BY 1 ASC;
+                """
+            )
+            rows = cur.fetchall()
+    return [int(r[0]) for r in rows]
+
 # =========================
 # Owners formatting helpers
 # =========================
@@ -1278,6 +1313,212 @@ async def handle_agent_query(update: Update, context: ContextTypes.DEFAULT_TYPE,
     except Exception as e:
         print(f"Agent error: {e}")
         await update.message.reply_text("⚠️ Something went wrong. Please try again.")
+
+
+# =========================
+# ANOMALY ALERT SYSTEM
+# =========================
+
+def _top_pct_threshold(sorted_asc: list[float], top_pct: float) -> float:
+    """Value at the boundary of the top `top_pct`% of a sorted-ascending list."""
+    if not sorted_asc:
+        return float("inf")
+    idx = max(0, int(len(sorted_asc) * (1.0 - top_pct / 100.0)))
+    return sorted_asc[min(idx, len(sorted_asc) - 1)]
+
+
+async def send_evening_alerts(context: ContextTypes.DEFAULT_TYPE):
+    chats = owners_silent_chat_ids()
+    if not chats:
+        return
+
+    yesterday = previous_business_day(now_local())
+    row = get_full_day(yesterday)
+    if not row:
+        return  # No full report posted yet — skip silently
+
+    (total_sales, visa, cash, tips,
+     lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
+     dinner_sales, dinner_pax, dinner_walkins, dinner_noshows) = row
+
+    total_sales    = float(total_sales or 0)
+    lunch_sales    = float(lunch_sales or 0)
+    dinner_sales   = float(dinner_sales or 0)
+    lunch_pax      = int(lunch_pax or 0)
+    dinner_pax     = int(dinner_pax or 0)
+    lunch_noshows  = int(lunch_noshows or 0)
+    dinner_noshows = int(dinner_noshows or 0)
+    tips           = float(tips or 0)
+    covers         = lunch_pax + dinner_pax
+    lunch_avg      = (lunch_sales  / lunch_pax)  if lunch_pax  else 0.0
+    dinner_avg     = (dinner_sales / dinner_pax) if dinner_pax else 0.0
+    tips_pct       = (tips / total_sales * 100)  if total_sales else 0.0
+
+    weekday  = yesterday.isoweekday()  # 1=Mon … 7=Sun
+    day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    day_name  = day_names[weekday - 1]
+
+    # Same-weekday history: [yesterday, prev1, prev2, prev3, prev4] ordered DESC
+    same_wd_rows = get_full_days_for_weekday(weekday, yesterday, 5)
+    prev_wd_rows  = same_wd_rows[1:]  # Exclude yesterday; up to 4 previous same-weekday records
+
+    def _avg(vals: list) -> float:
+        return sum(vals) / len(vals) if vals else 0.0
+
+    def _pct(value: float, ref: float) -> float:
+        return (value - ref) / ref * 100.0 if ref else 0.0
+
+    def _fmt(pct: float) -> str:
+        return f"+{pct:.1f}%" if pct >= 0 else f"{pct:.1f}%"
+
+    alerts: list[str] = []
+
+    # ── NEGATIVE: OPERATIONAL PROBLEMS 🔴 ────────────────────────────────────
+
+    if len(prev_wd_rows) >= 2:
+        avg_sales_wd    = _avg([r["total_sales"]    for r in prev_wd_rows])
+        avg_covers_wd   = _avg([r["covers"]         for r in prev_wd_rows])
+        avg_dinner_ns   = _avg([r["dinner_noshows"] for r in prev_wd_rows])
+        avg_tips_pct_wd = _avg([
+            (r["tips"] / r["total_sales"] * 100) if r["total_sales"] else 0.0
+            for r in prev_wd_rows
+        ])
+
+        # 1. Dinner no-shows ≥ multiplier × same-weekday average
+        if avg_dinner_ns > 0 and dinner_noshows >= avg_dinner_ns * ALERT_NOSHOW_MULTIPLIER:
+            pct = _pct(dinner_noshows, avg_dinner_ns)
+            alerts.append(
+                f"🔴 Dinner no-shows: {dinner_noshows} vs {day_name} avg {avg_dinner_ns:.1f} "
+                f"({_fmt(pct)}) — possible confirmation process failure"
+            )
+
+        # 2. Service imbalance: one service ≥ threshold % of daily revenue
+        if total_sales > 0:
+            lunch_share  = lunch_sales  / total_sales * 100
+            dinner_share = dinner_sales / total_sales * 100
+            if lunch_share >= ALERT_SERVICE_IMBALANCE_PCT:
+                alerts.append(
+                    f"🔴 Service imbalance: Lunch was {lunch_share:.0f}% of revenue "
+                    f"(€{lunch_sales:.0f} lunch vs €{dinner_sales:.0f} dinner) — unusually quiet dinner"
+                )
+            elif dinner_share >= ALERT_SERVICE_IMBALANCE_PCT:
+                alerts.append(
+                    f"🔴 Service imbalance: Dinner was {dinner_share:.0f}% of revenue "
+                    f"(€{dinner_sales:.0f} dinner vs €{lunch_sales:.0f} lunch) — unusually quiet lunch"
+                )
+
+        # 3. Covers normal (≥85% of avg) but revenue dropped ≥ threshold %
+        if avg_covers_wd > 0 and avg_sales_wd > 0:
+            covers_ratio = covers / avg_covers_wd
+            revenue_pct  = _pct(total_sales, avg_sales_wd)
+            if covers_ratio >= 0.85 and revenue_pct <= -ALERT_REVENUE_VS_COVERS_DROP_PCT:
+                alerts.append(
+                    f"📊 Revenue −{abs(revenue_pct):.0f}% vs {day_name} avg despite normal covers "
+                    f"(€{total_sales:.0f} vs avg €{avg_sales_wd:.0f} | {covers} covers vs avg {avg_covers_wd:.0f}) "
+                    f"— possible over-discounting or comps"
+                )
+
+        # 4. Tips % dropped ≥ threshold % vs same-weekday average
+        if avg_tips_pct_wd > 0:
+            tips_drop = _pct(tips_pct, avg_tips_pct_wd)
+            if tips_drop <= -ALERT_TIPS_DROP_PCT:
+                alerts.append(
+                    f"🔴 Tips dropped: {tips_pct:.1f}% of revenue vs {day_name} avg {avg_tips_pct_wd:.1f}% "
+                    f"({_fmt(tips_drop)}) — service quality signal"
+                )
+
+    # 5. Consecutive avg-ticket erosion over N same weekdays (lunch OR dinner)
+    n_eros = ALERT_TICKET_EROSION_DAYS
+    if len(same_wd_rows) >= n_eros:
+        erosion_rows = same_wd_rows[:n_eros]  # Newest N same-weekday records, DESC
+        l_avgs = [r["lunch_avg"]  for r in erosion_rows]
+        d_avgs = [r["dinner_avg"] for r in erosion_rows]
+
+        # DESC order → avgs[i] < avgs[i+1] means each weekday occurrence is lower than the one before it
+        if all(v > 0 for v in l_avgs) and all(l_avgs[i] < l_avgs[i + 1] for i in range(n_eros - 1)):
+            trend = " → ".join(f"€{v:.2f}" for v in reversed(l_avgs))
+            alerts.append(
+                f"📊 Lunch avg ticket declining {n_eros} consecutive {day_name}s: "
+                f"{trend} — erosion trend"
+            )
+        if all(v > 0 for v in d_avgs) and all(d_avgs[i] < d_avgs[i + 1] for i in range(n_eros - 1)):
+            trend = " → ".join(f"€{v:.2f}" for v in reversed(d_avgs))
+            alerts.append(
+                f"📊 Dinner avg ticket declining {n_eros} consecutive {day_name}s: "
+                f"{trend} — erosion trend"
+            )
+
+    # ── NEGATIVE: FINANCIAL HEALTH 📊 ────────────────────────────────────────
+
+    # 6. Friday/Saturday: revenue ≥ threshold % below typical same-weekday average
+    if weekday in (5, 6) and len(prev_wd_rows) >= 2:
+        avg_strong = _avg([r["total_sales"] for r in prev_wd_rows])
+        if avg_strong > 0:
+            miss_pct = _pct(total_sales, avg_strong)
+            if miss_pct <= -ALERT_STRONG_DAY_MISS_PCT:
+                alerts.append(
+                    f"📊 {day_name} underperformed: €{total_sales:.0f} vs {day_name} avg €{avg_strong:.0f} "
+                    f"({_fmt(miss_pct)}) — missed high-demand day"
+                )
+
+    # 7. Monday only: this Monday ≥ threshold % below last Monday (week-pace warning)
+    if weekday == 1 and len(same_wd_rows) >= 2:
+        last_mon_sales = same_wd_rows[1]["total_sales"]
+        if last_mon_sales > 0:
+            pace_pct = _pct(total_sales, last_mon_sales)
+            if pace_pct <= -ALERT_WEEK_PACE_PCT:
+                alerts.append(
+                    f"📊 Week-pace warning: Monday €{total_sales:.0f} vs last Monday "
+                    f"€{last_mon_sales:.0f} ({_fmt(pace_pct)}, {fmt_day_ddmmyyyy(same_wd_rows[1]['day'])}) "
+                    f"— early signal for a slow week"
+                )
+
+    # ── POSITIVE ALERTS ✅ ────────────────────────────────────────────────────
+
+    # 8. Revenue in top ALERT_TOP_PERCENTILE % of all recorded days
+    all_sales_hist = get_all_historical_sales()
+    if len(all_sales_hist) >= 10:
+        rev_thr = _top_pct_threshold(all_sales_hist, ALERT_TOP_PERCENTILE)
+        if total_sales >= rev_thr:
+            alerts.append(
+                f"✅ Revenue €{total_sales:.0f} is in the top {ALERT_TOP_PERCENTILE:.0f}% of all recorded days "
+                f"(threshold ≥ €{rev_thr:.0f})"
+            )
+
+    # 9. Covers in top ALERT_POSITIVE_COVERS_PCT % of all recorded days
+    all_covers_hist = get_all_historical_covers()
+    if len(all_covers_hist) >= 10:
+        cov_thr = _top_pct_threshold([float(c) for c in all_covers_hist], ALERT_POSITIVE_COVERS_PCT)
+        if covers >= cov_thr:
+            alerts.append(
+                f"✅ Covers {covers} are in the top {ALERT_POSITIVE_COVERS_PCT:.0f}% of all recorded days "
+                f"(threshold ≥ {int(cov_thr)})"
+            )
+
+    # 10. Dinner turnaround: yesterday bounced ≥ threshold % above prev-3 same-weekday dinner avg
+    if len(same_wd_rows) >= 4:
+        prev3 = same_wd_rows[1:4]
+        prev3_dinner_avgs = [r["dinner_avg"] for r in prev3 if r["dinner_avg"] > 0]
+        if prev3_dinner_avgs:
+            prev3_avg  = _avg(prev3_dinner_avgs)
+            bounce_pct = _pct(dinner_avg, prev3_avg)
+            if bounce_pct >= ALERT_POSITIVE_REVENUE_PCT:
+                alerts.append(
+                    f"✅ Dinner turnaround: avg ticket €{dinner_avg:.2f} vs prev-3 {day_name} avg "
+                    f"€{prev3_avg:.2f} ({_fmt(bounce_pct)}) — bounce-back worth noting"
+                )
+
+    # ── SEND ─────────────────────────────────────────────────────────────────
+
+    if not alerts:
+        return
+
+    msg = f"🔔 Norah Evening Alerts — {fmt_day_ddmmyyyy(yesterday)}\n\n" + "\n\n".join(alerts)
+    for chat_id in chats:
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=msg)
+        except Exception as e:
+            print(f"Evening alert send failed for chat {chat_id}: {e}")
 
 
 # =========================
@@ -2741,6 +2982,11 @@ def main():
             send_daily_post_to_owners,
             time=time(hour=DAILY_POST_HOUR, minute=DAILY_POST_MINUTE, tzinfo=TZ),
             name="daily_post_to_owners",
+        )
+        app.job_queue.run_daily(
+            send_evening_alerts,
+            time=time(hour=ALERT_EVENING_HOUR, minute=0, tzinfo=TZ),
+            name="evening_alerts",
         )
 
     app.run_polling(allowed_updates=Update.ALL_TYPES)
