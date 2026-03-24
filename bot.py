@@ -42,6 +42,7 @@ ALERT_POSITIVE_REVENUE_PCT     = float((os.getenv("ALERT_POSITIVE_REVENUE_PCT", 
 ALERT_POSITIVE_COVERS_PCT      = float((os.getenv("ALERT_POSITIVE_COVERS_PCT",      "10").strip()  or "10"))
 ALERT_TOP_PERCENTILE           = float((os.getenv("ALERT_TOP_PERCENTILE",           "10").strip()  or "10"))
 ALERT_EVENING_HOUR             = int((os.getenv("ALERT_EVENING_HOUR",               "21").strip()  or "21"))
+ALERT_LUNCH_TICKET_MIN = float((os.getenv("ALERT_LUNCH_TICKET_MIN", "35").strip() or "35"))
 
 ACCESS_MODE = (os.getenv("ACCESS_MODE", "RESTRICTED").strip().upper() or "RESTRICTED")
 ACCESS_MODE = "OPEN" if ACCESS_MODE == "OPEN" else "RESTRICTED"
@@ -1446,6 +1447,13 @@ async def send_evening_alerts(context: ContextTypes.DEFAULT_TYPE):
             alerts.append(
                 f"📊 Dinner avg ticket declining {n_eros} consecutive {day_name}s: "
                 f"{trend} — erosion trend"
+            )
+
+        # 5b. Lunch avg ticket below absolute minimum threshold
+        if lunch_pax > 0 and lunch_avg < ALERT_LUNCH_TICKET_MIN:
+            alerts.append(
+                f"🔴 Lunch avg ticket low: €{lunch_avg:.2f} vs minimum €{ALERT_LUNCH_TICKET_MIN:.0f} "
+                f"({lunch_pax} pax, €{lunch_sales:.0f} sales) — check pricing or discounts"
             )
 
     # ── NEGATIVE: FINANCIAL HEALTH 📊 ────────────────────────────────────────
