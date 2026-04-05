@@ -1,3 +1,4 @@
 python-telegram-bot[job-queue]==21.6
 psycopg[binary]==3.2.3
 anthropic
+flask>=3.0
