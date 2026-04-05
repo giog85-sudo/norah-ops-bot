@@ -3000,6 +3000,21 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 flask_app = Flask(__name__)
 CORS(flask_app)
 
+@flask_app.after_request
+def add_cors_headers(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+    return response
+
+@flask_app.route('/api/stats/daily', methods=['OPTIONS'])
+def daily_options():
+    return '', 204
+
+@flask_app.route('/api/stats/weekly', methods=['OPTIONS'])
+def weekly_options():
+    return '', 204
+
 
 def _api_check_auth():
     if not DASHBOARD_API_KEY:
