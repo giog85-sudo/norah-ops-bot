@@ -3215,16 +3215,9 @@ def main():
     )
     flask_thread.start()
 
-    while True:
-        try:
-            app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-            break
-        except Exception as e:
-            if "Conflict" in str(e):
-                print(f"Telegram conflict on startup, retrying in 15s: {e}")
-                time_mod.sleep(15)
-            else:
-                raise
+    print("Waiting 20s before polling to allow previous instance to shut down...")
+    time_mod.sleep(20)
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
