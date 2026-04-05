@@ -1,1 +1,1 @@
-web: sh -c 'python api.py & python bot.py'
+web: python bot.py
