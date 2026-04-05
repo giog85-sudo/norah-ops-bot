@@ -26,7 +26,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 
 TZ_NAME = (os.getenv("TZ_NAME") or os.getenv("TIMEZONE") or "Europe/Madrid").strip() or "Europe/Madrid"
 CUTOFF_HOUR = int((os.getenv("CUTOFF_HOUR", "11").strip() or "11"))
-WEEKLY_DIGEST_HOUR = int((os.getenv("WEEKLY_DIGEST_HOUR", "9").strip() or "9"))
+WEEKLY_DIGEST_HOUR = int((os.getenv("WEEKLY_DIGEST_HOUR", "12").strip() or "12"))
 
 DAILY_POST_HOUR = int((os.getenv("DAILY_POST_HOUR", "11").strip() or "11"))
 DAILY_POST_MINUTE = int((os.getenv("DAILY_POST_MINUTE", "5").strip() or "5"))
@@ -2687,16 +2687,93 @@ async def send_weekly_digest(context: ContextTypes.DEFAULT_TYPE):
     chats = owners_silent_chat_ids()
     if not chats:
         return
-    p7 = period_ending_today("7")
-    total_sales_7, total_covers_7, _ = sum_daily(p7)
-    avg_ticket_7 = (total_sales_7 / total_covers_7) if total_covers_7 else 0.0
+
+    # Job fires on Monday — last week = Mon to Sun
+    today = datetime.now(TZ).date()
+    last_monday = today - timedelta(days=7)
+    last_sunday = today - timedelta(days=1)
+    prev_monday = today - timedelta(days=14)
+    prev_sunday = today - timedelta(days=8)
+
+    p_this = Period(start=last_monday, end=last_sunday)
+    p_prev = Period(start=prev_monday, end=prev_sunday)
+
+    agg = sum_full_in_period(p_this)
+    agg_prev = sum_full_in_period(p_prev)
+
+    def _diff(new, old):
+        if old == 0:
+            return ""
+        pct = (new - old) / old * 100.0
+        arrow = "▲" if pct >= 0 else "▼"
+        return f" {arrow} {abs(pct):.1f}%"
+
+    def _fmt_week(d):
+        return d.strftime("%-d %b")
+
+    week_label = f"{_fmt_week(last_monday)} – {_fmt_week(last_sunday)} {last_sunday.year}"
+    prev_label = f"{_fmt_week(prev_monday)} – {_fmt_week(prev_sunday)}"
+
+    total_sales = agg["total_sales"]
+    prev_sales = agg_prev["total_sales"]
+    lunch_sales = agg["lunch_sales"]
+    lunch_pax = agg["lunch_pax"]
+    dinner_sales = agg["dinner_sales"]
+    dinner_pax = agg["dinner_pax"]
+    total_pax = lunch_pax + dinner_pax
+    lunch_avg = (lunch_sales / lunch_pax) if lunch_pax else 0.0
+    dinner_avg = (dinner_sales / dinner_pax) if dinner_pax else 0.0
+    tips = agg["tips"]
+    tips_pct = (tips / total_sales * 100.0) if total_sales else 0.0
+
+    prev_lunch_sales = agg_prev["lunch_sales"]
+    prev_lunch_pax = agg_prev["lunch_pax"]
+    prev_dinner_sales = agg_prev["dinner_sales"]
+    prev_dinner_pax = agg_prev["dinner_pax"]
+    prev_total_pax = prev_lunch_pax + prev_dinner_pax
+    prev_lunch_avg = (prev_lunch_sales / prev_lunch_pax) if prev_lunch_pax else 0.0
+    prev_dinner_avg = (prev_dinner_sales / prev_dinner_pax) if prev_dinner_pax else 0.0
+    prev_tips = agg_prev["tips"]
+    prev_tips_pct = (prev_tips / prev_sales * 100.0) if prev_sales else 0.0
+
+    walkins = agg["lunch_walkins"] + agg["dinner_walkins"]
+    noshows = agg["lunch_noshows"] + agg["dinner_noshows"]
+    prev_walkins = agg_prev["lunch_walkins"] + agg_prev["dinner_walkins"]
+    prev_noshows = agg_prev["lunch_noshows"] + agg_prev["dinner_noshows"]
+
     msg = (
         f"🗓️ Norah Weekly Digest\n"
-        f"Period: {p7.start.isoformat()} → {p7.end.isoformat()}\n\n"
-        f"Sales: €{total_sales_7:.2f}\n"
-        f"Covers: {total_covers_7}\n"
-        f"Avg ticket: €{avg_ticket_7:.2f}"
+        f"Week: {week_label}\n"
+        f"vs prev week: {prev_label}\n"
+        f"\n📊 Revenue\n"
+        f"Total: €{total_sales:.0f}{_diff(total_sales, prev_sales)}"
+        f"  (prev: €{prev_sales:.0f})\n"
+        f"Covers: {total_pax}{_diff(total_pax, prev_total_pax)}"
+        f"  (prev: {prev_total_pax})\n"
+        f"\n🥗 Lunch\n"
+        f"Sales: €{lunch_sales:.0f}{_diff(lunch_sales, prev_lunch_sales)}"
+        f"  (prev: €{prev_lunch_sales:.0f})\n"
+        f"Covers: {lunch_pax}{_diff(lunch_pax, prev_lunch_pax)}"
+        f"  (prev: {prev_lunch_pax})\n"
+        f"Avg ticket: €{lunch_avg:.2f}{_diff(lunch_avg, prev_lunch_avg)}"
+        f"  (prev: €{prev_lunch_avg:.2f})\n"
+        f"\n🌙 Dinner\n"
+        f"Sales: €{dinner_sales:.0f}{_diff(dinner_sales, prev_dinner_sales)}"
+        f"  (prev: €{prev_dinner_sales:.0f})\n"
+        f"Covers: {dinner_pax}{_diff(dinner_pax, prev_dinner_pax)}"
+        f"  (prev: {prev_dinner_pax})\n"
+        f"Avg ticket: €{dinner_avg:.2f}{_diff(dinner_avg, prev_dinner_avg)}"
+        f"  (prev: €{prev_dinner_avg:.2f})\n"
+        f"\n💶 Tips\n"
+        f"Total: €{tips:.0f} ({tips_pct:.1f}% of sales){_diff(tips, prev_tips)}"
+        f"  (prev: €{prev_tips:.0f}, {prev_tips_pct:.1f}%)\n"
+        f"\n🚶 Walk-ins / No-shows\n"
+        f"Walk-ins: {walkins}{_diff(walkins, prev_walkins)}"
+        f"  (prev: {prev_walkins})\n"
+        f"No-shows: {noshows}{_diff(noshows, prev_noshows)}"
+        f"  (prev: {prev_noshows})"
     )
+
     for chat_id in chats:
         try:
             await context.bot.send_message(chat_id=chat_id, text=msg)
@@ -2983,7 +3060,7 @@ def main():
         app.job_queue.run_daily(
             send_weekly_digest,
             time=time(hour=WEEKLY_DIGEST_HOUR, minute=0, tzinfo=TZ),
-            days=(0,),
+            days=(1,),
             name="weekly_digest_monday",
         )
         app.job_queue.run_daily(
