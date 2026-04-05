@@ -2,6 +2,7 @@ import json
 import os
 import re
 import threading
+import time as time_mod
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, time
 from zoneinfo import ZoneInfo
@@ -3214,7 +3215,16 @@ def main():
     )
     flask_thread.start()
 
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    while True:
+        try:
+            app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+            break
+        except Exception as e:
+            if "Conflict" in str(e):
+                print(f"Telegram conflict on startup, retrying in 15s: {e}")
+                time_mod.sleep(15)
+            else:
+                raise
 
 if __name__ == "__main__":
     main()
