@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Norah Dashboard</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+    }
+
+    header {
+      padding: 20px 32px;
+      border-bottom: 1px solid #1e2535;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #151822;
+    }
+    header h1 { font-size: 1.25rem; font-weight: 600; letter-spacing: 0.02em; }
+    header span { font-size: 0.8rem; color: #64748b; }
+
+    .controls {
+      padding: 20px 32px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      background: #151822;
+      border-bottom: 1px solid #1e2535;
+    }
+    .controls label { font-size: 0.8rem; color: #94a3b8; }
+    .controls input[type="date"] {
+      background: #1e2535;
+      border: 1px solid #2d3748;
+      color: #e2e8f0;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+    }
+    .controls button {
+      background: #3b82f6;
+      color: #fff;
+      border: none;
+      padding: 7px 18px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    .controls button:hover { background: #2563eb; }
+    .controls button.secondary {
+      background: #1e2535;
+      color: #94a3b8;
+    }
+    .controls button.secondary:hover { background: #2d3748; }
+
+    main { padding: 28px 32px; max-width: 1400px; margin: 0 auto; }
+
+    /* KPI cards */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+    .kpi {
+      background: #151822;
+      border: 1px solid #1e2535;
+      border-radius: 10px;
+      padding: 18px 20px;
+    }
+    .kpi .label { font-size: 0.72rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
+    .kpi .value { font-size: 1.6rem; font-weight: 700; color: #f8fafc; }
+    .kpi .sub   { font-size: 0.75rem; color: #94a3b8; margin-top: 4px; }
+
+    /* Charts */
+    .charts-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+    .chart-full { grid-column: 1 / -1; }
+
+    .chart-card {
+      background: #151822;
+      border: 1px solid #1e2535;
+      border-radius: 10px;
+      padding: 20px 24px;
+    }
+    .chart-card h2 {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 16px;
+    }
+    .chart-card canvas { width: 100% !important; }
+
+    /* Token modal */
+    #token-modal {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.7);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 100;
+    }
+    #token-modal.hidden { display: none; }
+    .modal-box {
+      background: #151822;
+      border: 1px solid #2d3748;
+      border-radius: 12px;
+      padding: 32px;
+      width: 360px;
+      text-align: center;
+    }
+    .modal-box h2 { font-size: 1rem; margin-bottom: 8px; }
+    .modal-box p  { font-size: 0.8rem; color: #64748b; margin-bottom: 20px; }
+    .modal-box input {
+      width: 100%;
+      background: #0f1117;
+      border: 1px solid #2d3748;
+      color: #e2e8f0;
+      padding: 10px 12px;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      margin-bottom: 14px;
+    }
+    .modal-box button {
+      width: 100%;
+      background: #3b82f6;
+      color: #fff;
+      border: none;
+      padding: 10px;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      cursor: pointer;
+      font-weight: 500;
+    }
+
+    #error-banner {
+      background: #7f1d1d;
+      color: #fca5a5;
+      padding: 10px 32px;
+      font-size: 0.85rem;
+      display: none;
+    }
+
+    @media (max-width: 768px) {
+      header, .controls, main { padding-left: 16px; padding-right: 16px; }
+      .charts-grid { grid-template-columns: 1fr; }
+      .chart-full { grid-column: 1; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Token modal -->
+<div id="token-modal">
+  <div class="modal-box">
+    <h2>Norah Dashboard</h2>
+    <p>Enter your API token to continue</p>
+    <input id="token-input" type="password" placeholder="API token" />
+    <button onclick="saveToken()">Continue</button>
+  </div>
+</div>
+
+<div id="error-banner"></div>
+
+<header>
+  <h1>Norah Analytics</h1>
+  <span id="header-range"></span>
+</header>
+
+<div class="controls">
+  <label>From</label>
+  <input type="date" id="date-from" />
+  <label>To</label>
+  <input type="date" id="date-to" />
+  <button onclick="loadAll()">Apply</button>
+  <button class="secondary" onclick="setPreset(30)">Last 30d</button>
+  <button class="secondary" onclick="setPreset(90)">Last 90d</button>
+  <button class="secondary" onclick="resetToken()">Change token</button>
+</div>
+
+<main>
+  <!-- KPI row -->
+  <div class="kpi-grid">
+    <div class="kpi"><div class="label">Total Revenue</div><div class="value" id="kpi-revenue">—</div><div class="sub" id="kpi-days"></div></div>
+    <div class="kpi"><div class="label">Total Covers</div><div class="value" id="kpi-covers">—</div></div>
+    <div class="kpi"><div class="label">Avg Ticket</div><div class="value" id="kpi-avg-ticket">—</div></div>
+    <div class="kpi"><div class="label">Lunch Revenue</div><div class="value" id="kpi-lunch">—</div><div class="sub" id="kpi-lunch-pct"></div></div>
+    <div class="kpi"><div class="label">Dinner Revenue</div><div class="value" id="kpi-dinner">—</div><div class="sub" id="kpi-dinner-pct"></div></div>
+    <div class="kpi"><div class="label">Best Day</div><div class="value" id="kpi-best">—</div><div class="sub" id="kpi-best-date"></div></div>
+  </div>
+
+  <!-- Charts -->
+  <div class="charts-grid">
+    <div class="chart-card chart-full">
+      <h2>Daily Revenue — Lunch vs Dinner</h2>
+      <canvas id="chart-daily" height="90"></canvas>
+    </div>
+    <div class="chart-card">
+      <h2>Avg Ticket Trend</h2>
+      <canvas id="chart-ticket" height="180"></canvas>
+    </div>
+    <div class="chart-card">
+      <h2>Weekly Revenue (last 8 weeks)</h2>
+      <canvas id="chart-weekly" height="180"></canvas>
+    </div>
+  </div>
+</main>
+
+<script>
+  const DEFAULT_TOKEN = 'norah-dashboard-2026';
+
+  // ── Token management ────────────────────────────────────────────────────────
+  function getToken() {
+    return localStorage.getItem('norah_token') || DEFAULT_TOKEN;
+  }
+  function saveToken() {
+    const val = document.getElementById('token-input').value.trim();
+    if (!val) return;
+    localStorage.setItem('norah_token', val);
+    document.getElementById('token-modal').classList.add('hidden');
+    loadAll();
+  }
+  function resetToken() {
+    localStorage.removeItem('norah_token');
+    document.getElementById('token-input').value = '';
+    document.getElementById('token-modal').classList.remove('hidden');
+  }
+  // Skip modal if token already stored or using default
+  document.getElementById('token-modal').classList.add('hidden');
+
+  // ── Date helpers ─────────────────────────────────────────────────────────────
+  function fmt(d) { return d.toISOString().slice(0, 10); }
+  function setPreset(days) {
+    const to = new Date();
+    const from = new Date(); from.setDate(from.getDate() - days);
+    document.getElementById('date-from').value = fmt(from);
+    document.getElementById('date-to').value = fmt(to);
+    loadAll();
+  }
+  function initDates() {
+    const to = new Date();
+    const from = new Date(); from.setDate(from.getDate() - 30);
+    document.getElementById('date-from').value = fmt(from);
+    document.getElementById('date-to').value = fmt(to);
+  }
+
+  // ── Fetch helpers ────────────────────────────────────────────────────────────
+  async function apiFetch(path) {
+    const base = window.location.origin;
+    const res = await fetch(base + path, {
+      headers: { 'Authorization': 'Bearer ' + getToken() }
+    });
+    if (res.status === 401) {
+      document.getElementById('token-modal').classList.remove('hidden');
+      throw new Error('Unauthorized');
+    }
+    if (!res.ok) throw new Error(`API error ${res.status}`);
+    return res.json();
+  }
+
+  function showError(msg) {
+    const el = document.getElementById('error-banner');
+    el.textContent = msg;
+    el.style.display = 'block';
+    setTimeout(() => { el.style.display = 'none'; }, 5000);
+  }
+
+  // ── Chart instances ──────────────────────────────────────────────────────────
+  let chartDaily = null, chartTicket = null, chartWeekly = null;
+
+  function destroyCharts() {
+    if (chartDaily)  { chartDaily.destroy();  chartDaily = null; }
+    if (chartTicket) { chartTicket.destroy(); chartTicket = null; }
+    if (chartWeekly) { chartWeekly.destroy(); chartWeekly = null; }
+  }
+
+  const gridColor = '#1e2535';
+  const tickColor = '#64748b';
+
+  function baseScales(yLabel) {
+    return {
+      x: { ticks: { color: tickColor, maxRotation: 45, font: { size: 11 } }, grid: { color: gridColor } },
+      y: { ticks: { color: tickColor, font: { size: 11 }, callback: v => '€' + v.toLocaleString() }, grid: { color: gridColor }, title: { display: !!yLabel, text: yLabel, color: tickColor, font: { size: 11 } } }
+    };
+  }
+
+  // ── KPI cards ────────────────────────────────────────────────────────────────
+  function renderKPIs(rows) {
+    const totalRevenue = rows.reduce((s, r) => s + r.total_sales, 0);
+    const totalCovers  = rows.reduce((s, r) => s + r.total_covers, 0);
+    const totalLunch   = rows.reduce((s, r) => s + r.lunch_sales, 0);
+    const totalDinner  = rows.reduce((s, r) => s + r.dinner_sales, 0);
+    const avgTicket    = totalCovers ? totalRevenue / totalCovers : 0;
+    const best         = rows.reduce((b, r) => r.total_sales > (b?.total_sales ?? 0) ? r : b, null);
+
+    document.getElementById('kpi-revenue').textContent    = '€' + Math.round(totalRevenue).toLocaleString();
+    document.getElementById('kpi-days').textContent       = rows.length + ' days with data';
+    document.getElementById('kpi-covers').textContent     = totalCovers.toLocaleString();
+    document.getElementById('kpi-avg-ticket').textContent = '€' + avgTicket.toFixed(2);
+    document.getElementById('kpi-lunch').textContent      = '€' + Math.round(totalLunch).toLocaleString();
+    document.getElementById('kpi-lunch-pct').textContent  = totalRevenue ? (totalLunch / totalRevenue * 100).toFixed(1) + '% of revenue' : '';
+    document.getElementById('kpi-dinner').textContent     = '€' + Math.round(totalDinner).toLocaleString();
+    document.getElementById('kpi-dinner-pct').textContent = totalRevenue ? (totalDinner / totalRevenue * 100).toFixed(1) + '% of revenue' : '';
+    document.getElementById('kpi-best').textContent       = best ? '€' + Math.round(best.total_sales).toLocaleString() : '—';
+    document.getElementById('kpi-best-date').textContent  = best ? best.date : '';
+  }
+
+  // ── Daily chart ──────────────────────────────────────────────────────────────
+  function renderDailyChart(rows) {
+    const labels = rows.map(r => r.date);
+    chartDaily = new Chart(document.getElementById('chart-daily'), {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          { label: 'Lunch', data: rows.map(r => r.lunch_sales),  backgroundColor: '#38bdf8', stack: 'rev' },
+          { label: 'Dinner', data: rows.map(r => r.dinner_sales), backgroundColor: '#818cf8', stack: 'rev' },
+        ]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { labels: { color: tickColor } } },
+        scales: baseScales()
+      }
+    });
+  }
+
+  // ── Avg ticket chart ─────────────────────────────────────────────────────────
+  function renderTicketChart(rows) {
+    const labels = rows.map(r => r.date);
+    chartTicket = new Chart(document.getElementById('chart-ticket'), {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Avg Ticket (€)',
+          data: rows.map(r => r.avg_ticket),
+          borderColor: '#34d399',
+          backgroundColor: 'rgba(52,211,153,0.08)',
+          tension: 0.3,
+          pointRadius: 3,
+          fill: true,
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { labels: { color: tickColor } } },
+        scales: baseScales()
+      }
+    });
+  }
+
+  // ── Weekly chart ─────────────────────────────────────────────────────────────
+  function renderWeeklyChart(weeks) {
+    const labels = weeks.map(w => w.week_start.slice(5));   // MM-DD
+    chartWeekly = new Chart(document.getElementById('chart-weekly'), {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Weekly Revenue (€)',
+          data: weeks.map(w => w.total_sales),
+          backgroundColor: '#a78bfa',
+          borderRadius: 4,
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { labels: { color: tickColor } } },
+        scales: baseScales()
+      }
+    });
+  }
+
+  // ── Main loader ──────────────────────────────────────────────────────────────
+  async function loadAll() {
+    const from = document.getElementById('date-from').value;
+    const to   = document.getElementById('date-to').value;
+    if (!from || !to) return;
+
+    document.getElementById('header-range').textContent = from + ' → ' + to;
+    destroyCharts();
+
+    try {
+      const [daily, weekly] = await Promise.all([
+        apiFetch(`/api/stats/daily?from=${from}&to=${to}`),
+        apiFetch('/api/stats/weekly?weeks=8'),
+      ]);
+
+      renderKPIs(daily);
+      renderDailyChart(daily);
+      renderTicketChart(daily);
+      renderWeeklyChart(weekly);
+    } catch (e) {
+      if (e.message !== 'Unauthorized') showError('Failed to load data: ' + e.message);
+    }
+  }
+
+  // ── Init ─────────────────────────────────────────────────────────────────────
+  initDates();
+  loadAll();
+</script>
+</body>
+</html>

@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from collections import Counter
 
 import psycopg
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 from telegram import Update
 from telegram.constants import ChatType
@@ -3014,6 +3014,11 @@ def daily_options():
 @flask_app.route('/api/stats/weekly', methods=['OPTIONS'])
 def weekly_options():
     return '', 204
+
+
+@flask_app.route('/dashboard')
+def serve_dashboard():
+    return send_file('dashboard.html')
 
 
 def _api_check_auth():
