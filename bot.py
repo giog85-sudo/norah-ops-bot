@@ -3230,9 +3230,15 @@ def main():
     )
     flask_thread.start()
 
-    print("Waiting 20s before polling to allow previous instance to shut down...")
-    time_mod.sleep(20)
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    while True:
+        try:
+            print("Waiting 20s before polling...")
+            time_mod.sleep(20)
+            app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+            break
+        except Exception as e:
+            print(f"Bot crashed, restarting in 30s: {e}")
+            time_mod.sleep(30)
 
 if __name__ == "__main__":
     main()
