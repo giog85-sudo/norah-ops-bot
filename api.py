@@ -3,11 +3,13 @@ from datetime import date, timedelta
 
 import psycopg
 from flask import Flask, jsonify, request
+from flask_cors import CORS
 
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 DASHBOARD_API_KEY = os.getenv("DASHBOARD_API_KEY", "").strip()
 
 app = Flask(__name__)
+CORS(app)
 
 
 def get_conn():
