@@ -3,169 +3,291 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Norah Dashboard</title>
+  <title>Norah · Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+    :root {
+      --bg:        #f5f5f0;
+      --card:      #ffffff;
+      --border:    #e8e8e2;
+      --text:      #1a1a2e;
+      --muted:     #6b7280;
+      --accent:    #1a1a2e;
+      --shadow:    0 1px 3px rgba(0,0,0,0.07), 0 1px 2px rgba(0,0,0,0.04);
+      --radius:    12px;
+
+      /* Chart palette */
+      --lunch:     #FF6B6B;
+      --dinner:    #4ECDC4;
+      --overall:   #6C63FF;
+      --blue:      #45B7D1;
+      --green:     #96CEB4;
+      --yellow:    #FFE66D;
+    }
+
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #0f1117;
-      color: #e2e8f0;
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
       min-height: 100vh;
     }
 
+    /* ── Header ─────────────────────────────────────────────── */
     header {
-      padding: 20px 32px;
-      border-bottom: 1px solid #1e2535;
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+      padding: 0 32px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      background: #151822;
+      flex-wrap: wrap;
+      gap: 12px;
+      min-height: 64px;
     }
-    header h1 { font-size: 1.25rem; font-weight: 600; letter-spacing: 0.02em; }
-    header span { font-size: 0.8rem; color: #64748b; }
+    .brand { display: flex; align-items: baseline; gap: 10px; }
+    .brand-name {
+      font-size: 1.1rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text);
+    }
+    .brand-sub {
+      font-size: 0.72rem;
+      font-weight: 400;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+    }
 
     .controls {
-      padding: 20px 32px;
       display: flex;
-      gap: 12px;
       align-items: center;
       flex-wrap: wrap;
-      background: #151822;
-      border-bottom: 1px solid #1e2535;
+      gap: 8px;
+      padding: 10px 0;
     }
-    .controls label { font-size: 0.8rem; color: #94a3b8; }
+    .controls label { font-size: 0.75rem; color: var(--muted); font-weight: 500; }
     .controls input[type="date"] {
-      background: #1e2535;
-      border: 1px solid #2d3748;
-      color: #e2e8f0;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
       padding: 6px 10px;
-      border-radius: 6px;
-      font-size: 0.85rem;
+      border-radius: 7px;
+      font-size: 0.8rem;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.15s;
     }
-    .controls button {
-      background: #3b82f6;
-      color: #fff;
+    .controls input[type="date"]:focus { border-color: #a0a0f0; }
+
+    .btn {
       border: none;
-      padding: 7px 18px;
-      border-radius: 6px;
-      font-size: 0.85rem;
-      cursor: pointer;
+      padding: 6px 14px;
+      border-radius: 7px;
+      font-size: 0.8rem;
+      font-family: inherit;
       font-weight: 500;
+      cursor: pointer;
+      transition: opacity 0.15s;
     }
-    .controls button:hover { background: #2563eb; }
-    .controls button.secondary {
-      background: #1e2535;
-      color: #94a3b8;
-    }
-    .controls button.secondary:hover { background: #2d3748; }
+    .btn:hover { opacity: 0.85; }
+    .btn-primary  { background: var(--text); color: #fff; }
+    .btn-ghost    { background: var(--bg); color: var(--muted); border: 1px solid var(--border); }
+    .divider-v    { width: 1px; height: 20px; background: var(--border); }
 
-    main { padding: 28px 32px; max-width: 1400px; margin: 0 auto; }
+    /* ── Layout ─────────────────────────────────────────────── */
+    main { padding: 28px 32px; max-width: 1440px; margin: 0 auto; }
 
-    /* KPI cards */
+    /* ── KPI cards ──────────────────────────────────────────── */
     .kpi-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-      gap: 16px;
-      margin-bottom: 32px;
+      grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+      gap: 14px;
+      margin-bottom: 24px;
     }
     .kpi {
-      background: #151822;
-      border: 1px solid #1e2535;
-      border-radius: 10px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
       padding: 18px 20px;
+      box-shadow: var(--shadow);
     }
-    .kpi .label { font-size: 0.72rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
-    .kpi .value { font-size: 1.6rem; font-weight: 700; color: #f8fafc; }
-    .kpi .sub   { font-size: 0.75rem; color: #94a3b8; margin-top: 4px; }
+    .kpi-label {
+      font-size: 0.68rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .kpi-value {
+      font-size: 1.7rem;
+      font-weight: 700;
+      color: var(--text);
+      line-height: 1;
+    }
+    .kpi-sub {
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-top: 5px;
+    }
+    .kpi-dot {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      margin-right: 5px;
+    }
 
-    /* Charts */
-    .charts-grid {
+    /* ── Chart cards ────────────────────────────────────────── */
+    .charts-col2 {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 20px;
-      margin-bottom: 20px;
-    }
-    .chart-full { grid-column: 1 / -1; }
-
-    .chart-card {
-      background: #151822;
-      border: 1px solid #1e2535;
-      border-radius: 10px;
-      padding: 20px 24px;
-    }
-    .chart-card h2 {
-      font-size: 0.85rem;
-      font-weight: 600;
-      color: #94a3b8;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
+      gap: 16px;
       margin-bottom: 16px;
     }
-    .chart-card canvas { width: 100% !important; }
+    .chart-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 22px 24px;
+      box-shadow: var(--shadow);
+      margin-bottom: 16px;
+    }
+    .chart-card h2 {
+      font-size: 0.78rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--muted);
+      margin-bottom: 18px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .chart-card h2 .legend-dots {
+      display: flex; gap: 10px; margin-left: auto; font-weight: 400;
+    }
+    .chart-card h2 .legend-dots span {
+      display: flex; align-items: center; gap: 4px;
+      font-size: 0.7rem; color: var(--muted); text-transform: none; letter-spacing: 0;
+    }
 
-    /* Token modal */
-    #token-modal {
-      position: fixed; inset: 0;
-      background: rgba(0,0,0,0.7);
-      display: flex; align-items: center; justify-content: center;
-      z-index: 100;
-    }
-    #token-modal.hidden { display: none; }
-    .modal-box {
-      background: #151822;
-      border: 1px solid #2d3748;
-      border-radius: 12px;
-      padding: 32px;
-      width: 360px;
-      text-align: center;
-    }
-    .modal-box h2 { font-size: 1rem; margin-bottom: 8px; }
-    .modal-box p  { font-size: 0.8rem; color: #64748b; margin-bottom: 20px; }
-    .modal-box input {
+    /* ── Monthly table ──────────────────────────────────────── */
+    .table-wrap { overflow-x: auto; }
+    table {
       width: 100%;
-      background: #0f1117;
-      border: 1px solid #2d3748;
-      color: #e2e8f0;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+    thead th {
+      text-align: left;
+      font-size: 0.68rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--muted);
+      padding: 0 12px 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    tbody tr { border-bottom: 1px solid var(--border); }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: var(--bg); }
+    tbody td {
       padding: 10px 12px;
-      border-radius: 6px;
-      font-size: 0.9rem;
-      margin-bottom: 14px;
+      color: var(--text);
     }
-    .modal-box button {
-      width: 100%;
-      background: #3b82f6;
-      color: #fff;
-      border: none;
-      padding: 10px;
-      border-radius: 6px;
-      font-size: 0.9rem;
-      cursor: pointer;
+    tbody td.num { font-variant-numeric: tabular-nums; text-align: right; }
+    tbody td.month-label { font-weight: 600; }
+    .badge {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-size: 0.7rem;
       font-weight: 500;
     }
 
+    /* ── Error banner ───────────────────────────────────────── */
     #error-banner {
-      background: #7f1d1d;
-      color: #fca5a5;
-      padding: 10px 32px;
-      font-size: 0.85rem;
+      background: #fef2f2;
+      color: #b91c1c;
+      border: 1px solid #fecaca;
+      border-radius: 8px;
+      padding: 10px 16px;
+      font-size: 0.82rem;
+      margin: 16px 32px 0;
       display: none;
     }
 
-    @media (max-width: 768px) {
-      header, .controls, main { padding-left: 16px; padding-right: 16px; }
-      .charts-grid { grid-template-columns: 1fr; }
-      .chart-full { grid-column: 1; }
+    /* ── Token modal ────────────────────────────────────────── */
+    #token-modal {
+      position: fixed; inset: 0;
+      background: rgba(240,240,235,0.85);
+      backdrop-filter: blur(4px);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 200;
+    }
+    #token-modal.hidden { display: none; }
+    .modal-box {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 36px 32px;
+      width: 340px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.12);
+      text-align: center;
+    }
+    .modal-box .modal-brand { font-size: 1.1rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 6px; }
+    .modal-box p  { font-size: 0.8rem; color: var(--muted); margin-bottom: 20px; }
+    .modal-box input {
+      width: 100%;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-family: inherit;
+      margin-bottom: 12px;
+      outline: none;
+    }
+    .modal-box input:focus { border-color: #a0a0f0; }
+    .modal-box button {
+      width: 100%;
+      background: var(--text);
+      color: #fff;
+      border: none;
+      padding: 11px;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-family: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    /* ── Responsive ─────────────────────────────────────────── */
+    @media (max-width: 900px) {
+      header, main, #error-banner { padding-left: 16px; padding-right: 16px; }
+      .charts-col2 { grid-template-columns: 1fr; }
+      .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 480px) {
+      .kpi-grid { grid-template-columns: 1fr 1fr; }
+      .kpi-value { font-size: 1.3rem; }
     }
   </style>
 </head>
 <body>
 
 <!-- Token modal -->
-<div id="token-modal">
+<div id="token-modal" class="hidden">
   <div class="modal-box">
-    <h2>Norah Dashboard</h2>
+    <div class="modal-brand">Norah</div>
     <p>Enter your API token to continue</p>
     <input id="token-input" type="password" placeholder="API token" />
     <button onclick="saveToken()">Continue</button>
@@ -175,242 +297,492 @@
 <div id="error-banner"></div>
 
 <header>
-  <h1>Norah Analytics</h1>
-  <span id="header-range"></span>
+  <div class="brand">
+    <span class="brand-name">Norah</span>
+    <span class="brand-sub">Operations Dashboard</span>
+  </div>
+  <div class="controls">
+    <label>From</label>
+    <input type="date" id="date-from" />
+    <label>To</label>
+    <input type="date" id="date-to" />
+    <div class="divider-v"></div>
+    <button class="btn btn-ghost" onclick="setPreset(7)">7d</button>
+    <button class="btn btn-ghost" onclick="setPreset(30)">30d</button>
+    <button class="btn btn-ghost" onclick="setPreset(90)">90d</button>
+    <button class="btn btn-ghost" onclick="setThisMonth()">This month</button>
+    <div class="divider-v"></div>
+    <button class="btn btn-primary" onclick="loadAll()">Apply</button>
+  </div>
 </header>
 
-<div class="controls">
-  <label>From</label>
-  <input type="date" id="date-from" />
-  <label>To</label>
-  <input type="date" id="date-to" />
-  <button onclick="loadAll()">Apply</button>
-  <button class="secondary" onclick="setPreset(30)">Last 30d</button>
-  <button class="secondary" onclick="setPreset(90)">Last 90d</button>
-  <button class="secondary" onclick="resetToken()">Change token</button>
-</div>
-
 <main>
-  <!-- KPI row -->
+
+  <!-- KPI cards -->
   <div class="kpi-grid">
-    <div class="kpi"><div class="label">Total Revenue</div><div class="value" id="kpi-revenue">—</div><div class="sub" id="kpi-days"></div></div>
-    <div class="kpi"><div class="label">Total Covers</div><div class="value" id="kpi-covers">—</div></div>
-    <div class="kpi"><div class="label">Avg Ticket</div><div class="value" id="kpi-avg-ticket">—</div></div>
-    <div class="kpi"><div class="label">Lunch Revenue</div><div class="value" id="kpi-lunch">—</div><div class="sub" id="kpi-lunch-pct"></div></div>
-    <div class="kpi"><div class="label">Dinner Revenue</div><div class="value" id="kpi-dinner">—</div><div class="sub" id="kpi-dinner-pct"></div></div>
-    <div class="kpi"><div class="label">Best Day</div><div class="value" id="kpi-best">—</div><div class="sub" id="kpi-best-date"></div></div>
+    <div class="kpi">
+      <div class="kpi-label">Total Revenue</div>
+      <div class="kpi-value" id="kpi-revenue">—</div>
+      <div class="kpi-sub" id="kpi-days">—</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Total Covers</div>
+      <div class="kpi-value" id="kpi-covers">—</div>
+      <div class="kpi-sub" id="kpi-covers-avg">—</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Avg Ticket</div>
+      <div class="kpi-value" id="kpi-avg-ticket">—</div>
+      <div class="kpi-sub" id="kpi-ticket-split">—</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Tips</div>
+      <div class="kpi-value" id="kpi-tips">—</div>
+      <div class="kpi-sub" id="kpi-tips-pct">—</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Best Day</div>
+      <div class="kpi-value" id="kpi-best">—</div>
+      <div class="kpi-sub" id="kpi-best-date">—</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Worst Day</div>
+      <div class="kpi-value" id="kpi-worst">—</div>
+      <div class="kpi-sub" id="kpi-worst-date">—</div>
+    </div>
   </div>
 
-  <!-- Charts -->
-  <div class="charts-grid">
-    <div class="chart-card chart-full">
-      <h2>Daily Revenue — Lunch vs Dinner</h2>
-      <canvas id="chart-daily" height="90"></canvas>
+  <!-- 1. Daily Revenue stacked bar -->
+  <div class="chart-card">
+    <h2>
+      Daily Revenue
+      <span class="legend-dots">
+        <span><i class="kpi-dot" style="background:var(--lunch)"></i>Lunch</span>
+        <span><i class="kpi-dot" style="background:var(--dinner)"></i>Dinner</span>
+      </span>
+    </h2>
+    <canvas id="chart-daily" height="75"></canvas>
+  </div>
+
+  <!-- 2+3. Covers trend + Avg Ticket trend -->
+  <div class="charts-col2">
+    <div class="chart-card" style="margin-bottom:0">
+      <h2>
+        Covers per Day
+        <span class="legend-dots">
+          <span><i class="kpi-dot" style="background:var(--lunch)"></i>Lunch</span>
+          <span><i class="kpi-dot" style="background:var(--dinner)"></i>Dinner</span>
+        </span>
+      </h2>
+      <canvas id="chart-covers" height="180"></canvas>
     </div>
-    <div class="chart-card">
-      <h2>Avg Ticket Trend</h2>
+    <div class="chart-card" style="margin-bottom:0">
+      <h2>
+        Avg Ticket Trend
+        <span class="legend-dots">
+          <span><i class="kpi-dot" style="background:var(--overall)"></i>Overall</span>
+          <span><i class="kpi-dot" style="background:var(--lunch)"></i>Lunch</span>
+          <span><i class="kpi-dot" style="background:var(--dinner)"></i>Dinner</span>
+        </span>
+      </h2>
       <canvas id="chart-ticket" height="180"></canvas>
     </div>
-    <div class="chart-card">
-      <h2>Weekly Revenue (last 8 weeks)</h2>
-      <canvas id="chart-weekly" height="180"></canvas>
+  </div>
+  <div style="height:16px"></div>
+
+  <!-- 4+5. Week-over-Week + No-Show rate -->
+  <div class="charts-col2">
+    <div class="chart-card" style="margin-bottom:0">
+      <h2>
+        Week-over-Week Revenue
+        <span class="legend-dots">
+          <span><i class="kpi-dot" style="background:var(--lunch)"></i>This week</span>
+          <span><i class="kpi-dot" style="background:var(--blue)"></i>Last week</span>
+        </span>
+      </h2>
+      <canvas id="chart-wow" height="180"></canvas>
+    </div>
+    <div class="chart-card" style="margin-bottom:0">
+      <h2>Avg No-Shows by Weekday</h2>
+      <canvas id="chart-noshows" height="180"></canvas>
     </div>
   </div>
+  <div style="height:16px"></div>
+
+  <!-- 6. Monthly summary table -->
+  <div class="chart-card">
+    <h2>Monthly Summary</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Month</th>
+            <th style="text-align:right">Revenue</th>
+            <th style="text-align:right">Covers</th>
+            <th style="text-align:right">Avg Ticket</th>
+            <th style="text-align:right">Tips</th>
+            <th style="text-align:right">Best Day</th>
+            <th style="text-align:right">Days</th>
+          </tr>
+        </thead>
+        <tbody id="monthly-tbody">
+          <tr><td colspan="7" style="text-align:center;color:var(--muted);padding:24px">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
 </main>
 
 <script>
-  const DEFAULT_TOKEN = 'norah-dashboard-2026';
+'use strict';
 
-  // ── Token management ────────────────────────────────────────────────────────
-  function getToken() {
-    return localStorage.getItem('norah_token') || DEFAULT_TOKEN;
-  }
-  function saveToken() {
-    const val = document.getElementById('token-input').value.trim();
-    if (!val) return;
-    localStorage.setItem('norah_token', val);
-    document.getElementById('token-modal').classList.add('hidden');
-    loadAll();
-  }
-  function resetToken() {
-    localStorage.removeItem('norah_token');
-    document.getElementById('token-input').value = '';
-    document.getElementById('token-modal').classList.remove('hidden');
-  }
-  // Skip modal if token already stored or using default
+// ── Config ────────────────────────────────────────────────────────────────────
+const DEFAULT_TOKEN = 'norah-dashboard-2026';
+const COLORS = {
+  lunch:   '#FF6B6B',
+  dinner:  '#4ECDC4',
+  overall: '#6C63FF',
+  blue:    '#45B7D1',
+  green:   '#96CEB4',
+  yellow:  '#FFE66D',
+  grid:    '#f0f0ea',
+  tick:    '#9ca3af',
+};
+const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+// ── Token ─────────────────────────────────────────────────────────────────────
+function getToken() {
+  return localStorage.getItem('norah_token') || DEFAULT_TOKEN;
+}
+function saveToken() {
+  const val = (document.getElementById('token-input').value || '').trim();
+  if (!val) return;
+  localStorage.setItem('norah_token', val);
   document.getElementById('token-modal').classList.add('hidden');
-
-  // ── Date helpers ─────────────────────────────────────────────────────────────
-  function fmt(d) { return d.toISOString().slice(0, 10); }
-  function setPreset(days) {
-    const to = new Date();
-    const from = new Date(); from.setDate(from.getDate() - days);
-    document.getElementById('date-from').value = fmt(from);
-    document.getElementById('date-to').value = fmt(to);
-    loadAll();
-  }
-  function initDates() {
-    const to = new Date();
-    const from = new Date(); from.setDate(from.getDate() - 30);
-    document.getElementById('date-from').value = fmt(from);
-    document.getElementById('date-to').value = fmt(to);
-  }
-
-  // ── Fetch helpers ────────────────────────────────────────────────────────────
-  async function apiFetch(path) {
-    const base = window.location.origin;
-    const res = await fetch(base + path, {
-      headers: { 'Authorization': 'Bearer ' + getToken() }
-    });
-    if (res.status === 401) {
-      document.getElementById('token-modal').classList.remove('hidden');
-      throw new Error('Unauthorized');
-    }
-    if (!res.ok) throw new Error(`API error ${res.status}`);
-    return res.json();
-  }
-
-  function showError(msg) {
-    const el = document.getElementById('error-banner');
-    el.textContent = msg;
-    el.style.display = 'block';
-    setTimeout(() => { el.style.display = 'none'; }, 5000);
-  }
-
-  // ── Chart instances ──────────────────────────────────────────────────────────
-  let chartDaily = null, chartTicket = null, chartWeekly = null;
-
-  function destroyCharts() {
-    if (chartDaily)  { chartDaily.destroy();  chartDaily = null; }
-    if (chartTicket) { chartTicket.destroy(); chartTicket = null; }
-    if (chartWeekly) { chartWeekly.destroy(); chartWeekly = null; }
-  }
-
-  const gridColor = '#1e2535';
-  const tickColor = '#64748b';
-
-  function baseScales(yLabel) {
-    return {
-      x: { ticks: { color: tickColor, maxRotation: 45, font: { size: 11 } }, grid: { color: gridColor } },
-      y: { ticks: { color: tickColor, font: { size: 11 }, callback: v => '€' + v.toLocaleString() }, grid: { color: gridColor }, title: { display: !!yLabel, text: yLabel, color: tickColor, font: { size: 11 } } }
-    };
-  }
-
-  // ── KPI cards ────────────────────────────────────────────────────────────────
-  function renderKPIs(rows) {
-    const totalRevenue = rows.reduce((s, r) => s + r.total_sales, 0);
-    const totalCovers  = rows.reduce((s, r) => s + r.total_covers, 0);
-    const totalLunch   = rows.reduce((s, r) => s + r.lunch_sales, 0);
-    const totalDinner  = rows.reduce((s, r) => s + r.dinner_sales, 0);
-    const avgTicket    = totalCovers ? totalRevenue / totalCovers : 0;
-    const best         = rows.reduce((b, r) => r.total_sales > (b?.total_sales ?? 0) ? r : b, null);
-
-    document.getElementById('kpi-revenue').textContent    = '€' + Math.round(totalRevenue).toLocaleString();
-    document.getElementById('kpi-days').textContent       = rows.length + ' days with data';
-    document.getElementById('kpi-covers').textContent     = totalCovers.toLocaleString();
-    document.getElementById('kpi-avg-ticket').textContent = '€' + avgTicket.toFixed(2);
-    document.getElementById('kpi-lunch').textContent      = '€' + Math.round(totalLunch).toLocaleString();
-    document.getElementById('kpi-lunch-pct').textContent  = totalRevenue ? (totalLunch / totalRevenue * 100).toFixed(1) + '% of revenue' : '';
-    document.getElementById('kpi-dinner').textContent     = '€' + Math.round(totalDinner).toLocaleString();
-    document.getElementById('kpi-dinner-pct').textContent = totalRevenue ? (totalDinner / totalRevenue * 100).toFixed(1) + '% of revenue' : '';
-    document.getElementById('kpi-best').textContent       = best ? '€' + Math.round(best.total_sales).toLocaleString() : '—';
-    document.getElementById('kpi-best-date').textContent  = best ? best.date : '';
-  }
-
-  // ── Daily chart ──────────────────────────────────────────────────────────────
-  function renderDailyChart(rows) {
-    const labels = rows.map(r => r.date);
-    chartDaily = new Chart(document.getElementById('chart-daily'), {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [
-          { label: 'Lunch', data: rows.map(r => r.lunch_sales),  backgroundColor: '#38bdf8', stack: 'rev' },
-          { label: 'Dinner', data: rows.map(r => r.dinner_sales), backgroundColor: '#818cf8', stack: 'rev' },
-        ]
-      },
-      options: {
-        responsive: true,
-        plugins: { legend: { labels: { color: tickColor } } },
-        scales: baseScales()
-      }
-    });
-  }
-
-  // ── Avg ticket chart ─────────────────────────────────────────────────────────
-  function renderTicketChart(rows) {
-    const labels = rows.map(r => r.date);
-    chartTicket = new Chart(document.getElementById('chart-ticket'), {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [{
-          label: 'Avg Ticket (€)',
-          data: rows.map(r => r.avg_ticket),
-          borderColor: '#34d399',
-          backgroundColor: 'rgba(52,211,153,0.08)',
-          tension: 0.3,
-          pointRadius: 3,
-          fill: true,
-        }]
-      },
-      options: {
-        responsive: true,
-        plugins: { legend: { labels: { color: tickColor } } },
-        scales: baseScales()
-      }
-    });
-  }
-
-  // ── Weekly chart ─────────────────────────────────────────────────────────────
-  function renderWeeklyChart(weeks) {
-    const labels = weeks.map(w => w.week_start.slice(5));   // MM-DD
-    chartWeekly = new Chart(document.getElementById('chart-weekly'), {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [{
-          label: 'Weekly Revenue (€)',
-          data: weeks.map(w => w.total_sales),
-          backgroundColor: '#a78bfa',
-          borderRadius: 4,
-        }]
-      },
-      options: {
-        responsive: true,
-        plugins: { legend: { labels: { color: tickColor } } },
-        scales: baseScales()
-      }
-    });
-  }
-
-  // ── Main loader ──────────────────────────────────────────────────────────────
-  async function loadAll() {
-    const from = document.getElementById('date-from').value;
-    const to   = document.getElementById('date-to').value;
-    if (!from || !to) return;
-
-    document.getElementById('header-range').textContent = from + ' → ' + to;
-    destroyCharts();
-
-    try {
-      const [daily, weekly] = await Promise.all([
-        apiFetch(`/api/stats/daily?from=${from}&to=${to}`),
-        apiFetch('/api/stats/weekly?weeks=8'),
-      ]);
-
-      renderKPIs(daily);
-      renderDailyChart(daily);
-      renderTicketChart(daily);
-      renderWeeklyChart(weekly);
-    } catch (e) {
-      if (e.message !== 'Unauthorized') showError('Failed to load data: ' + e.message);
-    }
-  }
-
-  // ── Init ─────────────────────────────────────────────────────────────────────
-  initDates();
   loadAll();
+}
+
+// ── Dates ─────────────────────────────────────────────────────────────────────
+function fmt(d) { return d.toISOString().slice(0, 10); }
+function fmtDisplay(s) {
+  // "2026-03-15" → "15 Mar"
+  const m = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const [, mo, dy] = s.split('-');
+  return `${parseInt(dy)} ${m[parseInt(mo)-1]}`;
+}
+function fmtMonth(s) {
+  const m = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const [yr, mo] = s.split('-');
+  return `${m[parseInt(mo)-1]} ${yr}`;
+}
+
+function setPreset(days) {
+  const to = new Date(), from = new Date();
+  from.setDate(from.getDate() - (days - 1));
+  document.getElementById('date-from').value = fmt(from);
+  document.getElementById('date-to').value   = fmt(to);
+  loadAll();
+}
+function setThisMonth() {
+  const now = new Date();
+  const from = new Date(now.getFullYear(), now.getMonth(), 1);
+  document.getElementById('date-from').value = fmt(from);
+  document.getElementById('date-to').value   = fmt(now);
+  loadAll();
+}
+function initDates() {
+  const to = new Date(), from = new Date();
+  from.setDate(from.getDate() - 29);
+  document.getElementById('date-from').value = fmt(from);
+  document.getElementById('date-to').value   = fmt(to);
+}
+
+// ── API ───────────────────────────────────────────────────────────────────────
+async function apiFetch(path) {
+  const res = await fetch(window.location.origin + path, {
+    headers: { 'Authorization': 'Bearer ' + getToken() }
+  });
+  if (res.status === 401) {
+    document.getElementById('token-modal').classList.remove('hidden');
+    throw new Error('Unauthorized');
+  }
+  if (!res.ok) throw new Error(`API ${res.status}`);
+  return res.json();
+}
+function showError(msg) {
+  const el = document.getElementById('error-banner');
+  el.textContent = msg; el.style.display = 'block';
+  setTimeout(() => { el.style.display = 'none'; }, 6000);
+}
+
+// ── Chart registry ────────────────────────────────────────────────────────────
+const charts = {};
+function destroyChart(key) {
+  if (charts[key]) { charts[key].destroy(); delete charts[key]; }
+}
+
+// ── Chart helpers ─────────────────────────────────────────────────────────────
+function baseOpts(extraScales) {
+  return {
+    responsive: true,
+    animation: { duration: 350 },
+    plugins: { legend: { display: false } },
+    scales: {
+      x: {
+        grid: { color: COLORS.grid },
+        ticks: { color: COLORS.tick, font: { size: 11 }, maxRotation: 45 }
+      },
+      y: {
+        grid: { color: COLORS.grid },
+        ticks: { color: COLORS.tick, font: { size: 11 }, callback: v => '€' + v.toLocaleString() }
+      },
+      ...extraScales
+    }
+  };
+}
+
+// ── 1. Render KPIs ────────────────────────────────────────────────────────────
+function renderKPIs(rows) {
+  if (!rows.length) {
+    ['kpi-revenue','kpi-days','kpi-covers','kpi-covers-avg',
+     'kpi-avg-ticket','kpi-ticket-split','kpi-tips','kpi-tips-pct',
+     'kpi-best','kpi-best-date','kpi-worst','kpi-worst-date']
+      .forEach(id => document.getElementById(id).textContent = '—');
+    return;
+  }
+  const rev   = rows.reduce((s,r) => s + r.total_sales, 0);
+  const cov   = rows.reduce((s,r) => s + r.total_covers, 0);
+  const tips  = rows.reduce((s,r) => s + r.tips, 0);
+  const lsales = rows.reduce((s,r) => s + r.lunch_sales, 0);
+  const dsales = rows.reduce((s,r) => s + r.dinner_sales, 0);
+  const lcov  = rows.reduce((s,r) => s + r.lunch_covers, 0);
+  const dcov  = rows.reduce((s,r) => s + r.dinner_covers, 0);
+  const avg   = cov   ? rev / cov   : 0;
+  const lavg  = lcov  ? lsales / lcov  : 0;
+  const davg  = dcov  ? dsales / dcov  : 0;
+  const tpct  = rev   ? tips / rev * 100 : 0;
+  const best  = rows.reduce((b,r) => r.total_sales > b.total_sales ? r : b, rows[0]);
+  const worst = rows.reduce((b,r) => r.total_sales < b.total_sales ? r : b, rows[0]);
+
+  document.getElementById('kpi-revenue').textContent     = '€' + Math.round(rev).toLocaleString();
+  document.getElementById('kpi-days').textContent        = rows.length + ' days with data';
+  document.getElementById('kpi-covers').textContent      = cov.toLocaleString();
+  document.getElementById('kpi-covers-avg').textContent  = (cov / rows.length).toFixed(1) + ' avg / day';
+  document.getElementById('kpi-avg-ticket').textContent  = '€' + avg.toFixed(2);
+  document.getElementById('kpi-ticket-split').textContent = `L €${lavg.toFixed(0)} · D €${davg.toFixed(0)}`;
+  document.getElementById('kpi-tips').textContent        = '€' + Math.round(tips).toLocaleString();
+  document.getElementById('kpi-tips-pct').textContent    = tpct.toFixed(1) + '% of revenue';
+  document.getElementById('kpi-best').textContent        = '€' + Math.round(best.total_sales).toLocaleString();
+  document.getElementById('kpi-best-date').textContent   = fmtDisplay(best.date);
+  document.getElementById('kpi-worst').textContent       = '€' + Math.round(worst.total_sales).toLocaleString();
+  document.getElementById('kpi-worst-date').textContent  = fmtDisplay(worst.date);
+}
+
+// ── 2. Daily Revenue stacked bar ──────────────────────────────────────────────
+function renderDailyRevenue(rows) {
+  destroyChart('daily');
+  const labels = rows.map(r => fmtDisplay(r.date));
+  charts.daily = new Chart(document.getElementById('chart-daily'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Lunch',  data: rows.map(r => r.lunch_sales),  backgroundColor: COLORS.lunch,  stack: 's' },
+        { label: 'Dinner', data: rows.map(r => r.dinner_sales), backgroundColor: COLORS.dinner, stack: 's' },
+      ]
+    },
+    options: baseOpts()
+  });
+}
+
+// ── 3. Covers trend line ──────────────────────────────────────────────────────
+function renderCovers(rows) {
+  destroyChart('covers');
+  const labels = rows.map(r => fmtDisplay(r.date));
+  const opts = {
+    ...baseOpts(),
+    scales: {
+      x: { grid: { color: COLORS.grid }, ticks: { color: COLORS.tick, font: { size: 11 }, maxRotation: 45 } },
+      y: { grid: { color: COLORS.grid }, ticks: { color: COLORS.tick, font: { size: 11 } } }
+    }
+  };
+  charts.covers = new Chart(document.getElementById('chart-covers'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Lunch',  data: rows.map(r => r.lunch_covers),  borderColor: COLORS.lunch,  backgroundColor: COLORS.lunch  + '20', tension: 0.3, pointRadius: 2, fill: true },
+        { label: 'Dinner', data: rows.map(r => r.dinner_covers), borderColor: COLORS.dinner, backgroundColor: COLORS.dinner + '20', tension: 0.3, pointRadius: 2, fill: true },
+      ]
+    },
+    options: opts
+  });
+}
+
+// ── 4. Avg Ticket Trend — 3 lines ─────────────────────────────────────────────
+function renderAvgTicket(rows) {
+  destroyChart('ticket');
+  const labels = rows.map(r => fmtDisplay(r.date));
+  charts.ticket = new Chart(document.getElementById('chart-ticket'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Overall', data: rows.map(r => r.avg_ticket),         borderColor: COLORS.overall, backgroundColor: 'transparent', tension: 0.3, pointRadius: 2, borderWidth: 2 },
+        { label: 'Lunch',   data: rows.map(r => r.lunch_avg_ticket),   borderColor: COLORS.lunch,   backgroundColor: 'transparent', tension: 0.3, pointRadius: 2, borderDash: [4,3] },
+        { label: 'Dinner',  data: rows.map(r => r.dinner_avg_ticket),  borderColor: COLORS.dinner,  backgroundColor: 'transparent', tension: 0.3, pointRadius: 2, borderDash: [4,3] },
+      ]
+    },
+    options: baseOpts()
+  });
+}
+
+// ── 5. Week-over-Week grouped bars ────────────────────────────────────────────
+function renderWoW(rows) {
+  destroyChart('wow');
+
+  // Determine this week Mon and last week Mon from today
+  const today = new Date();
+  const jsDay = today.getDay();
+  const mondayOffset = (jsDay + 6) % 7; // Mon=0
+  const thisMonday = new Date(today); thisMonday.setDate(today.getDate() - mondayOffset);
+  const lastMonday = new Date(thisMonday); lastMonday.setDate(thisMonday.getDate() - 7);
+
+  const thisWeek = new Array(7).fill(null);
+  const lastWeek = new Array(7).fill(null);
+
+  for (const r of rows) {
+    const d = new Date(r.date + 'T00:00:00');
+    const diffThis = Math.round((d - thisMonday) / 86400000);
+    if (diffThis >= 0 && diffThis < 7) thisWeek[diffThis] = r.total_sales;
+    const diffLast = Math.round((d - lastMonday) / 86400000);
+    if (diffLast >= 0 && diffLast < 7) lastWeek[diffLast] = r.total_sales;
+  }
+
+  const opts = JSON.parse(JSON.stringify(baseOpts()));
+  charts.wow = new Chart(document.getElementById('chart-wow'), {
+    type: 'bar',
+    data: {
+      labels: DAYS,
+      datasets: [
+        { label: 'This week', data: thisWeek, backgroundColor: COLORS.lunch,  borderRadius: 4 },
+        { label: 'Last week', data: lastWeek, backgroundColor: COLORS.blue,   borderRadius: 4 },
+      ]
+    },
+    options: opts
+  });
+}
+
+// ── 6. No-Show Rate by Weekday — horizontal bar ───────────────────────────────
+function renderNoShows(rows) {
+  destroyChart('noshows');
+
+  const buckets = Array.from({ length: 7 }, () => ({ total: 0, count: 0 }));
+  for (const r of rows) {
+    const d = new Date(r.date + 'T00:00:00');
+    const wd = (d.getDay() + 6) % 7; // Mon=0
+    buckets[wd].total += (r.lunch_noshows || 0) + (r.dinner_noshows || 0);
+    buckets[wd].count++;
+  }
+  const avgs = buckets.map(b => b.count ? +(b.total / b.count).toFixed(1) : 0);
+
+  charts.noshows = new Chart(document.getElementById('chart-noshows'), {
+    type: 'bar',
+    data: {
+      labels: DAYS,
+      datasets: [{
+        label: 'Avg No-Shows',
+        data: avgs,
+        backgroundColor: COLORS.yellow,
+        borderColor: '#F59E0B',
+        borderWidth: 1,
+        borderRadius: 4,
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      animation: { duration: 350 },
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { color: COLORS.grid }, ticks: { color: COLORS.tick, font: { size: 11 } } },
+        y: { grid: { color: COLORS.grid }, ticks: { color: COLORS.tick, font: { size: 11 } } },
+      }
+    }
+  });
+}
+
+// ── 7. Monthly Summary table ──────────────────────────────────────────────────
+function renderMonthly(rows) {
+  const months = {};
+  for (const r of rows) {
+    const key = r.date.slice(0, 7); // "YYYY-MM"
+    if (!months[key]) months[key] = { revenue: 0, covers: 0, tips: 0, best: null, days: 0 };
+    months[key].revenue += r.total_sales;
+    months[key].covers  += r.total_covers;
+    months[key].tips    += r.tips;
+    months[key].days++;
+    if (!months[key].best || r.total_sales > months[key].best.sales) {
+      months[key].best = { sales: r.total_sales, date: r.date };
+    }
+  }
+
+  const keys = Object.keys(months).sort();
+  const tbody = document.getElementById('monthly-tbody');
+
+  if (!keys.length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:24px">No data for selected period</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = keys.map(k => {
+    const m = months[k];
+    const avg = m.covers ? m.revenue / m.covers : 0;
+    const tpct = m.revenue ? (m.tips / m.revenue * 100).toFixed(1) : '0.0';
+    return `<tr>
+      <td class="month-label">${fmtMonth(k + '-01')}</td>
+      <td class="num">€${Math.round(m.revenue).toLocaleString()}</td>
+      <td class="num">${m.covers.toLocaleString()}</td>
+      <td class="num">€${avg.toFixed(2)}</td>
+      <td class="num">€${Math.round(m.tips).toLocaleString()} <span style="color:var(--muted);font-size:0.7rem">${tpct}%</span></td>
+      <td class="num">€${Math.round(m.best.sales).toLocaleString()} <span style="color:var(--muted);font-size:0.7rem">${fmtDisplay(m.best.date)}</span></td>
+      <td class="num">${m.days}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Main loader ───────────────────────────────────────────────────────────────
+async function loadAll() {
+  const from = document.getElementById('date-from').value;
+  const to   = document.getElementById('date-to').value;
+  if (!from || !to) return;
+
+  // Always fetch last 21 days for WoW chart regardless of picker range
+  const wowTo   = new Date();
+  const wowFrom = new Date(); wowFrom.setDate(wowTo.getDate() - 20);
+
+  try {
+    const [daily, wowRows] = await Promise.all([
+      apiFetch(`/api/stats/daily?from=${from}&to=${to}`),
+      apiFetch(`/api/stats/daily?from=${fmt(wowFrom)}&to=${fmt(wowTo)}`),
+    ]);
+
+    renderKPIs(daily);
+    renderDailyRevenue(daily);
+    renderCovers(daily);
+    renderAvgTicket(daily);
+    renderWoW(wowRows);
+    renderNoShows(daily);
+    renderMonthly(daily);
+  } catch (e) {
+    if (e.message !== 'Unauthorized') showError('Failed to load: ' + e.message);
+  }
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+initDates();
+loadAll();
 </script>
 </body>
 </html>

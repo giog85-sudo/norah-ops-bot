@@ -3056,7 +3056,10 @@ def api_stats_daily():
                        lunch_sales,
                        dinner_sales,
                        lunch_pax,
-                       dinner_pax
+                       dinner_pax,
+                       COALESCE(tips, 0) AS tips,
+                       COALESCE(lunch_noshows, 0) AS lunch_noshows,
+                       COALESCE(dinner_noshows, 0) AS dinner_noshows
                 FROM full_daily_stats
                 WHERE day BETWEEN %s AND %s
                 ORDER BY day
@@ -3067,19 +3070,30 @@ def api_stats_daily():
 
     result = []
     for row in rows:
-        day, total_sales, total_covers, lunch_sales, dinner_sales, lunch_covers, dinner_covers = row
+        day, total_sales, total_covers, lunch_sales, dinner_sales, lunch_covers, dinner_covers, tips, lunch_noshows, dinner_noshows = row
         total_covers = int(total_covers or 0)
         total_sales = float(total_sales or 0)
+        lc = int(lunch_covers or 0)
+        dc = int(dinner_covers or 0)
+        ls = float(lunch_sales or 0)
+        ds = float(dinner_sales or 0)
         avg_ticket = round(total_sales / total_covers, 2) if total_covers else 0.0
+        lunch_avg_ticket = round(ls / lc, 2) if lc else 0.0
+        dinner_avg_ticket = round(ds / dc, 2) if dc else 0.0
         result.append({
             "date": day.isoformat(),
             "total_sales": round(total_sales, 2),
             "total_covers": total_covers,
             "avg_ticket": avg_ticket,
-            "lunch_sales": round(float(lunch_sales or 0), 2),
-            "dinner_sales": round(float(dinner_sales or 0), 2),
-            "lunch_covers": int(lunch_covers or 0),
-            "dinner_covers": int(dinner_covers or 0),
+            "lunch_sales": round(ls, 2),
+            "dinner_sales": round(ds, 2),
+            "lunch_covers": lc,
+            "dinner_covers": dc,
+            "lunch_avg_ticket": lunch_avg_ticket,
+            "dinner_avg_ticket": dinner_avg_ticket,
+            "tips": round(float(tips or 0), 2),
+            "lunch_noshows": int(lunch_noshows or 0),
+            "dinner_noshows": int(dinner_noshows or 0),
         })
 
     return jsonify(result)
