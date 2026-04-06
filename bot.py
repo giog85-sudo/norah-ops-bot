@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from collections import Counter
 
 import psycopg
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, request, send_file, make_response, redirect
 from flask_cors import CORS
 from telegram import Update
 from telegram.constants import ChatType
@@ -47,7 +47,8 @@ ALERT_POSITIVE_COVERS_PCT      = float((os.getenv("ALERT_POSITIVE_COVERS_PCT",  
 ALERT_TOP_PERCENTILE           = float((os.getenv("ALERT_TOP_PERCENTILE",           "10").strip()  or "10"))
 ALERT_EVENING_HOUR             = int((os.getenv("ALERT_EVENING_HOUR",               "21").strip()  or "21"))
 ALERT_LUNCH_TICKET_MIN = float((os.getenv("ALERT_LUNCH_TICKET_MIN", "35").strip() or "35"))
-DASHBOARD_API_KEY = os.getenv("DASHBOARD_API_KEY", "").strip()
+DASHBOARD_API_KEY  = os.getenv("DASHBOARD_API_KEY",  "").strip()
+DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "").strip()
 
 ACCESS_MODE = (os.getenv("ACCESS_MODE", "RESTRICTED").strip().upper() or "RESTRICTED")
 ACCESS_MODE = "OPEN" if ACCESS_MODE == "OPEN" else "RESTRICTED"
@@ -3016,8 +3017,55 @@ def weekly_options():
     return '', 204
 
 
+_LOGIN_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Norah · Login</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    *{{box-sizing:border-box;margin:0;padding:0}}
+    body{{font-family:'Inter',sans-serif;background:#f5f5f0;display:flex;align-items:center;justify-content:center;min-height:100vh}}
+    .card{{background:#fff;border:1px solid #e8e8e2;border-radius:14px;padding:40px 36px;width:320px;box-shadow:0 2px 12px rgba(0,0,0,0.07);text-align:center}}
+    .brand{{font-size:1rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:6px}}
+    .sub{{font-size:0.75rem;color:#9ca3af;margin-bottom:28px}}
+    input{{width:100%;border:1px solid #e8e8e2;border-radius:8px;padding:10px 14px;font-size:0.9rem;font-family:inherit;outline:none;margin-bottom:12px;background:#f9f9f6}}
+    input:focus{{border-color:#a0a0f0}}
+    button{{width:100%;background:#1a1a2e;color:#fff;border:none;border-radius:8px;padding:11px;font-size:0.9rem;font-family:inherit;font-weight:600;cursor:pointer}}
+    .error{{color:#b91c1c;font-size:0.78rem;margin-bottom:10px}}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="brand">Norah</div>
+    <div class="sub">Operations Dashboard</div>
+    {error}
+    <form method="POST" action="/login">
+      <input type="password" name="password" placeholder="Password" autofocus />
+      <button type="submit">Continue</button>
+    </form>
+  </div>
+</body>
+</html>"""
+
+
+@flask_app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        pwd = request.form.get('password', '')
+        if DASHBOARD_PASSWORD and pwd == DASHBOARD_PASSWORD:
+            resp = make_response(redirect('/dashboard'))
+            resp.set_cookie('dash_auth', pwd, httponly=True, samesite='Lax')
+            return resp
+        return _LOGIN_PAGE.format(error='<p class="error">Incorrect password</p>'), 401
+    return _LOGIN_PAGE.format(error='')
+
+
 @flask_app.route('/dashboard')
 def serve_dashboard():
+    if DASHBOARD_PASSWORD:
+        if request.cookies.get('dash_auth') != DASHBOARD_PASSWORD:
+            return redirect('/login')
     return send_file('dashboard.html')
 
 
