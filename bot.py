@@ -50,6 +50,10 @@ ALERT_LUNCH_TICKET_MIN = float((os.getenv("ALERT_LUNCH_TICKET_MIN", "35").strip(
 DASHBOARD_API_KEY  = os.getenv("DASHBOARD_API_KEY",  "").strip()
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "").strip()
 
+AGORA_URL      = os.getenv("AGORA_URL",      "http://192.168.1.10:8984").strip()
+AGORA_USER     = os.getenv("AGORA_USER",     "").strip()
+AGORA_PASSWORD = os.getenv("AGORA_PASSWORD", "").strip()
+
 ACCESS_MODE = (os.getenv("ACCESS_MODE", "RESTRICTED").strip().upper() or "RESTRICTED")
 ACCESS_MODE = "OPEN" if ACCESS_MODE == "OPEN" else "RESTRICTED"
 
@@ -62,6 +66,26 @@ if _raw:
             ALLOWED_USER_IDS.add(int(x))
 
 TZ = ZoneInfo(TZ_NAME)
+
+try:
+    import agora_integration as _agora_mod
+    # Propagate env vars so the module picks up bot.py's config
+    _agora_mod.AGORA_URL      = AGORA_URL
+    _agora_mod.AGORA_USER     = AGORA_USER
+    _agora_mod.AGORA_PASSWORD = AGORA_PASSWORD
+    _AGORA_AVAILABLE = True
+except Exception:
+    _AGORA_AVAILABLE = False
+
+def _try_agora(day_: date):
+    """Fetch Agora POS sales for a date. Returns DailySales or None on any error."""
+    if not _AGORA_AVAILABLE or not AGORA_USER or not AGORA_PASSWORD:
+        return None
+    try:
+        return _agora_mod.get_daily_sales(day_)
+    except Exception as e:
+        print(f"Agora fetch failed for {day_}: {e}")
+        return None
 
 REPORT_MODE_KEY = "report_mode_map"
 FULL_MODE_KEY = "full_mode_map"
@@ -2655,26 +2679,51 @@ def build_owners_post_for_day(report_day: date) -> str:
             f"📝 Notes:\n{notes_block}"
         )
     else:
-        msg = (
-            f"📌 Norah Daily Post\n"
-            f"Day: {fmt_day_ddmmyyyy(report_day)}\n"
-            f"Total Sales Day: —\n"
-            f"Total Covers: —  |  Avg Ticket: —\n\n"
-            f"Visa: —\n"
-            f"Cash: —\n"
-            f"Tips: —\n\n"
-            f"Lunch: —\n"
-            f"Pax: —\n"
-            f"Avg Ticket: —\n"
-            f"Walk in: —\n"
-            f"No show: —\n\n"
-            f"Dinner: —\n"
-            f"Pax: —\n"
-            f"Avg Ticket: —\n"
-            f"Walk in: —\n"
-            f"No show: —\n\n"
-            f"📝 Notes:\n{notes_block}"
-        )
+        # No manual entry — try to fill revenue/covers from Agora POS
+        agora = _try_agora(report_day)
+        if agora:
+            total_avg = agora.avg_ticket
+            msg = (
+                f"📌 Norah Daily Post\n"
+                f"Day: {fmt_day_ddmmyyyy(report_day)}\n"
+                f"Total Sales Day: {euro_comma(agora.total_net)} *(Agora POS)*\n"
+                f"Total Covers: {agora.total_covers}  |  Avg Ticket: {euro_comma(total_avg)}\n\n"
+                f"Visa: —\n"
+                f"Cash: —\n"
+                f"Tips: —\n\n"
+                f"Lunch: {euro_comma(agora.lunch_net)}\n"
+                f"Pax: {agora.lunch_covers}\n"
+                f"Avg Ticket: {euro_comma(agora.lunch_avg_ticket)}\n"
+                f"Walk in: —\n"
+                f"No show: —\n\n"
+                f"Dinner: {euro_comma(agora.dinner_net)}\n"
+                f"Pax: {agora.dinner_covers}\n"
+                f"Avg Ticket: {euro_comma(agora.dinner_avg_ticket)}\n"
+                f"Walk in: —\n"
+                f"No show: —\n\n"
+                f"📝 Notes:\n{notes_block}"
+            )
+        else:
+            msg = (
+                f"📌 Norah Daily Post\n"
+                f"Day: {fmt_day_ddmmyyyy(report_day)}\n"
+                f"Total Sales Day: —\n"
+                f"Total Covers: —  |  Avg Ticket: —\n\n"
+                f"Visa: —\n"
+                f"Cash: —\n"
+                f"Tips: —\n\n"
+                f"Lunch: —\n"
+                f"Pax: —\n"
+                f"Avg Ticket: —\n"
+                f"Walk in: —\n"
+                f"No show: —\n\n"
+                f"Dinner: —\n"
+                f"Pax: —\n"
+                f"Avg Ticket: —\n"
+                f"Walk in: —\n"
+                f"No show: —\n\n"
+                f"📝 Notes:\n{notes_block}"
+            )
     return msg
 
 async def send_daily_post_to_owners(context: ContextTypes.DEFAULT_TYPE):
