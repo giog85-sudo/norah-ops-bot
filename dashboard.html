@@ -647,24 +647,25 @@ function renderWoW(rows) {
   const jsDay = today.getDay();
   const mondayOffset = (jsDay + 6) % 7; // Mon=0
   const thisMonday = new Date(today); thisMonday.setDate(today.getDate() - mondayOffset);
+  thisMonday.setHours(0, 0, 0, 0); // normalize to midnight so date diffs are exact
   const lastMonday = new Date(thisMonday); lastMonday.setDate(thisMonday.getDate() - 7);
 
-  const thisWeek = new Array(7).fill(null);
-  const lastWeek = new Array(7).fill(null);
+  const thisWeek = new Array(6).fill(null); // Mon–Sat only (no Sunday)
+  const lastWeek = new Array(6).fill(null);
 
   for (const r of rows) {
     const d = new Date(r.date + 'T00:00:00');
     const diffThis = Math.round((d - thisMonday) / 86400000);
-    if (diffThis >= 0 && diffThis < 7) thisWeek[diffThis] = r.total_sales;
+    if (diffThis >= 0 && diffThis < 6) thisWeek[diffThis] = r.total_sales;
     const diffLast = Math.round((d - lastMonday) / 86400000);
-    if (diffLast >= 0 && diffLast < 7) lastWeek[diffLast] = r.total_sales;
+    if (diffLast >= 0 && diffLast < 6) lastWeek[diffLast] = r.total_sales;
   }
 
   const opts = JSON.parse(JSON.stringify(baseOpts()));
   charts.wow = new Chart(document.getElementById('chart-wow'), {
     type: 'bar',
     data: {
-      labels: DAYS,
+      labels: DAYS.slice(0, 6), // Mon–Sat, no Sunday
       datasets: [
         { label: 'This week', data: thisWeek, backgroundColor: COLORS.lunch,  borderRadius: 4 },
         { label: 'Last week', data: lastWeek, backgroundColor: COLORS.blue,   borderRadius: 4 },
