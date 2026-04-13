@@ -3255,6 +3255,29 @@ def api_stats_weekly():
     return jsonify(result)
 
 
+@flask_app.route("/test-agora")
+def test_agora():
+    import urllib.request, urllib.error, gzip as _gzip
+    target = "http://88.1.26.209:8984"
+    result = {"target": target, "reachable": False}
+    try:
+        req = urllib.request.Request(target + "/", method="GET")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            raw = r.read()
+            if raw[:2] == b'\x1f\x8b':
+                raw = _gzip.decompress(raw)
+            result["reachable"] = True
+            result["status"] = r.status
+            result["body_preview"] = raw.decode("utf-8", errors="replace")[:300]
+    except urllib.error.HTTPError as e:
+        result["reachable"] = True   # got a response — port is open
+        result["status"] = e.code
+        result["body_preview"] = e.read().decode("utf-8", errors="replace")[:300]
+    except Exception as e:
+        result["error"] = str(e)
+    return jsonify(result)
+
+
 # =========================
 # MAIN
 # =========================
