@@ -1340,6 +1340,17 @@ def _exec_get_reservations(start_date: str, end_date: str) -> dict:
     return {"start_date": start_date, "end_date": end_date, "days": rows}
 
 
+def _last_record_date(records: list):
+    """Return the latest date found in a list of CoverManager record dicts, or None."""
+    dates = [r.get("date", "") for r in records if r.get("date")]
+    if not dates:
+        return None
+    try:
+        return date.fromisoformat(max(dates))
+    except Exception:
+        return None
+
+
 def _monthly_chunks(start, end):
     """Yield (chunk_start, chunk_end) date pairs, month by month."""
     import calendar
@@ -1378,12 +1389,14 @@ def _fetch_cm_records_chunked(start, end, timeout_sec: float = 45):
 
     for chunk_start, chunk_end in _monthly_chunks(start, end):
         if _time.monotonic() >= deadline:
-            return all_records, True, covered_through
+            # Use actual last record date, not chunk boundary
+            actual_last = _last_record_date(all_records) or covered_through
+            return all_records, True, actual_last
         batch = _cm_mod.get_raw_records(chunk_start, chunk_end)
         all_records.extend(batch)
         covered_through = chunk_end
 
-    return all_records, False, covered_through
+    return all_records, False, end
 
 
 def _classify_channel(r: dict) -> str:
