@@ -3780,6 +3780,76 @@ def api_stats_weekly():
     return jsonify(result)
 
 
+@flask_app.route('/api/booking-sources', methods=['OPTIONS'])
+def booking_sources_options():
+    return '', 204
+
+
+@flask_app.route("/api/booking-sources")
+def api_booking_sources():
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    if not _CM_AVAILABLE:
+        return jsonify({"error": "CoverManager not available"}), 503
+
+    today = date.today()
+    days_since_monday = today.weekday()
+    this_monday = today - timedelta(days=days_since_monday)
+    trend_from = this_monday - timedelta(weeks=11)   # 12 weeks total
+    pie_from   = today - timedelta(days=29)          # last 30 days
+
+    try:
+        # One fetch covers both charts; filter pie client-side
+        all_records = _cm_mod.get_raw_records(trend_from, today)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    pie_from_str = pie_from.isoformat()
+    pie_records  = [r for r in all_records if (r.get("date") or "") >= pie_from_str]
+
+    from collections import Counter, defaultdict as _dd
+
+    # ── Pie: last 30 days ────────────────────────────────────────────────────
+    pie_counts = Counter(_classify_channel(r) for r in pie_records)
+    pie_total  = sum(pie_counts.values())
+
+    # ── Trends: 12 weeks, grouped by week-start Monday ───────────────────────
+    week_buckets = _dd(lambda: _dd(int))
+    for r in all_records:
+        d_str = r.get("date", "")
+        if not d_str:
+            continue
+        try:
+            d      = date.fromisoformat(d_str)
+            monday = d - timedelta(days=d.weekday())
+            week_buckets[monday.isoformat()][_classify_channel(r)] += 1
+        except Exception:
+            continue
+
+    weeks = [(trend_from + timedelta(weeks=i)).isoformat() for i in range(12)]
+    _TREND_CHANNELS = ["Google", "Own website", "Instagram", "Walk-in", "Mobile app", "Staff/software"]
+    series = {}
+    for ch in _TREND_CHANNELS:
+        vals = [week_buckets.get(w, {}).get(ch, 0) for w in weeks]
+        if any(v > 0 for v in vals):
+            series[ch] = vals
+
+    return jsonify({
+        "pie": {
+            "total":    pie_total,
+            "period":   {"from": pie_from_str, "to": today.isoformat()},
+            "channels": {
+                ch: {"count": cnt, "pct": round(cnt / pie_total * 100, 1) if pie_total else 0}
+                for ch, cnt in pie_counts.most_common()
+            },
+        },
+        "trends": {
+            "weeks":  weeks,
+            "series": series,
+        },
+    })
+
+
 @flask_app.route("/test-agora")
 def test_agora():
     import urllib.request, urllib.error, gzip as _gzip

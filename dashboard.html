@@ -432,6 +432,23 @@
     </div>
   </div>
 
+  <div style="height:16px"></div>
+
+  <!-- 7+8. Booking Sources pie + Trends line -->
+  <div class="charts-col2">
+    <div class="chart-card" style="margin-bottom:0">
+      <h2>Booking Sources (Last 30 Days)</h2>
+      <canvas id="chart-booking-pie"></canvas>
+    </div>
+    <div class="chart-card" style="margin-bottom:0">
+      <h2>
+        Booking Source Trends (Last 12 Weeks)
+        <span class="legend-dots" id="booking-trends-legend"></span>
+      </h2>
+      <canvas id="chart-booking-trends" height="200"></canvas>
+    </div>
+  </div>
+
 </main>
 
 <script>
@@ -781,9 +798,133 @@ async function loadAll() {
   }
 }
 
+// ── Booking source colours ─────────────────────────────────────────────────────
+const BOOKING_COLORS = {
+  'Google':         '#4285F4',
+  'Own website':    '#6C63FF',
+  'Walk-in':        '#4ECDC4',
+  'Instagram':      '#E1306C',
+  'Mobile app':     '#96CEB4',
+  'Staff/software': '#F59E0B',
+  'Third-party':    '#F97316',
+  'Waiting list':   '#A78BFA',
+  'Other':          '#d1d5db',
+};
+
+// ── 8. Booking Sources doughnut ────────────────────────────────────────────────
+function renderBookingPie(data) {
+  destroyChart('bookingPie');
+  const channels = Object.keys(data.channels);
+  const counts   = channels.map(ch => data.channels[ch].count);
+  const colors   = channels.map(ch => BOOKING_COLORS[ch] || '#d1d5db');
+
+  charts.bookingPie = new Chart(document.getElementById('chart-booking-pie'), {
+    type: 'doughnut',
+    data: {
+      labels: channels,
+      datasets: [{
+        data:            counts,
+        backgroundColor: colors,
+        borderWidth:     2,
+        borderColor:     '#fff',
+        hoverOffset:     6,
+      }]
+    },
+    options: {
+      responsive: true,
+      animation: { duration: 350 },
+      cutout: '60%',
+      plugins: {
+        legend: {
+          display:  true,
+          position: 'bottom',
+          labels: {
+            color: COLORS.tick,
+            font:  { size: 11, family: 'Inter, sans-serif' },
+            boxWidth: 10,
+            padding:  10,
+            generateLabels: (chart) => {
+              const ds = chart.data.datasets[0];
+              return chart.data.labels.map((label, i) => ({
+                text:       `${label}  ${data.channels[label].pct}%`,
+                fillStyle:  ds.backgroundColor[i],
+                strokeStyle: ds.backgroundColor[i],
+                hidden:     false,
+                index:      i,
+              }));
+            }
+          }
+        },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const info = data.channels[ctx.label];
+              return ` ${info.count} bookings (${info.pct}%)`;
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
+// ── 9. Booking Source Trends line ─────────────────────────────────────────────
+function renderBookingTrends(data) {
+  destroyChart('bookingTrends');
+
+  const labels = data.weeks.map(w => {
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const [, mo, dy] = w.split('-');
+    return `${parseInt(dy)} ${months[parseInt(mo)-1]}`;
+  });
+
+  const channelNames = Object.keys(data.series);
+  const datasets = channelNames.map(ch => ({
+    label:           ch,
+    data:            data.series[ch],
+    borderColor:     BOOKING_COLORS[ch] || '#d1d5db',
+    backgroundColor: 'transparent',
+    tension:         0.35,
+    pointRadius:     3,
+    borderWidth:     2,
+  }));
+
+  const legendEl = document.getElementById('booking-trends-legend');
+  legendEl.innerHTML = channelNames.map(ch =>
+    `<span><i class="kpi-dot" style="background:${BOOKING_COLORS[ch] || '#d1d5db'}"></i>${ch}</span>`
+  ).join('');
+
+  charts.bookingTrends = new Chart(document.getElementById('chart-booking-trends'), {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      animation: { duration: 350 },
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { color: COLORS.grid }, ticks: { color: COLORS.tick, font: { size: 11 }, maxRotation: 45 } },
+        y: { grid: { color: COLORS.grid }, ticks: { color: COLORS.tick, font: { size: 11 } }, beginAtZero: true }
+      }
+    }
+  });
+}
+
+// ── Booking sources loader (independent of date picker) ────────────────────────
+async function loadBookingSources() {
+  try {
+    const data = await apiFetch('/api/booking-sources');
+    if (data.error) { showError('Booking sources: ' + data.error); return; }
+    renderBookingPie(data.pie);
+    renderBookingTrends(data.trends);
+  } catch (e) {
+    if (e.message !== 'Unauthorized') showError('Booking sources: ' + e.message);
+  }
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 initDates();
 loadAll();
+loadBookingSources();
 </script>
 </body>
 </html>
