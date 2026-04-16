@@ -1340,6 +1340,52 @@ def _exec_get_reservations(start_date: str, end_date: str) -> dict:
     return {"start_date": start_date, "end_date": end_date, "days": rows}
 
 
+def _monthly_chunks(start, end):
+    """Yield (chunk_start, chunk_end) date pairs, month by month."""
+    import calendar
+    current = start
+    while current <= end:
+        # Last day of current month
+        last_day = calendar.monthrange(current.year, current.month)[1]
+        chunk_end = min(date(current.year, current.month, last_day), end)
+        yield current, chunk_end
+        # Advance to first day of next month
+        if current.month == 12:
+            current = date(current.year + 1, 1, 1)
+        else:
+            current = date(current.year, current.month + 1, 1)
+
+
+def _fetch_cm_records_chunked(start, end, timeout_sec: float = 45):
+    """
+    Fetch raw CoverManager records for start..end using monthly chunks.
+    Returns (records, partial, covered_through) where:
+      - records: list of raw dicts collected so far
+      - partial: True if we hit the timeout before finishing
+      - covered_through: last chunk_end that completed (date), or None
+    """
+    import time as _time
+    deadline = _time.monotonic() + timeout_sec
+    all_records = []
+    covered_through = None
+
+    num_months = (end.year - start.year) * 12 + (end.month - start.month) + 1
+    use_chunks = num_months > 2
+
+    if not use_chunks:
+        records = _cm_mod.get_raw_records(start, end)
+        return records, False, end
+
+    for chunk_start, chunk_end in _monthly_chunks(start, end):
+        if _time.monotonic() >= deadline:
+            return all_records, True, covered_through
+        batch = _cm_mod.get_raw_records(chunk_start, chunk_end)
+        all_records.extend(batch)
+        covered_through = chunk_end
+
+    return all_records, False, covered_through
+
+
 def _classify_channel(r: dict) -> str:
     origin = (r.get("origin") or "").strip().lower()
     prov   = (r.get("provenance") or "").strip().lower()
@@ -1363,12 +1409,14 @@ def _exec_get_booking_sources(start_date: str, end_date: str, group_by: str = "t
     except Exception:
         return {"error": "Invalid date format. Use YYYY-MM-DD."}
     try:
-        records = _cm_mod.get_raw_records(start, end)
-    except RuntimeError as e:
+        records, partial, covered_through = _fetch_cm_records_chunked(start, end)
+    except Exception as e:
         return {"error": str(e)}
 
     if not records:
         return {"start_date": start_date, "end_date": end_date, "note": "No reservations found.", "totals": {}}
+
+    partial_note = (f" (partial data through {covered_through})" if partial and covered_through else "")
 
     if group_by in ("week", "month"):
         from collections import defaultdict as _dd
@@ -1398,18 +1446,24 @@ def _exec_get_booking_sources(start_date: str, end_date: str, group_by: str = "t
                 "channels": {ch: {"count": cnt, "pct": round(cnt / total * 100, 1)}
                              for ch, cnt in sorted(counts.items(), key=lambda x: -x[1])},
             })
-        return {"start_date": start_date, "end_date": end_date,
-                "group_by": group_by, "periods": breakdown}
+        result = {"start_date": start_date, "end_date": end_date,
+                  "group_by": group_by, "periods": breakdown}
+        if partial_note:
+            result["note"] = f"Showing partial results{partial_note}"
+        return result
     else:
         from collections import Counter as _Ctr
         counts = _Ctr(_classify_channel(r) for r in records)
         total  = sum(counts.values())
-        return {
+        result = {
             "start_date": start_date, "end_date": end_date,
             "total_bookings": total,
             "channels": {ch: {"count": cnt, "pct": round(cnt / total * 100, 1)}
                          for ch, cnt in counts.most_common()},
         }
+        if partial_note:
+            result["note"] = f"Showing partial results{partial_note}"
+        return result
 
 
 def _exec_get_guest_intelligence(start_date: str, end_date: str,
@@ -1422,12 +1476,14 @@ def _exec_get_guest_intelligence(start_date: str, end_date: str,
     except Exception:
         return {"error": "Invalid date format. Use YYYY-MM-DD."}
     try:
-        records = _cm_mod.get_raw_records(start, end)
-    except RuntimeError as e:
+        records, partial, covered_through = _fetch_cm_records_chunked(start, end)
+    except Exception as e:
         return {"error": str(e)}
 
     if not records:
         return {"error": "No reservation data found for this period."}
+
+    partial_note = (f"Showing partial results through {covered_through}" if partial and covered_through else None)
 
     # Status codes: "1","2","3","5" = active visit; "-2" = noshow; "-3","-5","-1" = cancel
     ACTIVE  = {"1", "2", "3", "5"}
@@ -1476,8 +1532,10 @@ def _exec_get_guest_intelligence(start_date: str, end_date: str,
             result.append({"name": g["name"], "visits": g["visits"],
                            "last_visit": last, "avg_pax": avg, "preferred_shift": pref,
                            "lunch_visits": g["lunch"], "dinner_visits": g["dinner"]})
-        return {"query": query, "start_date": start_date, "end_date": end_date,
-                "top_guests": result}
+        ret = {"query": query, "start_date": start_date, "end_date": end_date,
+               "top_guests": result}
+        if partial_note: ret["note"] = partial_note
+        return ret
 
     elif query == "noshows":
         offenders = sorted(
@@ -1487,9 +1545,11 @@ def _exec_get_guest_intelligence(start_date: str, end_date: str,
         result = [{"name": g["name"], "noshows": g["noshows"],
                    "actual_visits": g["visits"]}
                   for g in offenders]
-        return {"query": query, "start_date": start_date, "end_date": end_date,
-                "noshow_offenders": result,
-                "total_with_2plus_noshows": len(result)}
+        ret = {"query": query, "start_date": start_date, "end_date": end_date,
+               "noshow_offenders": result,
+               "total_with_2plus_noshows": len(result)}
+        if partial_note: ret["note"] = partial_note
+        return ret
 
     elif query == "dinner_only":
         dinner_only = sorted(
@@ -1502,8 +1562,10 @@ def _exec_get_guest_intelligence(start_date: str, end_date: str,
             avg  = round(g["pax_total"] / g["visits"], 1) if g["visits"] else 0
             result.append({"name": g["name"], "dinner_visits": g["dinner"],
                            "avg_pax": avg, "last_visit": last})
-        return {"query": query, "start_date": start_date, "end_date": end_date,
-                "dinner_only_guests": result}
+        ret = {"query": query, "start_date": start_date, "end_date": end_date,
+               "dinner_only_guests": result}
+        if partial_note: ret["note"] = partial_note
+        return ret
 
     elif query == "lunch_only":
         lunch_only = sorted(
@@ -1516,8 +1578,10 @@ def _exec_get_guest_intelligence(start_date: str, end_date: str,
             avg  = round(g["pax_total"] / g["visits"], 1) if g["visits"] else 0
             result.append({"name": g["name"], "lunch_visits": g["lunch"],
                            "avg_pax": avg, "last_visit": last})
-        return {"query": query, "start_date": start_date, "end_date": end_date,
-                "lunch_only_guests": result}
+        ret = {"query": query, "start_date": start_date, "end_date": end_date,
+               "lunch_only_guests": result}
+        if partial_note: ret["note"] = partial_note
+        return ret
 
     elif query == "lapsed":
         # Regulars (2+ visits) whose last visit was 60+ days ago
@@ -1533,9 +1597,11 @@ def _exec_get_guest_intelligence(start_date: str, end_date: str,
             avg  = round(g["pax_total"] / g["visits"], 1) if g["visits"] else 0
             result.append({"name": g["name"], "visits": g["visits"],
                            "last_visit": last, "avg_pax": avg})
-        return {"query": query, "cutoff_days": 60,
-                "start_date": start_date, "end_date": end_date,
-                "lapsed_guests": result}
+        ret = {"query": query, "cutoff_days": 60,
+               "start_date": start_date, "end_date": end_date,
+               "lapsed_guests": result}
+        if partial_note: ret["note"] = partial_note
+        return ret
 
     elif query == "large_groups":
         large = sorted(
@@ -1549,8 +1615,10 @@ def _exec_get_guest_intelligence(start_date: str, end_date: str,
             avg  = round(g["pax_total"] / g["visits"], 1)
             result.append({"name": g["name"], "visits": g["visits"],
                            "avg_pax": avg, "last_visit": last})
-        return {"query": query, "start_date": start_date, "end_date": end_date,
-                "large_group_guests": result}
+        ret = {"query": query, "start_date": start_date, "end_date": end_date,
+               "large_group_guests": result}
+        if partial_note: ret["note"] = partial_note
+        return ret
 
     else:
         return {"error": f"Unknown query type: {query}. Use: top_guests, noshows, dinner_only, lunch_only, lapsed, large_groups"}
