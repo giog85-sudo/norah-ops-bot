@@ -3790,6 +3790,7 @@ def api_booking_sources():
     if not _api_check_auth():
         return jsonify({"error": "Unauthorized"}), 401
     if not _CM_AVAILABLE:
+        print("[booking-sources] CoverManager not available (_CM_AVAILABLE=False)", flush=True)
         return jsonify({"error": "CoverManager not available"}), 503
 
     today = date.today()
@@ -3798,11 +3799,18 @@ def api_booking_sources():
     trend_from = this_monday - timedelta(weeks=11)   # 12 weeks total
     pie_from   = today - timedelta(days=29)          # last 30 days
 
+    print(f"[booking-sources] fetching {trend_from} → {today}", flush=True)
+
     try:
-        # One fetch covers both charts; filter pie client-side
-        all_records = _cm_mod.get_raw_records(trend_from, today)
+        # Fetch using chunked helper (3 months > 2-month threshold → monthly chunks)
+        all_records, partial, covered_through = _fetch_cm_records_chunked(trend_from, today, timeout_sec=55)
+        print(f"[booking-sources] got {len(all_records)} records, partial={partial}, through={covered_through}", flush=True)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print(f"[booking-sources] fetch error: {e}", flush=True)
+        return jsonify({"error": f"CoverManager fetch failed: {e}"}), 500
+
+    if not all_records:
+        return jsonify({"error": "No reservation data returned from CoverManager"}), 500
 
     pie_from_str = pie_from.isoformat()
     pie_records  = [r for r in all_records if (r.get("date") or "") >= pie_from_str]
@@ -3834,7 +3842,7 @@ def api_booking_sources():
         if any(v > 0 for v in vals):
             series[ch] = vals
 
-    return jsonify({
+    result = {
         "pie": {
             "total":    pie_total,
             "period":   {"from": pie_from_str, "to": today.isoformat()},
@@ -3847,7 +3855,11 @@ def api_booking_sources():
             "weeks":  weeks,
             "series": series,
         },
-    })
+    }
+    if partial:
+        result["note"] = f"Partial data through {covered_through}"
+    print(f"[booking-sources] returning pie total={pie_total}, trend weeks={len(weeks)}, series={list(series.keys())}", flush=True)
+    return jsonify(result)
 
 
 @flask_app.route("/test-agora")

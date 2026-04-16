@@ -212,6 +212,27 @@
       font-weight: 500;
     }
 
+    /* ── Chart loading / empty states ──────────────────────── */
+    .chart-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 160px;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 0.8rem;
+    }
+    .spinner {
+      width: 28px; height: 28px;
+      border: 3px solid var(--border);
+      border-top-color: var(--muted);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .chart-error-icon { font-size: 1.4rem; }
+
     /* ── Error banner ───────────────────────────────────────── */
     #error-banner {
       background: #fef2f2;
@@ -438,14 +459,22 @@
   <div class="charts-col2">
     <div class="chart-card" style="margin-bottom:0">
       <h2>Booking Sources (Last 30 Days)</h2>
-      <canvas id="chart-booking-pie"></canvas>
+      <div id="booking-pie-state" class="chart-state">
+        <div class="spinner"></div>
+        <span>Loading…</span>
+      </div>
+      <canvas id="chart-booking-pie" style="display:none"></canvas>
     </div>
     <div class="chart-card" style="margin-bottom:0">
       <h2>
         Booking Source Trends (Last 12 Weeks)
         <span class="legend-dots" id="booking-trends-legend"></span>
       </h2>
-      <canvas id="chart-booking-trends" height="200"></canvas>
+      <div id="booking-trends-state" class="chart-state">
+        <div class="spinner"></div>
+        <span>Loading…</span>
+      </div>
+      <canvas id="chart-booking-trends" height="200" style="display:none"></canvas>
     </div>
   </div>
 
@@ -811,6 +840,17 @@ const BOOKING_COLORS = {
   'Other':          '#d1d5db',
 };
 
+function bookingStateError(stateId, canvasId, msg) {
+  const el = document.getElementById(stateId);
+  el.innerHTML = `<span class="chart-error-icon">⚠</span><span>${msg}</span>`;
+  el.style.display = 'flex';
+  document.getElementById(canvasId).style.display = 'none';
+}
+function bookingStateReady(stateId, canvasId) {
+  document.getElementById(stateId).style.display = 'none';
+  document.getElementById(canvasId).style.display = 'block';
+}
+
 // ── 8. Booking Sources doughnut ────────────────────────────────────────────────
 function renderBookingPie(data) {
   destroyChart('bookingPie');
@@ -818,6 +858,7 @@ function renderBookingPie(data) {
   const counts   = channels.map(ch => data.channels[ch].count);
   const colors   = channels.map(ch => BOOKING_COLORS[ch] || '#d1d5db');
 
+  bookingStateReady('booking-pie-state', 'chart-booking-pie');
   charts.bookingPie = new Chart(document.getElementById('chart-booking-pie'), {
     type: 'doughnut',
     data: {
@@ -894,6 +935,7 @@ function renderBookingTrends(data) {
     `<span><i class="kpi-dot" style="background:${BOOKING_COLORS[ch] || '#d1d5db'}"></i>${ch}</span>`
   ).join('');
 
+  bookingStateReady('booking-trends-state', 'chart-booking-trends');
   charts.bookingTrends = new Chart(document.getElementById('chart-booking-trends'), {
     type: 'line',
     data: { labels, datasets },
@@ -913,11 +955,27 @@ function renderBookingTrends(data) {
 async function loadBookingSources() {
   try {
     const data = await apiFetch('/api/booking-sources');
-    if (data.error) { showError('Booking sources: ' + data.error); return; }
-    renderBookingPie(data.pie);
-    renderBookingTrends(data.trends);
+    if (data.error) {
+      bookingStateError('booking-pie-state',    'chart-booking-pie',    'Unable to load data');
+      bookingStateError('booking-trends-state', 'chart-booking-trends', 'Unable to load data');
+      showError('Booking sources: ' + data.error);
+      return;
+    }
+    try { renderBookingPie(data.pie); }
+    catch (e) {
+      bookingStateError('booking-pie-state', 'chart-booking-pie', 'Unable to render chart');
+      console.error('renderBookingPie error:', e);
+    }
+    try { renderBookingTrends(data.trends); }
+    catch (e) {
+      bookingStateError('booking-trends-state', 'chart-booking-trends', 'Unable to render chart');
+      console.error('renderBookingTrends error:', e);
+    }
   } catch (e) {
-    if (e.message !== 'Unauthorized') showError('Booking sources: ' + e.message);
+    if (e.message === 'Unauthorized') return;
+    bookingStateError('booking-pie-state',    'chart-booking-pie',    'Unable to load data');
+    bookingStateError('booking-trends-state', 'chart-booking-trends', 'Unable to load data');
+    showError('Booking sources: ' + e.message);
   }
 }
 
