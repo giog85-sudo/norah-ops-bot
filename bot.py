@@ -1122,6 +1122,54 @@ AGENT_TOOLS = [
             "required": ["start_date", "end_date"],
         },
     },
+    {
+        "name": "get_booking_sources",
+        "description": (
+            "Analyse where bookings come from (Google, own website, Instagram, walk-in, etc.) "
+            "for a date range. Use this for questions about booking source trends, channel "
+            "performance, whether Google or the website is performing better, Instagram growth, etc. "
+            "Default period is last 30 days. Can group results by week or month for trend analysis."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start_date": {"type": "string", "description": "Start date YYYY-MM-DD"},
+                "end_date":   {"type": "string", "description": "End date YYYY-MM-DD"},
+                "group_by":   {
+                    "type": "string",
+                    "description": "Granularity for trend breakdown: 'total' (default), 'week', or 'month'",
+                },
+            },
+            "required": ["start_date", "end_date"],
+        },
+    },
+    {
+        "name": "get_guest_intelligence",
+        "description": (
+            "Analyse guest behaviour and loyalty from CoverManager reservation history. "
+            "Use this for questions about loyal/frequent guests, no-show offenders, "
+            "dinner-only regulars, lapsed guests, or large-group regulars. "
+            "Default period is last 6 months. "
+            "query options: 'top_guests' (most frequent visitors), "
+            "'noshows' (guests with repeated no-shows), "
+            "'dinner_only' (guests who never visit for lunch), "
+            "'lapsed' (regulars who haven't visited recently), "
+            "'large_groups' (guests who consistently book 6+ pax)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start_date": {"type": "string", "description": "Start date YYYY-MM-DD"},
+                "end_date":   {"type": "string", "description": "End date YYYY-MM-DD"},
+                "query":      {
+                    "type": "string",
+                    "description": "Type of analysis: top_guests | noshows | dinner_only | lapsed | large_groups",
+                },
+                "top_n":      {"type": "integer", "description": "How many results to return (default 10)"},
+            },
+            "required": ["start_date", "end_date", "query"],
+        },
+    },
 ]
 
 
@@ -1291,6 +1339,208 @@ def _exec_get_reservations(start_date: str, end_date: str) -> dict:
     return {"start_date": start_date, "end_date": end_date, "days": rows}
 
 
+def _classify_channel(r: dict) -> str:
+    origin = (r.get("origin") or "").strip().lower()
+    prov   = (r.get("provenance") or "").strip().lower()
+    if prov == "walk in":         return "Walk-in"
+    if "instagram" in origin:     return "Instagram"
+    if origin == "google":        return "Google"
+    if prov == "moduloweb":       return "Own website"
+    if prov == "app-movil":       return "Mobile app"
+    if prov == "waitinglist":     return "Waiting list"
+    if prov == "software":        return "Staff/software"
+    if prov == "terceros":        return "Third-party"
+    return "Other"
+
+
+def _exec_get_booking_sources(start_date: str, end_date: str, group_by: str = "total") -> dict:
+    if not _CM_AVAILABLE:
+        return {"error": "CoverManager integration not available."}
+    try:
+        start = parse_yyyy_mm_dd(start_date)
+        end   = parse_yyyy_mm_dd(end_date)
+    except Exception:
+        return {"error": "Invalid date format. Use YYYY-MM-DD."}
+    try:
+        records = _cm_mod.get_raw_records(start, end)
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    if not records:
+        return {"start_date": start_date, "end_date": end_date, "note": "No reservations found.", "totals": {}}
+
+    if group_by in ("week", "month"):
+        from collections import defaultdict as _dd
+        buckets = _dd(lambda: _dd(int))
+        for r in records:
+            d = r.get("date", "")
+            if not d:
+                continue
+            try:
+                rd = date.fromisoformat(d)
+                if group_by == "week":
+                    mon = rd - timedelta(days=rd.weekday())
+                    key = mon.isoformat()
+                else:
+                    key = d[:7]  # YYYY-MM
+            except Exception:
+                continue
+            buckets[key][_classify_channel(r)] += 1
+
+        breakdown = []
+        for period_key in sorted(buckets.keys()):
+            counts = dict(buckets[period_key])
+            total  = sum(counts.values())
+            breakdown.append({
+                "period": period_key,
+                "total":  total,
+                "channels": {ch: {"count": cnt, "pct": round(cnt / total * 100, 1)}
+                             for ch, cnt in sorted(counts.items(), key=lambda x: -x[1])},
+            })
+        return {"start_date": start_date, "end_date": end_date,
+                "group_by": group_by, "periods": breakdown}
+    else:
+        from collections import Counter as _Ctr
+        counts = _Ctr(_classify_channel(r) for r in records)
+        total  = sum(counts.values())
+        return {
+            "start_date": start_date, "end_date": end_date,
+            "total_bookings": total,
+            "channels": {ch: {"count": cnt, "pct": round(cnt / total * 100, 1)}
+                         for ch, cnt in counts.most_common()},
+        }
+
+
+def _exec_get_guest_intelligence(start_date: str, end_date: str,
+                                  query: str, top_n: int = 10) -> dict:
+    if not _CM_AVAILABLE:
+        return {"error": "CoverManager integration not available."}
+    try:
+        start = parse_yyyy_mm_dd(start_date)
+        end   = parse_yyyy_mm_dd(end_date)
+    except Exception:
+        return {"error": "Invalid date format. Use YYYY-MM-DD."}
+    try:
+        records = _cm_mod.get_raw_records(start, end)
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    if not records:
+        return {"error": "No reservation data found for this period."}
+
+    # Status codes: "1","2","3","5" = active visit; "-2" = noshow; "-3","-5","-1" = cancel
+    ACTIVE  = {"1", "2", "3", "5"}
+    NOSHOW  = {"-2"}
+
+    from collections import defaultdict as _dd
+    guests = _dd(lambda: {"name": "", "visits": 0, "noshows": 0,
+                           "pax_total": 0, "lunch": 0, "dinner": 0, "dates": []})
+
+    for r in records:
+        cid    = r.get("id_client") or r.get("id_reserv", "?")
+        status = str(r.get("status", "0"))
+        pax    = int(r.get("for", 0) or 0)
+        shift  = (r.get("meal_shift") or "").lower()
+        d      = r.get("date", "")
+        name   = ((r.get("first_name", "") + " " + r.get("last_name", "")).strip()
+                  or r.get("user_name", "—"))
+
+        g = guests[cid]
+        if not g["name"] and name not in ("—", ""):
+            g["name"] = name
+
+        if status in ACTIVE:
+            g["visits"]    += 1
+            g["pax_total"] += pax
+            g["dates"].append(d)
+            if any(w in shift for w in ("comida", "almuerzo")):
+                g["lunch"]  += 1
+            elif any(w in shift for w in ("cena", "noche")):
+                g["dinner"] += 1
+        elif status in NOSHOW:
+            g["noshows"] += 1
+
+    today_str = date.today().isoformat()
+
+    if query == "top_guests":
+        ranked = sorted(guests.values(), key=lambda g: -g["visits"])
+        result = []
+        for g in ranked[:top_n]:
+            if g["visits"] == 0:
+                continue
+            last = max(g["dates"]) if g["dates"] else "—"
+            avg  = round(g["pax_total"] / g["visits"], 1)
+            pref = ("Lunch" if g["lunch"] > g["dinner"] else
+                    "Dinner" if g["dinner"] > g["lunch"] else "Both")
+            result.append({"name": g["name"], "visits": g["visits"],
+                           "last_visit": last, "avg_pax": avg, "preferred_shift": pref,
+                           "lunch_visits": g["lunch"], "dinner_visits": g["dinner"]})
+        return {"query": query, "start_date": start_date, "end_date": end_date,
+                "top_guests": result}
+
+    elif query == "noshows":
+        offenders = sorted(
+            [g for g in guests.values() if g["noshows"] >= 2],
+            key=lambda g: -g["noshows"]
+        )
+        result = [{"name": g["name"], "noshows": g["noshows"],
+                   "actual_visits": g["visits"]}
+                  for g in offenders]
+        return {"query": query, "start_date": start_date, "end_date": end_date,
+                "noshow_offenders": result,
+                "total_with_2plus_noshows": len(result)}
+
+    elif query == "dinner_only":
+        dinner_only = sorted(
+            [g for g in guests.values() if g["dinner"] >= 2 and g["lunch"] == 0],
+            key=lambda g: -g["dinner"]
+        )[:top_n]
+        result = []
+        for g in dinner_only:
+            last = max(g["dates"]) if g["dates"] else "—"
+            avg  = round(g["pax_total"] / g["visits"], 1) if g["visits"] else 0
+            result.append({"name": g["name"], "dinner_visits": g["dinner"],
+                           "avg_pax": avg, "last_visit": last})
+        return {"query": query, "start_date": start_date, "end_date": end_date,
+                "dinner_only_guests": result}
+
+    elif query == "lapsed":
+        # Regulars (2+ visits) whose last visit was 60+ days ago
+        cutoff = (date.today() - timedelta(days=60)).isoformat()
+        lapsed = sorted(
+            [g for g in guests.values()
+             if g["visits"] >= 2 and g["dates"] and max(g["dates"]) < cutoff],
+            key=lambda g: max(g["dates"])
+        )[:top_n]
+        result = []
+        for g in lapsed:
+            last = max(g["dates"])
+            avg  = round(g["pax_total"] / g["visits"], 1) if g["visits"] else 0
+            result.append({"name": g["name"], "visits": g["visits"],
+                           "last_visit": last, "avg_pax": avg})
+        return {"query": query, "cutoff_days": 60,
+                "start_date": start_date, "end_date": end_date,
+                "lapsed_guests": result}
+
+    elif query == "large_groups":
+        large = sorted(
+            [g for g in guests.values()
+             if g["visits"] >= 2 and g["pax_total"] / g["visits"] >= 5],
+            key=lambda g: -(g["pax_total"] / g["visits"])
+        )[:top_n]
+        result = []
+        for g in large:
+            last = max(g["dates"]) if g["dates"] else "—"
+            avg  = round(g["pax_total"] / g["visits"], 1)
+            result.append({"name": g["name"], "visits": g["visits"],
+                           "avg_pax": avg, "last_visit": last})
+        return {"query": query, "start_date": start_date, "end_date": end_date,
+                "large_group_guests": result}
+
+    else:
+        return {"error": f"Unknown query type: {query}. Use: top_guests, noshows, dinner_only, lapsed, large_groups"}
+
+
 def execute_agent_tool(tool_name: str, tool_input: dict) -> str:
     try:
         if tool_name == "get_today":
@@ -1320,6 +1570,17 @@ def execute_agent_tool(tool_name: str, tool_input: dict) -> str:
         elif tool_name == "get_reservations":
             result = _exec_get_reservations(
                 tool_input.get("start_date", ""), tool_input.get("end_date", "")
+            )
+        elif tool_name == "get_booking_sources":
+            result = _exec_get_booking_sources(
+                tool_input.get("start_date", ""), tool_input.get("end_date", ""),
+                tool_input.get("group_by", "total"),
+            )
+        elif tool_name == "get_guest_intelligence":
+            result = _exec_get_guest_intelligence(
+                tool_input.get("start_date", ""), tool_input.get("end_date", ""),
+                tool_input.get("query", "top_guests"),
+                int(tool_input.get("top_n", 10)),
             )
         else:
             result = {"error": f"Unknown tool: {tool_name}"}
@@ -1356,9 +1617,13 @@ def _build_agent_system_prompt() -> str:
         "- Average ticket (overall, lunch, dinner)\n"
         "- Walk-ins and no-shows per service\n"
         "- Manager operational notes (incidents, complaints, sold-out items, staff issues)\n"
-        "- Live reservation data from CoverManager (upcoming and past bookings, covers, no-shows, large groups)\n\n"
-        "For any question about reservations, upcoming covers, bookings, large groups, or no-shows, "
-        "use the get_reservations tool — it pulls live data from CoverManager.\n\n"
+        "- Live reservation data from CoverManager (upcoming and past bookings, covers, no-shows, large groups)\n"
+        "- Booking source analytics (Google, own website, Instagram, walk-in, etc.) via CoverManager\n"
+        "- Guest intelligence: loyal guests, no-show offenders, dinner-only regulars, lapsed guests\n\n"
+        "Tool selection guide:\n"
+        "- Upcoming/recent reservations, covers, large groups → get_reservations\n"
+        "- Where bookings come from, channel trends, Google vs website → get_booking_sources\n"
+        "- Loyal guests, frequent visitors, no-shows, dinner-only, lapsed → get_guest_intelligence\n\n"
         "Be concise and analytical. Format currency as €X.XX. Always mention which date(s) the data refers to.\n"
         "If data is missing for a requested period, say so clearly.\n\n"
         "IMPORTANT: Detect the language of the user's message and always respond in that same language "
@@ -1378,11 +1643,14 @@ async def handle_agent_query(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
     messages = [{"role": "user", "content": text}]
 
+    _HEAVY_TOOLS = {"get_booking_sources", "get_guest_intelligence"}
+    _fetching_sent = False
+
     try:
         for _ in range(6):  # max iterations to prevent runaway loops
             response = await client.messages.create(
                 model="claude-sonnet-4-20250514",
-                max_tokens=1000,
+                max_tokens=1500,
                 system=_build_agent_system_prompt(),
                 tools=AGENT_TOOLS,
                 messages=messages,
@@ -1396,6 +1664,11 @@ async def handle_agent_query(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 if final_text:
                     await update.message.reply_text(final_text)
                 return
+
+            # Warn user before heavy CoverManager fetches (only once per query)
+            if not _fetching_sent and any(tu.name in _HEAVY_TOOLS for tu in tool_uses):
+                await update.message.reply_text("⏳ Fetching data from CoverManager…")
+                _fetching_sent = True
 
             # Execute all tool calls and continue the loop
             messages.append({"role": "assistant", "content": response.content})

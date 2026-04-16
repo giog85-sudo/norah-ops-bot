@@ -239,6 +239,45 @@ def get_reservations_range(from_date, to_date) -> list:
     return results
 
 
+def get_raw_records(from_date, to_date) -> list:
+    """
+    Fetch all raw reservation records for a date range, handling pagination.
+
+    Returns the full list of individual reservation dicts as returned by
+    CoverManager (one dict per booking). Suitable for client-level analytics.
+
+    Raises:
+        RuntimeError if CoverManager is unreachable or credentials are wrong.
+    """
+    if not COVERMANAGER_API_KEY:
+        raise RuntimeError("COVERMANAGER_API_KEY env var must be set")
+
+    from_str = from_date.isoformat() if isinstance(from_date, date) else str(from_date)
+    to_str   = to_date.isoformat()   if isinstance(to_date, date)   else str(to_date)
+
+    all_records = []
+    page = 0
+    while True:
+        url = (
+            f"{COVERMANAGER_BASE}/restaurant/get_reservs"
+            f"/{COVERMANAGER_API_KEY}/{COVERMANAGER_RESTAURANT}"
+            f"/{from_str}/{to_str}/{page}"
+        )
+        status, text = _get(url)
+        if status != 200:
+            raise RuntimeError(f"CoverManager returned HTTP {status}: {text[:200]}")
+        data = json.loads(text)
+        if data.get("resp") != 1:
+            raise RuntimeError(f"CoverManager API error: {data.get('error', 'unknown')}")
+        batch = data.get("reservs", [])
+        all_records.extend(batch)
+        if len(batch) < 1000:
+            break
+        page += 1
+
+    return all_records
+
+
 def get_daily_reservations(query_date) -> Optional[DailyReservations]:
     """
     Fetch and aggregate reservation data from CoverManager for a single date.
