@@ -1329,10 +1329,27 @@ def execute_agent_tool(tool_name: str, tool_input: dict) -> str:
 
 
 def _build_agent_system_prompt() -> str:
-    today = business_day_today()
+    # Use actual wall-clock date for calendar/weekday context, not business_day_today()
+    # (business_day_today returns yesterday before CUTOFF_HOUR, which breaks weekday arithmetic)
+    now        = now_local()
+    cal_today  = now.date()
+    biz_today  = business_day_today()
+
+    # Build explicit Mon–Sun date map for the current ISO week so the model never
+    # has to calculate weekday offsets itself
+    monday = cal_today - timedelta(days=cal_today.weekday())  # weekday() 0=Mon
+    day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    week_lines = "  ".join(
+        f"{day_names[i]}: {(monday + timedelta(days=i)).isoformat()}"
+        + (" ← today" if (monday + timedelta(days=i)) == cal_today else "")
+        for i in range(7)
+    )
+
     return (
         f"You are Norah Ops, the analytics assistant for Norah, a restaurant in Madrid, Spain.\n\n"
-        f"Today's business date is {today.isoformat()} ({today.strftime('%A, %d %B %Y')}).\n\n"
+        f"Current date and time: {cal_today.isoformat()} ({cal_today.strftime('%A, %d %B %Y')}, {now.strftime('%H:%M')} Madrid time).\n"
+        f"Current business day (for historical sales data): {biz_today.isoformat()}.\n\n"
+        f"This week's dates for quick reference:\n{week_lines}\n\n"
         "You have access to the restaurant's operational database with:\n"
         "- Daily sales (total, visa, cash, tips)\n"
         "- Covers split by lunch and dinner\n"
