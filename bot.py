@@ -77,6 +77,17 @@ try:
 except Exception:
     _AGORA_AVAILABLE = False
 
+COVERMANAGER_API_KEY    = os.getenv("COVERMANAGER_API_KEY",    "").strip()
+COVERMANAGER_RESTAURANT = os.getenv("COVERMANAGER_RESTAURANT", "Restaurante-Norah").strip()
+
+try:
+    import covermanager_integration as _cm_mod
+    _cm_mod.COVERMANAGER_API_KEY    = COVERMANAGER_API_KEY or _cm_mod.COVERMANAGER_API_KEY
+    _cm_mod.COVERMANAGER_RESTAURANT = COVERMANAGER_RESTAURANT
+    _CM_AVAILABLE = True
+except Exception:
+    _CM_AVAILABLE = False
+
 def _try_agora(day_: date):
     """Fetch Agora POS sales for a date. Returns DailySales or None on any error."""
     if not _AGORA_AVAILABLE or not AGORA_USER or not AGORA_PASSWORD:
@@ -1093,6 +1104,24 @@ AGENT_TOOLS = [
             "required": ["start_date", "end_date"],
         },
     },
+    {
+        "name": "get_reservations",
+        "description": (
+            "Get live reservation data from CoverManager for a date range. "
+            "Use this for any question about upcoming or recent reservations, covers, "
+            "no-shows, large groups, or booking counts by service (lunch/dinner). "
+            "Returns per-day breakdown: total covers, lunch/dinner covers, confirmed, "
+            "no-shows, cancelled, and any large groups (6+ pax) with their time and shift."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start_date": {"type": "string", "description": "Start date YYYY-MM-DD"},
+                "end_date":   {"type": "string", "description": "End date YYYY-MM-DD"},
+            },
+            "required": ["start_date", "end_date"],
+        },
+    },
 ]
 
 
@@ -1245,6 +1274,23 @@ def _exec_get_notes(start_date: str, end_date: str) -> dict:
     return {"start_date": start_date, "end_date": end_date, "total_notes": len(rows), "entries": entries}
 
 
+def _exec_get_reservations(start_date: str, end_date: str) -> dict:
+    if not _CM_AVAILABLE:
+        return {"error": "CoverManager integration not available."}
+    try:
+        start = parse_yyyy_mm_dd(start_date)
+        end   = parse_yyyy_mm_dd(end_date)
+    except Exception:
+        return {"error": "Invalid date format. Use YYYY-MM-DD."}
+    try:
+        rows = _cm_mod.get_reservations_range(start, end)
+    except RuntimeError as e:
+        return {"error": str(e)}
+    if not rows:
+        return {"start_date": start_date, "end_date": end_date, "days": [], "note": "No reservations found for this period."}
+    return {"start_date": start_date, "end_date": end_date, "days": rows}
+
+
 def execute_agent_tool(tool_name: str, tool_input: dict) -> str:
     try:
         if tool_name == "get_today":
@@ -1271,6 +1317,10 @@ def execute_agent_tool(tool_name: str, tool_input: dict) -> str:
             result = _exec_get_notes(
                 tool_input.get("start_date", ""), tool_input.get("end_date", "")
             )
+        elif tool_name == "get_reservations":
+            result = _exec_get_reservations(
+                tool_input.get("start_date", ""), tool_input.get("end_date", "")
+            )
         else:
             result = {"error": f"Unknown tool: {tool_name}"}
     except Exception as e:
@@ -1288,7 +1338,10 @@ def _build_agent_system_prompt() -> str:
         "- Covers split by lunch and dinner\n"
         "- Average ticket (overall, lunch, dinner)\n"
         "- Walk-ins and no-shows per service\n"
-        "- Manager operational notes (incidents, complaints, sold-out items, staff issues)\n\n"
+        "- Manager operational notes (incidents, complaints, sold-out items, staff issues)\n"
+        "- Live reservation data from CoverManager (upcoming and past bookings, covers, no-shows, large groups)\n\n"
+        "For any question about reservations, upcoming covers, bookings, large groups, or no-shows, "
+        "use the get_reservations tool — it pulls live data from CoverManager.\n\n"
         "Be concise and analytical. Format currency as €X.XX. Always mention which date(s) the data refers to.\n"
         "If data is missing for a requested period, say so clearly.\n\n"
         "IMPORTANT: Detect the language of the user's message and always respond in that same language "
