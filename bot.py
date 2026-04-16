@@ -1153,6 +1153,7 @@ AGENT_TOOLS = [
             "query options: 'top_guests' (most frequent visitors), "
             "'noshows' (guests with repeated no-shows), "
             "'dinner_only' (guests who never visit for lunch), "
+            "'lunch_only' (guests who never visit for dinner), "
             "'lapsed' (regulars who haven't visited recently), "
             "'large_groups' (guests who consistently book 6+ pax)."
         ),
@@ -1163,7 +1164,7 @@ AGENT_TOOLS = [
                 "end_date":   {"type": "string", "description": "End date YYYY-MM-DD"},
                 "query":      {
                     "type": "string",
-                    "description": "Type of analysis: top_guests | noshows | dinner_only | lapsed | large_groups",
+                    "description": "Type of analysis: top_guests | noshows | dinner_only | lunch_only | lapsed | large_groups",
                 },
                 "top_n":      {"type": "integer", "description": "How many results to return (default 10)"},
             },
@@ -1504,6 +1505,20 @@ def _exec_get_guest_intelligence(start_date: str, end_date: str,
         return {"query": query, "start_date": start_date, "end_date": end_date,
                 "dinner_only_guests": result}
 
+    elif query == "lunch_only":
+        lunch_only = sorted(
+            [g for g in guests.values() if g["lunch"] >= 2 and g["dinner"] == 0],
+            key=lambda g: -g["lunch"]
+        )[:top_n]
+        result = []
+        for g in lunch_only:
+            last = max(g["dates"]) if g["dates"] else "—"
+            avg  = round(g["pax_total"] / g["visits"], 1) if g["visits"] else 0
+            result.append({"name": g["name"], "lunch_visits": g["lunch"],
+                           "avg_pax": avg, "last_visit": last})
+        return {"query": query, "start_date": start_date, "end_date": end_date,
+                "lunch_only_guests": result}
+
     elif query == "lapsed":
         # Regulars (2+ visits) whose last visit was 60+ days ago
         cutoff = (date.today() - timedelta(days=60)).isoformat()
@@ -1538,7 +1553,7 @@ def _exec_get_guest_intelligence(start_date: str, end_date: str,
                 "large_group_guests": result}
 
     else:
-        return {"error": f"Unknown query type: {query}. Use: top_guests, noshows, dinner_only, lapsed, large_groups"}
+        return {"error": f"Unknown query type: {query}. Use: top_guests, noshows, dinner_only, lunch_only, lapsed, large_groups"}
 
 
 def execute_agent_tool(tool_name: str, tool_input: dict) -> str:
