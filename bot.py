@@ -2808,6 +2808,88 @@ async def send_daily_post_to_owners(context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             print(f"Daily post send failed for chat {chat_id}: {e}")
 
+def _booking_sources_block(from_date: date, to_date: date) -> str:
+    """
+    Fetch CoverManager reservations for the week and return a formatted
+    booking-source breakdown string. Returns "" silently on any error.
+    """
+    if not _CM_AVAILABLE:
+        return ""
+    try:
+        rows = _cm_mod.get_reservations_range(from_date, to_date)
+    except Exception as e:
+        print(f"CoverManager source fetch failed: {e}")
+        return ""
+
+    if not rows:
+        return ""
+
+    # Aggregate across all day records — raw reservations are inside each day's aggregation,
+    # but get_reservations_range doesn't expose raw records. Re-fetch raw via the module.
+    try:
+        import urllib.request as _ur, json as _json
+        from collections import Counter as _Counter
+
+        base = _cm_mod.COVERMANAGER_BASE
+        key  = _cm_mod.COVERMANAGER_API_KEY
+        rest = _cm_mod.COVERMANAGER_RESTAURANT
+        from_str = from_date.isoformat()
+        to_str   = to_date.isoformat()
+
+        all_records = []
+        page = 0
+        while True:
+            url = f"{base}/restaurant/get_reservs/{key}/{rest}/{from_str}/{to_str}/{page}"
+            req = _ur.Request(url)
+            req.add_header("Accept", "application/json")
+            with _ur.urlopen(req, timeout=15) as r:
+                data = _json.loads(r.read().decode())
+            batch = data.get("reservs", [])
+            all_records.extend(batch)
+            if len(batch) < 1000:
+                break
+            page += 1
+
+        if not all_records:
+            return ""
+
+        # Classify each record into a human-readable channel
+        channels = _Counter()
+        for r in all_records:
+            origin = (r.get("origin") or "").strip().lower()
+            prov   = (r.get("provenance") or "").strip().lower()
+
+            if prov == "walk in":
+                channels["Walk-in"] += 1
+            elif "instagram" in origin:
+                channels["Instagram"] += 1
+            elif origin == "google":
+                channels["Google"] += 1
+            elif prov == "moduloweb":
+                channels["Own website"] += 1
+            elif prov == "app-movil":
+                channels["Mobile app"] += 1
+            elif prov == "waitinglist":
+                channels["Waiting list"] += 1
+            elif prov == "software":
+                channels["Staff/software"] += 1
+            elif prov == "terceros":
+                channels["Third-party"] += 1
+            else:
+                channels["Other"] += 1
+
+        total = sum(channels.values())
+        lines = [f"\n📍 Booking Sources (this week, {total} total)"]
+        for ch, cnt in sorted(channels.items(), key=lambda x: -x[1]):
+            pct = cnt / total * 100
+            lines.append(f"{ch}: {cnt} ({pct:.0f}%)")
+        return "\n".join(lines)
+
+    except Exception as e:
+        print(f"CoverManager source aggregation failed: {e}")
+        return ""
+
+
 async def send_weekly_digest(context: ContextTypes.DEFAULT_TYPE):
     chats = owners_silent_chat_ids()
     if not chats:
@@ -2898,6 +2980,10 @@ async def send_weekly_digest(context: ContextTypes.DEFAULT_TYPE):
         f"No-shows: {noshows}{_diff(noshows, prev_noshows)}"
         f"  (prev: {prev_noshows})"
     )
+
+    sources_block = _booking_sources_block(last_monday, last_sunday)
+    if sources_block:
+        msg += sources_block
 
     for chat_id in chats:
         try:
