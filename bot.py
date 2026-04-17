@@ -3876,7 +3876,7 @@ def api_booking_sources():
     }
     if partial:
         result["note"] = f"Partial data through {covered_through}"
-    print(f"[booking-sources] returning pie total={pie_total}, trend weeks={len(weeks)}, series={list(series.keys())}", flush=True)
+    print(f"[booking-sources] returning pie total={pie_total}, trend dates={len(trend_dates)}, series={list(series.keys())}", flush=True)
     return jsonify(result)
 
 
