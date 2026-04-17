@@ -3846,6 +3846,22 @@ def api_booking_sources():
             continue
 
     weeks = [(trend_from + timedelta(weeks=i)).isoformat() for i in range(12)]
+
+    # Build human-readable labels on the backend where today is unambiguous.
+    # Current (partial) week gets a range label, e.g. "13–17 Apr".
+    _MON_ABBR = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+    week_labels = []
+    for w in weeks:
+        wd = date.fromisoformat(w)
+        if wd == this_monday:          # current incomplete week
+            if wd.month == today.month:
+                label = f"{wd.day}\u2013{today.day} {_MON_ABBR[today.month-1]}"
+            else:
+                label = f"{wd.day} {_MON_ABBR[wd.month-1]}\u2013{today.day} {_MON_ABBR[today.month-1]}"
+        else:
+            label = f"{wd.day} {_MON_ABBR[wd.month-1]}"
+        week_labels.append(label)
+
     _TREND_CHANNELS = ["Google", "Own website", "Instagram", "Walk-in", "Mobile app", "Staff/software"]
     series = {}
     for ch in _TREND_CHANNELS:
@@ -3864,8 +3880,9 @@ def api_booking_sources():
         },
         "trends": {
             "weeks":        weeks,
+            "week_labels":  week_labels,      # pre-computed display labels
             "series":       series,
-            "current_week": this_monday.isoformat(),  # so frontend can label it distinctly
+            "current_week": this_monday.isoformat(),
             "data_through": today.isoformat(),
         },
     }

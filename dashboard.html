@@ -913,47 +913,29 @@ function renderBookingPie(data) {
 function renderBookingTrends(data) {
   destroyChart('bookingTrends');
 
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const currentWeek = data.current_week || null;   // "YYYY-MM-DD" Monday of current week
-  const dataThrough = data.data_through || null;   // "YYYY-MM-DD" today
-
-  const labels = data.weeks.map(w => {
-    const [, mo, dy] = w.split('-');
-    const base = `${parseInt(dy)} ${months[parseInt(mo)-1]}`;
-    if (w === currentWeek && dataThrough) {
-      // Show range for the current partial week, e.g. "13–17 Apr"
-      const [, tmo, tdy] = dataThrough.split('-');
-      const thruDay = parseInt(tdy);
-      const thruMon = months[parseInt(tmo)-1];
-      const startDay = parseInt(dy);
-      const sameMon  = tmo === mo;
-      return sameMon ? `${startDay}–${thruDay} ${thruMon}` : `${base}–${thruDay} ${thruMon}`;
-    }
-    return base;
-  });
+  // Use server-computed labels; fall back to raw week dates if absent (old API)
+  const labels = data.week_labels || data.weeks;
+  const currentWeek = data.current_week || null;
+  const lastIdx = data.weeks.length - 1;
+  const isCurrentLast = currentWeek && data.weeks[lastIdx] === currentWeek;
 
   const channelNames = Object.keys(data.series);
-  const datasets = channelNames.map((ch, i) => {
-    // Make current-week point hollow / dashed to signal incomplete data
-    const isCurrentLast = currentWeek && data.weeks[data.weeks.length - 1] === currentWeek;
-    const pointStyles = data.weeks.map((w, idx) =>
-      (isCurrentLast && idx === data.weeks.length - 1) ? 'circle' : 'circle'
-    );
-    const pointBgColors = data.weeks.map((w, idx) =>
-      (isCurrentLast && idx === data.weeks.length - 1) ? '#fff' : (BOOKING_COLORS[ch] || '#d1d5db')
+  const datasets = channelNames.map(ch => {
+    // Last data point is hollow circle to signal the week is incomplete
+    const pointBgColors = data.series[ch].map((_, idx) =>
+      (isCurrentLast && idx === lastIdx) ? '#fff' : (BOOKING_COLORS[ch] || '#d1d5db')
     );
     return {
-      label:            ch,
-      data:             data.series[ch],
-      borderColor:      BOOKING_COLORS[ch] || '#d1d5db',
-      backgroundColor:  'transparent',
-      tension:          0.35,
-      pointRadius:      3,
-      borderWidth:      2,
-      pointStyle:       pointStyles,
+      label:               ch,
+      data:                data.series[ch],
+      borderColor:         BOOKING_COLORS[ch] || '#d1d5db',
+      backgroundColor:     'transparent',
+      tension:             0.35,
+      pointRadius:         3,
+      borderWidth:         2,
       pointBackgroundColor: pointBgColors,
-      pointBorderColor: BOOKING_COLORS[ch] || '#d1d5db',
-      pointBorderWidth: 2,
+      pointBorderColor:    BOOKING_COLORS[ch] || '#d1d5db',
+      pointBorderWidth:    2,
     };
   });
 
@@ -974,10 +956,11 @@ function renderBookingTrends(data) {
         tooltip: {
           callbacks: {
             title: (items) => {
-              const label = items[0]?.label || '';
-              const isCurrentWk = currentWeek && dataThrough &&
-                data.weeks[items[0]?.dataIndex] === currentWeek;
-              return isCurrentWk ? `${label} (week in progress)` : `Week of ${label}`;
+              const idx = items[0]?.dataIndex ?? -1;
+              const lbl = labels[idx] || '';
+              return (isCurrentLast && idx === lastIdx)
+                ? `${lbl} (week in progress)`
+                : `Week of ${lbl}`;
             }
           }
         }
