@@ -3832,40 +3832,30 @@ def api_booking_sources():
     pie_counts = Counter(_classify_channel(r) for r in pie_records)
     pie_total  = sum(pie_counts.values())
 
-    # ── Trends: 12 weeks, grouped by week-start Monday ───────────────────────
-    week_buckets = _dd(lambda: _dd(int))
-    for r in all_records_no_sun:
-        d_str = r.get("date", "")
-        if not d_str:
-            continue
-        try:
-            d      = date.fromisoformat(d_str)
-            monday = d - timedelta(days=d.weekday())
-            week_buckets[monday.isoformat()][_classify_channel(r)] += 1
-        except Exception:
-            continue
-
-    weeks = [(trend_from + timedelta(weeks=i)).isoformat() for i in range(12)]
-
-    # Build human-readable labels on the backend where today is unambiguous.
-    # Current (partial) week gets a range label, e.g. "13–17 Apr".
+    # ── Trends: last 30 days, one point per day (Sundays already removed) ────
     _MON_ABBR = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-    week_labels = []
-    for w in weeks:
-        wd = date.fromisoformat(w)
-        if wd == this_monday:          # current incomplete week
-            if wd.month == today.month:
-                label = f"{wd.day}\u2013{today.day} {_MON_ABBR[today.month-1]}"
-            else:
-                label = f"{wd.day} {_MON_ABBR[wd.month-1]}\u2013{today.day} {_MON_ABBR[today.month-1]}"
-        else:
-            label = f"{wd.day} {_MON_ABBR[wd.month-1]}"
-        week_labels.append(label)
+    day_buckets = _dd(lambda: _dd(int))
+    for r in pie_records:   # pie_records = last 30 days, no Sundays
+        d_str = r.get("date", "")
+        if d_str:
+            day_buckets[d_str][_classify_channel(r)] += 1
+
+    # Build ordered date list (last 30 days, no Sundays)
+    trend_dates = []
+    for i in range(29, -1, -1):
+        d = today - timedelta(days=i)
+        if d.weekday() != 6:            # skip Sundays
+            trend_dates.append(d.isoformat())
+
+    date_labels = [
+        f"{date.fromisoformat(d).day} {_MON_ABBR[date.fromisoformat(d).month - 1]}"
+        for d in trend_dates
+    ]
 
     _TREND_CHANNELS = ["Google", "Own website", "Instagram", "Walk-in", "Mobile app", "Staff/software"]
     series = {}
     for ch in _TREND_CHANNELS:
-        vals = [week_buckets.get(w, {}).get(ch, 0) for w in weeks]
+        vals = [day_buckets.get(d, {}).get(ch, 0) for d in trend_dates]
         if any(v > 0 for v in vals):
             series[ch] = vals
 
@@ -3879,11 +3869,9 @@ def api_booking_sources():
             },
         },
         "trends": {
-            "weeks":        weeks,
-            "week_labels":  week_labels,      # pre-computed display labels
-            "series":       series,
-            "current_week": this_monday.isoformat(),
-            "data_through": today.isoformat(),
+            "dates":       trend_dates,
+            "date_labels": date_labels,
+            "series":      series,
         },
     }
     if partial:

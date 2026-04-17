@@ -913,31 +913,17 @@ function renderBookingPie(data) {
 function renderBookingTrends(data) {
   destroyChart('bookingTrends');
 
-  // Use server-computed labels; fall back to raw week dates if absent (old API)
-  const labels = data.week_labels || data.weeks;
-  const currentWeek = data.current_week || null;
-  const lastIdx = data.weeks.length - 1;
-  const isCurrentLast = currentWeek && data.weeks[lastIdx] === currentWeek;
-
+  const labels = data.date_labels;
   const channelNames = Object.keys(data.series);
-  const datasets = channelNames.map(ch => {
-    // Last data point is hollow circle to signal the week is incomplete
-    const pointBgColors = data.series[ch].map((_, idx) =>
-      (isCurrentLast && idx === lastIdx) ? '#fff' : (BOOKING_COLORS[ch] || '#d1d5db')
-    );
-    return {
-      label:               ch,
-      data:                data.series[ch],
-      borderColor:         BOOKING_COLORS[ch] || '#d1d5db',
-      backgroundColor:     'transparent',
-      tension:             0.35,
-      pointRadius:         3,
-      borderWidth:         2,
-      pointBackgroundColor: pointBgColors,
-      pointBorderColor:    BOOKING_COLORS[ch] || '#d1d5db',
-      pointBorderWidth:    2,
-    };
-  });
+  const datasets = channelNames.map(ch => ({
+    label:           ch,
+    data:            data.series[ch],
+    borderColor:     BOOKING_COLORS[ch] || '#d1d5db',
+    backgroundColor: 'transparent',
+    tension:         0.35,
+    pointRadius:     2,
+    borderWidth:     2,
+  }));
 
   const legendEl = document.getElementById('booking-trends-legend');
   legendEl.innerHTML = channelNames.map(ch =>
@@ -951,20 +937,7 @@ function renderBookingTrends(data) {
     options: {
       responsive: true,
       animation: { duration: 350 },
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            title: (items) => {
-              const idx = items[0]?.dataIndex ?? -1;
-              const lbl = labels[idx] || '';
-              return (isCurrentLast && idx === lastIdx)
-                ? `${lbl} (week in progress)`
-                : `Week of ${lbl}`;
-            }
-          }
-        }
-      },
+      plugins: { legend: { display: false } },
       scales: {
         x: { grid: { color: COLORS.grid }, ticks: { color: COLORS.tick, font: { size: 11 }, maxRotation: 45 } },
         y: { grid: { color: COLORS.grid }, ticks: { color: COLORS.tick, font: { size: 11 } }, beginAtZero: true }
