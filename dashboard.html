@@ -913,22 +913,49 @@ function renderBookingPie(data) {
 function renderBookingTrends(data) {
   destroyChart('bookingTrends');
 
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const currentWeek = data.current_week || null;   // "YYYY-MM-DD" Monday of current week
+  const dataThrough = data.data_through || null;   // "YYYY-MM-DD" today
+
   const labels = data.weeks.map(w => {
-    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const [, mo, dy] = w.split('-');
-    return `${parseInt(dy)} ${months[parseInt(mo)-1]}`;
+    const base = `${parseInt(dy)} ${months[parseInt(mo)-1]}`;
+    if (w === currentWeek && dataThrough) {
+      // Show range for the current partial week, e.g. "13–17 Apr"
+      const [, tmo, tdy] = dataThrough.split('-');
+      const thruDay = parseInt(tdy);
+      const thruMon = months[parseInt(tmo)-1];
+      const startDay = parseInt(dy);
+      const sameMon  = tmo === mo;
+      return sameMon ? `${startDay}–${thruDay} ${thruMon}` : `${base}–${thruDay} ${thruMon}`;
+    }
+    return base;
   });
 
   const channelNames = Object.keys(data.series);
-  const datasets = channelNames.map(ch => ({
-    label:           ch,
-    data:            data.series[ch],
-    borderColor:     BOOKING_COLORS[ch] || '#d1d5db',
-    backgroundColor: 'transparent',
-    tension:         0.35,
-    pointRadius:     3,
-    borderWidth:     2,
-  }));
+  const datasets = channelNames.map((ch, i) => {
+    // Make current-week point hollow / dashed to signal incomplete data
+    const isCurrentLast = currentWeek && data.weeks[data.weeks.length - 1] === currentWeek;
+    const pointStyles = data.weeks.map((w, idx) =>
+      (isCurrentLast && idx === data.weeks.length - 1) ? 'circle' : 'circle'
+    );
+    const pointBgColors = data.weeks.map((w, idx) =>
+      (isCurrentLast && idx === data.weeks.length - 1) ? '#fff' : (BOOKING_COLORS[ch] || '#d1d5db')
+    );
+    return {
+      label:            ch,
+      data:             data.series[ch],
+      borderColor:      BOOKING_COLORS[ch] || '#d1d5db',
+      backgroundColor:  'transparent',
+      tension:          0.35,
+      pointRadius:      3,
+      borderWidth:      2,
+      pointStyle:       pointStyles,
+      pointBackgroundColor: pointBgColors,
+      pointBorderColor: BOOKING_COLORS[ch] || '#d1d5db',
+      pointBorderWidth: 2,
+    };
+  });
 
   const legendEl = document.getElementById('booking-trends-legend');
   legendEl.innerHTML = channelNames.map(ch =>
@@ -942,7 +969,19 @@ function renderBookingTrends(data) {
     options: {
       responsive: true,
       animation: { duration: 350 },
-      plugins: { legend: { display: false } },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: (items) => {
+              const label = items[0]?.label || '';
+              const isCurrentWk = currentWeek && dataThrough &&
+                data.weeks[items[0]?.dataIndex] === currentWeek;
+              return isCurrentWk ? `${label} (week in progress)` : `Week of ${label}`;
+            }
+          }
+        }
+      },
       scales: {
         x: { grid: { color: COLORS.grid }, ticks: { color: COLORS.tick, font: { size: 11 }, maxRotation: 45 } },
         y: { grid: { color: COLORS.grid }, ticks: { color: COLORS.tick, font: { size: 11 } }, beginAtZero: true }

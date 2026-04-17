@@ -3813,7 +3813,18 @@ def api_booking_sources():
         return jsonify({"error": "No reservation data returned from CoverManager"}), 500
 
     pie_from_str = pie_from.isoformat()
-    pie_records  = [r for r in all_records if (r.get("date") or "") >= pie_from_str]
+    # Filter Sundays (restaurant closed — any Sunday entries are noise)
+    def _is_sunday(r):
+        d_str = r.get("date", "")
+        if not d_str:
+            return False
+        try:
+            return date.fromisoformat(d_str).weekday() == 6
+        except Exception:
+            return False
+
+    all_records_no_sun = [r for r in all_records if not _is_sunday(r)]
+    pie_records = [r for r in all_records_no_sun if (r.get("date") or "") >= pie_from_str]
 
     from collections import Counter, defaultdict as _dd
 
@@ -3823,7 +3834,7 @@ def api_booking_sources():
 
     # ── Trends: 12 weeks, grouped by week-start Monday ───────────────────────
     week_buckets = _dd(lambda: _dd(int))
-    for r in all_records:
+    for r in all_records_no_sun:
         d_str = r.get("date", "")
         if not d_str:
             continue
@@ -3852,8 +3863,10 @@ def api_booking_sources():
             },
         },
         "trends": {
-            "weeks":  weeks,
-            "series": series,
+            "weeks":        weeks,
+            "series":       series,
+            "current_week": this_monday.isoformat(),  # so frontend can label it distinctly
+            "data_through": today.isoformat(),
         },
     }
     if partial:
