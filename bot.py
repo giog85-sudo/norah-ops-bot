@@ -3903,6 +3903,19 @@ def test_agora():
     return jsonify(result)
 
 
+@flask_app.route("/run-probe")
+def run_probe_endpoint():
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    date_str = request.args.get("date", str(date.today()))
+    try:
+        import agora_probe as _probe
+        result = _probe.run_probe(date_str)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # =========================
 # MAIN
 # =========================
