@@ -23,7 +23,7 @@ from typing import Optional
 
 
 # ── Config from environment ───────────────────────────────────────────────────
-AGORA_URL      = os.getenv("AGORA_URL",      "http://192.168.1.10:8984").rstrip("/")
+AGORA_URL      = os.getenv("AGORA_URL",      "").rstrip("/")
 AGORA_USER     = os.getenv("AGORA_USER",     "").strip()
 AGORA_PASSWORD = os.getenv("AGORA_PASSWORD", "").strip()
 AGORA_MACHINE_ID = "582a8d9b-9fba-eae6-75c4-a4658936424f"

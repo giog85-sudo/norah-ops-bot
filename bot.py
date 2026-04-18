@@ -50,7 +50,7 @@ ALERT_LUNCH_TICKET_MIN = float((os.getenv("ALERT_LUNCH_TICKET_MIN", "35").strip(
 DASHBOARD_API_KEY  = os.getenv("DASHBOARD_API_KEY",  "").strip()
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "").strip()
 
-AGORA_URL      = os.getenv("AGORA_URL",      "http://192.168.1.10:8984").strip()
+AGORA_URL      = os.getenv("AGORA_URL",      "").strip()
 AGORA_USER     = os.getenv("AGORA_USER",     "").strip()
 AGORA_PASSWORD = os.getenv("AGORA_PASSWORD", "").strip()
 
@@ -3883,7 +3883,7 @@ def api_booking_sources():
 @flask_app.route("/test-agora")
 def test_agora():
     import urllib.request, urllib.error, gzip as _gzip
-    target = "http://88.1.26.209:8984"
+    target = AGORA_URL
     result = {"target": target, "reachable": False}
     try:
         req = urllib.request.Request(target + "/", method="GET")
