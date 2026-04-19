@@ -3903,6 +3903,19 @@ def test_agora():
     return jsonify(result)
 
 
+@flask_app.route("/run-deep-probe")
+def run_deep_probe_endpoint():
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    date_str = request.args.get("date", "2026-04-18")
+    try:
+        import agora_deep_probe as _dp
+        result = _dp.run_deep_probe(date_str)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @flask_app.route("/run-probe")
 def run_probe_endpoint():
     if not _api_check_auth():
