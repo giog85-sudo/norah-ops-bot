@@ -93,7 +93,7 @@ def _login() -> tuple[str, dict]:
         "OutOfBandMessages": [],
         "Sender": {
             "ApplicationName": "AgoraWebAdmin",
-            "ApplicationVersion": "8.4.2",
+            "ApplicationVersion": "8.5.6",
             "LanguageCode": "es",
             "MachineId": AGORA_MACHINE_ID,
             "MachineName": "Web Device",
@@ -136,7 +136,7 @@ def _fetch_sales_rows(auth_token: str, session: dict, from_date: str, to_date: s
         "OutOfBandMessages": [],
         "Sender": {
             "ApplicationName": "AgoraWebAdmin",
-            "ApplicationVersion": "8.4.2",
+            "ApplicationVersion": "8.5.6",
             "LanguageCode": "es",
             "MachineId": AGORA_MACHINE_ID,
             "MachineName": "Web Device",

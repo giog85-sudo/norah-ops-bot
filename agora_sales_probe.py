@@ -56,7 +56,7 @@ def _login():
         "OutOfBandMessages": [],
         "Sender": {
             "ApplicationName": "AgoraWebAdmin",
-            "ApplicationVersion": "8.4.2",
+            "ApplicationVersion": "8.5.6",
             "LanguageCode": "es",
             "MachineId": AGORA_MACHINE_ID,
             "MachineName": "Web Device",
@@ -86,7 +86,7 @@ def _login():
 def _sender(session, pos_id=0):
     return {
         "ApplicationName": "AgoraWebAdmin",
-        "ApplicationVersion": "8.4.2",
+        "ApplicationVersion": "8.5.6",
         "LanguageCode": "es",
         "MachineId": AGORA_MACHINE_ID,
         "MachineName": "Web Device",
