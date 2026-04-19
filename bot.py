@@ -3121,6 +3121,13 @@ def build_owners_post_for_day(report_day: date) -> str:
         # No manual entry — try to fill revenue/covers from Agora POS
         agora = _try_agora(report_day)
         if agora:
+            upsert_full_day(
+                report_day,
+                agora.total_net, 0.0, 0.0, 0.0,
+                agora.lunch_net, agora.lunch_covers, 0, 0,
+                agora.dinner_net, agora.dinner_covers, 0, 0,
+            )
+            upsert_daily(report_day, agora.total_net, agora.total_covers)
             total_avg = agora.avg_ticket
             msg = (
                 f"📌 Norah Daily Post\n"
