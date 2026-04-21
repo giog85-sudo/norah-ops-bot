@@ -3972,6 +3972,18 @@ def test_payment_methods():
         return jsonify({"error": str(e)}), 500
 
 
+@flask_app.route("/test-cashregister")
+def test_cashregister():
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    date_str = request.args.get("date", "2026-04-20")
+    try:
+        result = _agora_mod.get_cash_register_report(date_str)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @flask_app.route("/test-closure")
 def test_closure():
     if not _api_check_auth():

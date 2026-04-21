@@ -204,7 +204,8 @@ def _aggregate(query_date: str, rows: list[dict]) -> DailySales:
     # Each DocumentId is a unique check/ticket (one per table turn).
     # There is no per-guest pax field in GetSalesAnalyticsReportRequest rows —
     # Quantity is product units sold, not guest count.  Unique check count is
-    # the best available proxy for covers from this endpoint.
+    # a proxy only.  The real cover count (Comensales) lives in the Z report
+    # (GetCashRegisterReportRequest) — wire that in once the endpoint is confirmed.
     lunch_tickets:  set[int] = set()
     dinner_tickets: set[int] = set()
 
@@ -473,6 +474,159 @@ def get_payment_methods(query_date) -> dict:
         return {"http_status": status, "body": json.loads(text)}
     except Exception:
         return {"http_status": status, "body": text[:5000]}
+
+
+# =============================================================================
+# Cash register (Z report) — raw response probe
+# =============================================================================
+
+def get_cash_register_report(query_date) -> dict:
+    """
+    Try multiple variations of GetCashRegisterReportRequest for query_date.
+    The Z report is per-terminal (POS "TPV") and is expected to contain
+    Comensales (real cover count), payment method totals, and till summary.
+
+    Returns a dict:
+    {
+        "date": str,
+        "attempts": [
+            {"label": str, "http_status": int, "body": parsed_json_or_str},
+            ...
+        ]
+    }
+    """
+    if not AGORA_URL:
+        raise RuntimeError("AGORA_URL env var is not set")
+    if not AGORA_USER or not AGORA_PASSWORD:
+        raise RuntimeError("AGORA_USER and AGORA_PASSWORD env vars must be set")
+
+    if isinstance(query_date, date):
+        date_str = query_date.isoformat()
+    else:
+        date_str = str(query_date)
+
+    auth_token, session = _login()
+
+    clr = "IGT.POS.Bus.Reporting.Messages.GetCashRegisterReportRequest"
+    frm = f"{date_str}T00:00:00.000"
+    to  = f"{date_str}T23:59:59.000"
+
+    def _sender(**overrides):
+        base = {
+            "ApplicationName": "AgoraWebAdmin",
+            "ApplicationVersion": "8.5.6",
+            "LanguageCode": "es",
+            "MachineId": AGORA_MACHINE_ID,
+            "MachineName": "Web Device",
+            "MachineType": 4,
+            "PosId": 0,
+            "PosName": "",
+            "UserId": session["UserId"],
+            "UserName": session["UserName"],
+        }
+        base.update(overrides)
+        return base
+
+    def _msg(**extra):
+        base = {
+            "CLRType": clr,
+            "IsBlocking": True,
+            "OutOfBandMessages": [],
+            "Sender": _sender(),
+            "PosGroupsIds": [1],
+            "TimeFrameGroupId": 1,
+            "IncludeDeliveryNotes": False,
+            "From": frm,
+            "To":   to,
+        }
+        base.update(extra)
+        return base
+
+    variations = [
+        # v1: exact mirror of working GetSalesAnalyticsReportRequest
+        ("v1_baseline",
+         _msg()),
+
+        # v2: PosId=1 in Sender (TPV terminal id guess)
+        ("v2_sender_posid_1",
+         {**_msg(), "Sender": _sender(PosId=1)}),
+
+        # v3: PosName="TPV" in Sender
+        ("v3_sender_posname_tpv",
+         {**_msg(), "Sender": _sender(PosName="TPV")}),
+
+        # v4: top-level PosId field
+        ("v4_toplevel_posid_1",
+         _msg(PosId=1)),
+
+        # v5: top-level PosName="TPV"
+        ("v5_toplevel_posname_tpv",
+         _msg(PosName="TPV")),
+
+        # v6: top-level PosIds list (plural)
+        ("v6_posids_list",
+         _msg(PosIds=[1])),
+
+        # v7: PosGroupsIds=[] (all groups)
+        ("v7_pos_groups_empty",
+         _msg(PosGroupsIds=[])),
+
+        # v8: PosGroupsIds=None
+        ("v8_pos_groups_null",
+         _msg(PosGroupsIds=None)),
+
+        # v9: TimeFrameGroupId=0
+        ("v9_timeframe_0",
+         _msg(TimeFrameGroupId=0)),
+
+        # v10: minimal body — no group/timeframe fields
+        ("v10_minimal",
+         {
+             "CLRType": clr,
+             "IsBlocking": True,
+             "OutOfBandMessages": [],
+             "Sender": _sender(),
+             "From": frm,
+             "To":   to,
+         }),
+
+        # v11: CashRegisterId=1
+        ("v11_cashregister_id_1",
+         _msg(CashRegisterId=1)),
+
+        # v12: CashRegisterIds=[1]
+        ("v12_cashregister_ids",
+         _msg(CashRegisterIds=[1])),
+    ]
+
+    attempts = []
+    for label, body in variations:
+        status, _, text = _post(
+            "/bus/",
+            {"CLRType": clr, "Message": body},
+            cookie=f"auth-token={auth_token}",
+        )
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = {"_raw": text[:5000]}
+
+        err = (parsed.get("Error")
+               or parsed.get("Message", {}).get("ErrorMessage")
+               or parsed.get("Message", {}).get("Error"))
+
+        attempts.append({
+            "label":      label,
+            "http_status": status,
+            "error":      str(err)[:300] if err else None,
+            "body":       parsed,
+        })
+
+        # Stop on first clean success
+        if status == 200 and not err:
+            break
+
+    return {"date": date_str, "attempts": attempts}
 
 
 # =============================================================================
