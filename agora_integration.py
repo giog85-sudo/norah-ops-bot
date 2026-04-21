@@ -476,6 +476,75 @@ def get_payment_methods(query_date) -> dict:
 
 
 # =============================================================================
+# Closure report — raw response probe
+# =============================================================================
+
+def get_closure_report(query_date) -> dict:
+    """
+    Call GetClosureReportRequest for query_date and return the full raw
+    parsed JSON response so we can inspect what fields it contains.
+
+    Args:
+        query_date: a date object or "YYYY-MM-DD" string
+
+    Returns:
+        dict with keys: http_status, body (full parsed JSON or raw text).
+
+    Raises:
+        RuntimeError if login fails or Agora is unreachable.
+    """
+    if not AGORA_URL:
+        raise RuntimeError("AGORA_URL env var is not set")
+    if not AGORA_USER or not AGORA_PASSWORD:
+        raise RuntimeError("AGORA_USER and AGORA_PASSWORD env vars must be set")
+
+    if isinstance(query_date, date):
+        date_str = query_date.isoformat()
+    else:
+        date_str = str(query_date)
+
+    auth_token, session = _login()
+
+    clr = "IGT.POS.Bus.Reporting.Messages.GetClosureReportRequest"
+    msg = {
+        "CLRType": clr,
+        "IsBlocking": True,
+        "OutOfBandMessages": [],
+        "Sender": {
+            "ApplicationName": "AgoraWebAdmin",
+            "ApplicationVersion": "8.5.6",
+            "LanguageCode": "es",
+            "MachineId": AGORA_MACHINE_ID,
+            "MachineName": "Web Device",
+            "MachineType": 4,
+            "PosId": 0,
+            "PosName": "",
+            "UserId": session["UserId"],
+            "UserName": session["UserName"],
+        },
+        "PosGroupsIds": [1],
+        "TimeFrameGroupId": 1,
+        "IncludeDeliveryNotes": False,
+        "From": f"{date_str}T00:00:00.000",
+        "To":   f"{date_str}T23:59:59.000",
+    }
+
+    status, _, text = _post(
+        "/bus/",
+        {"CLRType": clr, "Message": msg},
+        cookie=f"auth-token={auth_token}",
+    )
+
+    if status == 401:
+        raise RuntimeError("Agora /bus/ returned 401 — auth token may have expired")
+
+    try:
+        return {"http_status": status, "body": json.loads(text)}
+    except Exception:
+        return {"http_status": status, "body": text[:5000]}
+
+
+# =============================================================================
 # Quick test — run directly to verify connectivity
 # =============================================================================
 
