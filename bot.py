@@ -98,6 +98,55 @@ def _try_agora(day_: date):
         print(f"Agora fetch failed for {day_}: {e}")
         return None
 
+
+def _try_cm_walkins_noshows(day_: date) -> dict:
+    """
+    Fetch walk-ins and no-shows from CoverManager for a single date.
+    Returns a dict with keys: lunch_walkins, dinner_walkins, lunch_noshows, dinner_noshows.
+    Falls back to zeros on any error or if CM is unavailable.
+    """
+    zeros = {"lunch_walkins": 0, "dinner_walkins": 0, "lunch_noshows": 0, "dinner_noshows": 0}
+    if not _CM_AVAILABLE:
+        return zeros
+    try:
+        res = _cm_mod.get_daily_reservations(day_)
+        if not res:
+            return zeros
+
+        _LUNCH  = {"comida", "almuerzo", "mediodía", "mediodia"}
+        _DINNER = {"cena", "noche", "tarde"}
+
+        lunch_walkins = dinner_walkins = lunch_noshows = dinner_noshows = 0
+        for r in res.reservations:
+            status = int(r.get("status", 0))
+            shift  = (r.get("meal_shift") or "").strip().lower()
+            prov   = (r.get("provenance") or "").strip().lower()
+            is_lunch  = any(w in shift for w in _LUNCH)
+            is_dinner = any(w in shift for w in _DINNER)
+
+            if prov == "walk in":
+                if is_lunch:
+                    lunch_walkins += 1
+                elif is_dinner:
+                    dinner_walkins += 1
+
+            if status == -2:  # STATUS_NOSHOW
+                if is_lunch:
+                    lunch_noshows += 1
+                elif is_dinner:
+                    dinner_noshows += 1
+
+        return {
+            "lunch_walkins":  lunch_walkins,
+            "dinner_walkins": dinner_walkins,
+            "lunch_noshows":  lunch_noshows,
+            "dinner_noshows": dinner_noshows,
+        }
+    except Exception as e:
+        print(f"CM walkins/noshows fetch failed for {day_}: {e}")
+        return zeros
+
+
 REPORT_MODE_KEY = "report_mode_map"
 FULL_MODE_KEY = "full_mode_map"
 GUIDED_FULL_KEY = "guided_full_map"
@@ -3118,14 +3167,15 @@ def build_owners_post_for_day(report_day: date) -> str:
             f"📝 Notes:\n{notes_block}"
         )
     else:
-        # No manual entry — try to fill revenue/covers from Agora POS
+        # No manual entry — fill revenue/covers from Agora POS + walk-ins/noshows from CoverManager
         agora = _try_agora(report_day)
         if agora:
+            cm = _try_cm_walkins_noshows(report_day)
             upsert_full_day(
                 report_day,
                 agora.total_net, 0.0, 0.0, 0.0,
-                agora.lunch_net, agora.lunch_covers, 0, 0,
-                agora.dinner_net, agora.dinner_covers, 0, 0,
+                agora.lunch_net, agora.lunch_covers, cm["lunch_walkins"], cm["lunch_noshows"],
+                agora.dinner_net, agora.dinner_covers, cm["dinner_walkins"], cm["dinner_noshows"],
             )
             upsert_daily(report_day, agora.total_net, agora.total_covers)
             total_avg = agora.avg_ticket
@@ -3140,13 +3190,13 @@ def build_owners_post_for_day(report_day: date) -> str:
                 f"Lunch: {euro_comma(agora.lunch_net)}\n"
                 f"Pax: {agora.lunch_covers}\n"
                 f"Avg Ticket: {euro_comma(agora.lunch_avg_ticket)}\n"
-                f"Walk in: —\n"
-                f"No show: —\n\n"
+                f"Walk in: {cm['lunch_walkins']}\n"
+                f"No show: {cm['lunch_noshows']}\n\n"
                 f"Dinner: {euro_comma(agora.dinner_net)}\n"
                 f"Pax: {agora.dinner_covers}\n"
                 f"Avg Ticket: {euro_comma(agora.dinner_avg_ticket)}\n"
-                f"Walk in: —\n"
-                f"No show: —\n\n"
+                f"Walk in: {cm['dinner_walkins']}\n"
+                f"No show: {cm['dinner_noshows']}\n\n"
                 f"📝 Notes:\n{notes_block}"
             )
         else:
@@ -3908,6 +3958,18 @@ def test_agora():
     except Exception as e:
         result["error"] = str(e)
     return jsonify(result)
+
+
+@flask_app.route("/test-payment-methods")
+def test_payment_methods():
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    date_str = request.args.get("date", "2026-04-20")
+    try:
+        result = _agora_mod.get_payment_methods(date_str)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @flask_app.route("/run-sales-probe")

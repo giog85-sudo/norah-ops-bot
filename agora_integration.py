@@ -201,8 +201,12 @@ def _aggregate(query_date: str, rows: list[dict]) -> DailySales:
     total_gross = 0.0
     lunch_net   = 0.0
     dinner_net  = 0.0
-    lunch_tickets:  set[str] = set()
-    dinner_tickets: set[str] = set()
+    # Each DocumentId is a unique check/ticket (one per table turn).
+    # There is no per-guest pax field in GetSalesAnalyticsReportRequest rows —
+    # Quantity is product units sold, not guest count.  Unique check count is
+    # the best available proxy for covers from this endpoint.
+    lunch_tickets:  set[int] = set()
+    dinner_tickets: set[int] = set()
 
     # waiter: {name → {net, tickets: set[doc]}}
     waiter_net: dict[str, float]    = {}
@@ -222,8 +226,10 @@ def _aggregate(query_date: str, rows: list[dict]) -> DailySales:
         net   = float(r.get("Net",   0) or 0)
         gross = float(r.get("Gross", 0) or 0)
         tf    = (r.get("TimeFrame") or "").strip().lower()
-        # Prefer DocumentId; fall back to DocumentNumber
-        doc   = str(r.get("DocumentId") or r.get("DocumentNumber") or "")
+        # DocumentId is the numeric ticket/check ID — use it as the unique
+        # cover proxy.  DocumentNumber is a display string ("T/006885") that
+        # maps 1-to-1 with DocumentId, but int comparison is cheaper.
+        doc   = r.get("DocumentId") or r.get("DocumentNumber") or None
         prod  = r.get("Product") or "—"
         qty   = float(r.get("Quantity", 0) or 0)
         user  = (r.get("User") or "").strip() or "Unknown"
@@ -398,6 +404,75 @@ def get_daily_sales(query_date, save_to_db: bool = True) -> Optional[DailySales]
         _save_to_db(ds)
 
     return ds
+
+
+# =============================================================================
+# Payment methods — raw response probe
+# =============================================================================
+
+def get_payment_methods(query_date) -> dict:
+    """
+    Call GetPaymentMethodsReportRequest for query_date and return the full
+    raw parsed JSON response so we can inspect the data structure.
+
+    Args:
+        query_date: a date object or "YYYY-MM-DD" string
+
+    Returns:
+        dict — the full parsed JSON from Agora (Message + any Error fields).
+
+    Raises:
+        RuntimeError if login fails or Agora is unreachable.
+    """
+    if not AGORA_URL:
+        raise RuntimeError("AGORA_URL env var is not set")
+    if not AGORA_USER or not AGORA_PASSWORD:
+        raise RuntimeError("AGORA_USER and AGORA_PASSWORD env vars must be set")
+
+    if isinstance(query_date, date):
+        date_str = query_date.isoformat()
+    else:
+        date_str = str(query_date)
+
+    auth_token, session = _login()
+
+    clr = "IGT.POS.Bus.Reporting.Messages.GetPaymentMethodsReportRequest"
+    msg = {
+        "CLRType": clr,
+        "IsBlocking": True,
+        "OutOfBandMessages": [],
+        "Sender": {
+            "ApplicationName": "AgoraWebAdmin",
+            "ApplicationVersion": "8.5.6",
+            "LanguageCode": "es",
+            "MachineId": AGORA_MACHINE_ID,
+            "MachineName": "Web Device",
+            "MachineType": 4,
+            "PosId": 0,
+            "PosName": "",
+            "UserId": session["UserId"],
+            "UserName": session["UserName"],
+        },
+        "PosGroupsIds": [1],
+        "TimeFrameGroupId": 1,
+        "IncludeDeliveryNotes": False,
+        "From": f"{date_str}T00:00:00.000",
+        "To":   f"{date_str}T23:59:59.000",
+    }
+
+    status, _, text = _post(
+        "/bus/",
+        {"CLRType": clr, "Message": msg},
+        cookie=f"auth-token={auth_token}",
+    )
+
+    if status == 401:
+        raise RuntimeError("Agora /bus/ returned 401 — auth token may have expired")
+
+    try:
+        return {"http_status": status, "body": json.loads(text)}
+    except Exception:
+        return {"http_status": status, "body": text[:5000]}
 
 
 # =============================================================================
