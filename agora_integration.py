@@ -630,6 +630,182 @@ def get_cash_register_report(query_date) -> dict:
 
 
 # =============================================================================
+# Closure / DailyTotals extended probe
+# =============================================================================
+
+def get_closure_report2(query_date) -> dict:
+    """
+    Try GetClosureReportRequest and GetDailyTotalsReportRequest with many
+    parameter variations — ClosureId, SessionId, no dates, etc.
+    Returns all attempts with full raw responses.
+    """
+    if not AGORA_URL:
+        raise RuntimeError("AGORA_URL env var is not set")
+    if not AGORA_USER or not AGORA_PASSWORD:
+        raise RuntimeError("AGORA_USER and AGORA_PASSWORD env vars must be set")
+
+    if isinstance(query_date, date):
+        date_str = query_date.isoformat()
+    else:
+        date_str = str(query_date)
+
+    auth_token, session = _login()
+
+    frm = f"{date_str}T00:00:00.000"
+    to  = f"{date_str}T23:59:59.000"
+
+    def _sender(pos_id=0, pos_name=""):
+        return {
+            "ApplicationName": "AgoraWebAdmin",
+            "ApplicationVersion": "8.5.6",
+            "LanguageCode": "es",
+            "MachineId": AGORA_MACHINE_ID,
+            "MachineName": "Web Device",
+            "MachineType": 4,
+            "PosId": pos_id,
+            "PosName": pos_name,
+            "UserId": session["UserId"],
+            "UserName": session["UserName"],
+        }
+
+    def _base(clr, **extra):
+        msg = {
+            "CLRType": clr,
+            "IsBlocking": True,
+            "OutOfBandMessages": [],
+            "Sender": _sender(),
+            "PosGroupsIds": [1],
+            "TimeFrameGroupId": 1,
+            "IncludeDeliveryNotes": False,
+            "From": frm,
+            "To":   to,
+        }
+        msg.update(extra)
+        return msg
+
+    CLR_CLOSURE = "IGT.POS.Bus.Reporting.Messages.GetClosureReportRequest"
+    CLR_DAILY   = "IGT.POS.Bus.Reporting.Messages.GetDailyTotalsReportRequest"
+
+    variations = [
+        # ── GetClosureReportRequest ──────────────────────────────────────────
+        ("closure_baseline",
+         CLR_CLOSURE, _base(CLR_CLOSURE)),
+
+        ("closure_id_1",
+         CLR_CLOSURE, _base(CLR_CLOSURE, ClosureId=1)),
+
+        ("closure_id_0",
+         CLR_CLOSURE, _base(CLR_CLOSURE, ClosureId=0)),
+
+        ("closure_id_null",
+         CLR_CLOSURE, _base(CLR_CLOSURE, ClosureId=None)),
+
+        ("closure_session_id_1",
+         CLR_CLOSURE, _base(CLR_CLOSURE, SessionId=1)),
+
+        ("closure_session_id_0",
+         CLR_CLOSURE, _base(CLR_CLOSURE, SessionId=0)),
+
+        ("closure_no_dates",
+         CLR_CLOSURE, {
+             "CLRType": CLR_CLOSURE,
+             "IsBlocking": True,
+             "OutOfBandMessages": [],
+             "Sender": _sender(),
+             "PosGroupsIds": [1],
+             "TimeFrameGroupId": 1,
+         }),
+
+        ("closure_pos_groups_empty",
+         CLR_CLOSURE, _base(CLR_CLOSURE, PosGroupsIds=[])),
+
+        ("closure_timeframe_0",
+         CLR_CLOSURE, _base(CLR_CLOSURE, TimeFrameGroupId=0)),
+
+        ("closure_minimal_no_groups",
+         CLR_CLOSURE, {
+             "CLRType": CLR_CLOSURE,
+             "IsBlocking": True,
+             "OutOfBandMessages": [],
+             "Sender": _sender(),
+             "From": frm,
+             "To":   to,
+         }),
+
+        ("closure_with_session_and_id",
+         CLR_CLOSURE, _base(CLR_CLOSURE, ClosureId=1, SessionId=1)),
+
+        ("closure_posid_1_in_sender",
+         CLR_CLOSURE, {**_base(CLR_CLOSURE), "Sender": _sender(pos_id=1)}),
+
+        # ── GetDailyTotalsReportRequest ──────────────────────────────────────
+        ("dailytotals_baseline",
+         CLR_DAILY, _base(CLR_DAILY)),
+
+        ("dailytotals_timeframe_0",
+         CLR_DAILY, _base(CLR_DAILY, TimeFrameGroupId=0)),
+
+        ("dailytotals_pos_groups_empty",
+         CLR_DAILY, _base(CLR_DAILY, PosGroupsIds=[])),
+
+        ("dailytotals_no_dates",
+         CLR_DAILY, {
+             "CLRType": CLR_DAILY,
+             "IsBlocking": True,
+             "OutOfBandMessages": [],
+             "Sender": _sender(),
+             "PosGroupsIds": [1],
+             "TimeFrameGroupId": 1,
+         }),
+
+        ("dailytotals_minimal",
+         CLR_DAILY, {
+             "CLRType": CLR_DAILY,
+             "IsBlocking": True,
+             "OutOfBandMessages": [],
+             "Sender": _sender(),
+             "From": frm,
+             "To":   to,
+         }),
+
+        ("dailytotals_session_id_1",
+         CLR_DAILY, _base(CLR_DAILY, SessionId=1)),
+
+        ("dailytotals_posid_1_in_sender",
+         CLR_DAILY, {**_base(CLR_DAILY), "Sender": _sender(pos_id=1)}),
+
+        ("dailytotals_pos_groups_null",
+         CLR_DAILY, _base(CLR_DAILY, PosGroupsIds=None)),
+    ]
+
+    attempts = []
+    for label, clr, body in variations:
+        status, _, text = _post(
+            "/bus/",
+            {"CLRType": clr, "Message": body},
+            cookie=f"auth-token={auth_token}",
+        )
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = {"_raw": text[:5000]}
+
+        err = (parsed.get("Error")
+               or parsed.get("Message", {}).get("ErrorMessage")
+               or parsed.get("Message", {}).get("Error"))
+
+        attempts.append({
+            "label":       label,
+            "clr":         clr,
+            "http_status": status,
+            "error":       str(err)[:300] if err else None,
+            "body":        parsed,
+        })
+
+    return {"date": date_str, "attempts": attempts}
+
+
+# =============================================================================
 # Closure report — raw response probe
 # =============================================================================
 
