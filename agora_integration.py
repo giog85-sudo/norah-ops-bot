@@ -630,6 +630,176 @@ def get_cash_register_report(query_date) -> dict:
 
 
 # =============================================================================
+# Z report (POS close-outs) probe
+# =============================================================================
+
+def get_pos_closeouts(query_date) -> dict:
+    """
+    Call GetPosCloseOutsRequest (the real Z report endpoint, discovered via
+    network interception) and return the full raw JSON response.
+
+    Tries multiple variations:
+    - With date range (IsBlocking False and True)
+    - Without dates at all
+    - With PosGroupsIds variations
+
+    Args:
+        query_date: a date object or "YYYY-MM-DD" string
+
+    Returns:
+        dict with keys: date, attempts (label, http_status, error, body)
+    """
+    if not AGORA_URL:
+        raise RuntimeError("AGORA_URL env var is not set")
+    if not AGORA_USER or not AGORA_PASSWORD:
+        raise RuntimeError("AGORA_USER and AGORA_PASSWORD env vars must be set")
+
+    if isinstance(query_date, date):
+        date_str = query_date.isoformat()
+    else:
+        date_str = str(query_date)
+
+    auth_token, session = _login()
+
+    CLR = "IGT.POS.Bus.Reporting.Messages.GetPosCloseOutsRequest"
+    frm = f"{date_str}T00:00:00.000"
+    to  = f"{date_str}T23:59:59.000"
+
+    def _sender(pos_id=0):
+        return {
+            "ApplicationName": "AgoraWebAdmin",
+            "ApplicationVersion": "8.5.6",
+            "LanguageCode": "es",
+            "MachineId": AGORA_MACHINE_ID,
+            "MachineName": "Web Device",
+            "MachineType": 4,
+            "PosId": pos_id,
+            "PosName": "",
+            "UserId": session["UserId"],
+            "UserName": session["UserName"],
+        }
+
+    variations = [
+        # v1: as seen in network traffic — IsBlocking=False, with dates
+        ("v1_nonblocking_with_dates", {
+            "CLRType": CLR,
+            "IsBlocking": False,
+            "OutOfBandMessages": [],
+            "Sender": _sender(),
+            "PosGroupsIds": [1],
+            "TimeFrameGroupId": 1,
+            "IncludeDeliveryNotes": False,
+            "From": frm,
+            "To":   to,
+        }),
+
+        # v2: IsBlocking=True (same as working sales endpoint)
+        ("v2_blocking_with_dates", {
+            "CLRType": CLR,
+            "IsBlocking": True,
+            "OutOfBandMessages": [],
+            "Sender": _sender(),
+            "PosGroupsIds": [1],
+            "TimeFrameGroupId": 1,
+            "IncludeDeliveryNotes": False,
+            "From": frm,
+            "To":   to,
+        }),
+
+        # v3: no date fields at all — Z reports are often fetched by session, not date
+        ("v3_nonblocking_no_dates", {
+            "CLRType": CLR,
+            "IsBlocking": False,
+            "OutOfBandMessages": [],
+            "Sender": _sender(),
+            "PosGroupsIds": [1],
+            "TimeFrameGroupId": 1,
+        }),
+
+        # v4: no dates, IsBlocking=True
+        ("v4_blocking_no_dates", {
+            "CLRType": CLR,
+            "IsBlocking": True,
+            "OutOfBandMessages": [],
+            "Sender": _sender(),
+            "PosGroupsIds": [1],
+            "TimeFrameGroupId": 1,
+        }),
+
+        # v5: minimal — only Sender, no groups or dates
+        ("v5_minimal", {
+            "CLRType": CLR,
+            "IsBlocking": False,
+            "OutOfBandMessages": [],
+            "Sender": _sender(),
+        }),
+
+        # v6: PosGroupsIds=[] (all groups)
+        ("v6_pos_groups_empty", {
+            "CLRType": CLR,
+            "IsBlocking": False,
+            "OutOfBandMessages": [],
+            "Sender": _sender(),
+            "PosGroupsIds": [],
+            "From": frm,
+            "To":   to,
+        }),
+
+        # v7: PosId=1 in Sender
+        ("v7_posid_1", {
+            "CLRType": CLR,
+            "IsBlocking": False,
+            "OutOfBandMessages": [],
+            "Sender": _sender(pos_id=1),
+            "PosGroupsIds": [1],
+            "From": frm,
+            "To":   to,
+        }),
+
+        # v8: TimeFrameGroupId=0
+        ("v8_timeframe_0", {
+            "CLRType": CLR,
+            "IsBlocking": False,
+            "OutOfBandMessages": [],
+            "Sender": _sender(),
+            "PosGroupsIds": [1],
+            "TimeFrameGroupId": 0,
+            "From": frm,
+            "To":   to,
+        }),
+    ]
+
+    attempts = []
+    for label, body in variations:
+        status, _, text = _post(
+            "/bus/",
+            {"CLRType": CLR, "Message": body},
+            cookie=f"auth-token={auth_token}",
+        )
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = {"_raw": text[:5000]}
+
+        err = (parsed.get("Error")
+               or parsed.get("Message", {}).get("ErrorMessage")
+               or parsed.get("Message", {}).get("Error"))
+
+        attempts.append({
+            "label":       label,
+            "http_status": status,
+            "error":       str(err)[:300] if err else None,
+            "body":        parsed,
+        })
+
+        # Stop at first clean success
+        if status == 200 and not err:
+            break
+
+    return {"date": date_str, "attempts": attempts}
+
+
+# =============================================================================
 # Closure / DailyTotals extended probe
 # =============================================================================
 
