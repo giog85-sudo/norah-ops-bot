@@ -767,6 +767,36 @@ def get_pos_closeouts(query_date) -> dict:
             "From": frm,
             "To":   to,
         }),
+
+        # v9: no date filter at all — return all available close-out records
+        ("v9_no_date_filter", {
+            "CLRType": CLR,
+            "IsBlocking": False,
+            "OutOfBandMessages": [],
+            "Sender": _sender(),
+            "PosGroupsIds": [1],
+            "TimeFrameGroupId": 1,
+        }),
+
+        # v10: no date, no groups either — absolute minimum
+        ("v10_no_date_no_groups", {
+            "CLRType": CLR,
+            "IsBlocking": False,
+            "OutOfBandMessages": [],
+            "Sender": _sender(),
+        }),
+
+        # v11: wide date range — last 30 days — in case single-day filter excludes Z records
+        ("v11_last_30_days", {
+            "CLRType": CLR,
+            "IsBlocking": False,
+            "OutOfBandMessages": [],
+            "Sender": _sender(),
+            "PosGroupsIds": [1],
+            "TimeFrameGroupId": 1,
+            "From": f"{(date.fromisoformat(date_str) - __import__('datetime').timedelta(days=30)).isoformat()}T00:00:00.000",
+            "To":   f"{date_str}T23:59:59.000",
+        }),
     ]
 
     attempts = []
@@ -785,16 +815,14 @@ def get_pos_closeouts(query_date) -> dict:
                or parsed.get("Message", {}).get("ErrorMessage")
                or parsed.get("Message", {}).get("Error"))
 
+        closeouts = parsed.get("Message", {}).get("PosCloseOuts")
         attempts.append({
-            "label":       label,
-            "http_status": status,
-            "error":       str(err)[:300] if err else None,
-            "body":        parsed,
+            "label":          label,
+            "http_status":    status,
+            "error":          str(err)[:300] if err else None,
+            "closeouts_count": len(closeouts) if isinstance(closeouts, list) else None,
+            "body":           parsed,
         })
-
-        # Stop at first clean success
-        if status == 200 and not err:
-            break
 
     return {"date": date_str, "attempts": attempts}
 
