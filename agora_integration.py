@@ -679,124 +679,82 @@ def get_pos_closeouts(query_date) -> dict:
             "UserName": session["UserName"],
         }
 
+    import datetime as _dt
+    d0 = date.fromisoformat(date_str)           # the "closing" date  (e.g. 2026-04-23)
+    d_prev = d0 - _dt.timedelta(days=1)         # the "opening" date  (e.g. 2026-04-22)
+    d_prev2 = d0 - _dt.timedelta(days=2)        # one further back    (e.g. 2026-04-21)
+
+    def _iso(d): return d.isoformat()
+
+    def _base(**extra):
+        msg = {
+            "CLRType": CLR,
+            "IsBlocking": False,
+            "OutOfBandMessages": [],
+            "Sender": _sender(),
+            "PosGroupsIds": [1],
+            "TimeFrameGroupId": 1,
+        }
+        msg.update(extra)
+        return msg
+
     variations = [
-        # v1: as seen in network traffic — IsBlocking=False, with dates
-        ("v1_nonblocking_with_dates", {
-            "CLRType": CLR,
-            "IsBlocking": False,
-            "OutOfBandMessages": [],
-            "Sender": _sender(),
-            "PosGroupsIds": [1],
-            "TimeFrameGroupId": 1,
-            "IncludeDeliveryNotes": False,
-            "From": frm,
-            "To":   to,
-        }),
+        # ── OpenDate / CloseDate (overnight split: open=prev day, close=query day) ──
+        ("open_close_date_prev_curr",
+         _base(OpenDate=f"{_iso(d_prev)}T00:00:00.000",
+               CloseDate=f"{_iso(d0)}T23:59:59.000")),
 
-        # v2: IsBlocking=True (same as working sales endpoint)
-        ("v2_blocking_with_dates", {
-            "CLRType": CLR,
-            "IsBlocking": True,
-            "OutOfBandMessages": [],
-            "Sender": _sender(),
-            "PosGroupsIds": [1],
-            "TimeFrameGroupId": 1,
-            "IncludeDeliveryNotes": False,
-            "From": frm,
-            "To":   to,
-        }),
+        ("open_close_date_prev2_prev",
+         _base(OpenDate=f"{_iso(d_prev2)}T00:00:00.000",
+               CloseDate=f"{_iso(d_prev)}T23:59:59.000")),
 
-        # v3: no date fields at all — Z reports are often fetched by session, not date
-        ("v3_nonblocking_no_dates", {
-            "CLRType": CLR,
-            "IsBlocking": False,
-            "OutOfBandMessages": [],
-            "Sender": _sender(),
-            "PosGroupsIds": [1],
-            "TimeFrameGroupId": 1,
-        }),
+        # same with plain date strings (no time component)
+        ("open_close_date_plain",
+         _base(OpenDate=_iso(d_prev), CloseDate=_iso(d0))),
 
-        # v4: no dates, IsBlocking=True
-        ("v4_blocking_no_dates", {
-            "CLRType": CLR,
-            "IsBlocking": True,
-            "OutOfBandMessages": [],
-            "Sender": _sender(),
-            "PosGroupsIds": [1],
-            "TimeFrameGroupId": 1,
-        }),
+        # ── FromDate / ToDate ─────────────────────────────────────────────────
+        ("from_to_date_prev_curr",
+         _base(FromDate=f"{_iso(d_prev)}T00:00:00.000",
+               ToDate=f"{_iso(d0)}T23:59:59.000")),
 
-        # v5: minimal — only Sender, no groups or dates
-        ("v5_minimal", {
-            "CLRType": CLR,
-            "IsBlocking": False,
-            "OutOfBandMessages": [],
-            "Sender": _sender(),
-        }),
+        ("from_to_date_plain",
+         _base(FromDate=_iso(d_prev), ToDate=_iso(d0))),
 
-        # v6: PosGroupsIds=[] (all groups)
-        ("v6_pos_groups_empty", {
-            "CLRType": CLR,
-            "IsBlocking": False,
-            "OutOfBandMessages": [],
-            "Sender": _sender(),
-            "PosGroupsIds": [],
-            "From": frm,
-            "To":   to,
-        }),
+        # ── StartDate / EndDate ───────────────────────────────────────────────
+        ("start_end_date_prev_curr",
+         _base(StartDate=f"{_iso(d_prev)}T00:00:00.000",
+               EndDate=f"{_iso(d0)}T23:59:59.000")),
 
-        # v7: PosId=1 in Sender
-        ("v7_posid_1", {
-            "CLRType": CLR,
-            "IsBlocking": False,
-            "OutOfBandMessages": [],
-            "Sender": _sender(pos_id=1),
-            "PosGroupsIds": [1],
-            "From": frm,
-            "To":   to,
-        }),
+        ("start_end_date_plain",
+         _base(StartDate=_iso(d_prev), EndDate=_iso(d0))),
 
-        # v8: TimeFrameGroupId=0
-        ("v8_timeframe_0", {
-            "CLRType": CLR,
-            "IsBlocking": False,
-            "OutOfBandMessages": [],
-            "Sender": _sender(),
-            "PosGroupsIds": [1],
-            "TimeFrameGroupId": 0,
-            "From": frm,
-            "To":   to,
-        }),
+        # ── Original From/To but spanning overnight ───────────────────────────
+        ("from_to_overnight",
+         _base(From=f"{_iso(d_prev)}T00:00:00.000",
+               To=f"{_iso(d0)}T23:59:59.000")),
 
-        # v9: no date filter at all — return all available close-out records
-        ("v9_no_date_filter", {
-            "CLRType": CLR,
-            "IsBlocking": False,
-            "OutOfBandMessages": [],
-            "Sender": _sender(),
-            "PosGroupsIds": [1],
-            "TimeFrameGroupId": 1,
-        }),
+        # ── Previous overnight pair ───────────────────────────────────────────
+        ("from_to_prev2_prev",
+         _base(From=f"{_iso(d_prev2)}T00:00:00.000",
+               To=f"{_iso(d_prev)}T23:59:59.000")),
 
-        # v10: no date, no groups either — absolute minimum
-        ("v10_no_date_no_groups", {
-            "CLRType": CLR,
-            "IsBlocking": False,
-            "OutOfBandMessages": [],
-            "Sender": _sender(),
-        }),
+        # ── Single day with From/To (original style, kept for baseline) ───────
+        ("from_to_single_day",
+         _base(From=frm, To=to)),
 
-        # v11: wide date range — last 30 days — in case single-day filter excludes Z records
-        ("v11_last_30_days", {
-            "CLRType": CLR,
-            "IsBlocking": False,
-            "OutOfBandMessages": [],
-            "Sender": _sender(),
-            "PosGroupsIds": [1],
-            "TimeFrameGroupId": 1,
-            "From": f"{(date.fromisoformat(date_str) - __import__('datetime').timedelta(days=30)).isoformat()}T00:00:00.000",
-            "To":   f"{date_str}T23:59:59.000",
-        }),
+        # ── No dates at all ───────────────────────────────────────────────────
+        ("no_dates",
+         _base()),
+
+        # ── Last 30 days with From/To ─────────────────────────────────────────
+        ("from_to_30_days",
+         _base(From=f"{(d0 - _dt.timedelta(days=30)).isoformat()}T00:00:00.000",
+               To=f"{_iso(d0)}T23:59:59.000")),
+
+        # ── OpenDate/CloseDate with 30-day range ──────────────────────────────
+        ("open_close_30_days",
+         _base(OpenDate=f"{(d0 - _dt.timedelta(days=30)).isoformat()}T00:00:00.000",
+               CloseDate=f"{_iso(d0)}T23:59:59.000")),
     ]
 
     attempts = []
