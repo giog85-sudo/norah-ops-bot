@@ -3963,6 +3963,37 @@ def test_agora():
     return jsonify(result)
 
 
+@flask_app.route("/run-pipeline")
+def run_pipeline():
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    date_str = request.args.get("date", "2026-04-23")
+    try:
+        ds = _agora_mod.get_daily_sales(date_str, save_to_db=False)
+        if ds is None:
+            return jsonify({"error": f"No sales data for {date_str}"}), 404
+        return jsonify({
+            "date":              ds.date,
+            "total_sales":       ds.total_net,
+            "visa":              ds.visa,
+            "cash":              ds.cash,
+            "lunch_sales":       ds.lunch_net,
+            "lunch_pax":         ds.lunch_covers,
+            "lunch_avg_ticket":  ds.lunch_avg_ticket,
+            "dinner_sales":      ds.dinner_net,
+            "dinner_pax":        ds.dinner_covers,
+            "dinner_avg_ticket": ds.dinner_avg_ticket,
+            "total_covers":      ds.total_covers,
+            "avg_ticket":        ds.avg_ticket,
+            "raw_line_items":    ds.raw_items,
+            "waiters":           ds.waiters,
+            "families":          ds.families,
+            "top_products":      ds.top_products,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @flask_app.route("/test-payment-methods")
 def test_payment_methods():
     if not _api_check_auth():
