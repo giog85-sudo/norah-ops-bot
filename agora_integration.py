@@ -680,81 +680,84 @@ def get_pos_closeouts(query_date) -> dict:
         }
 
     import datetime as _dt
-    d0 = date.fromisoformat(date_str)           # the "closing" date  (e.g. 2026-04-23)
-    d_prev = d0 - _dt.timedelta(days=1)         # the "opening" date  (e.g. 2026-04-22)
-    d_prev2 = d0 - _dt.timedelta(days=2)        # one further back    (e.g. 2026-04-21)
+    d0 = date.fromisoformat(date_str)
+    d_prev = d0 - _dt.timedelta(days=1)
 
-    def _iso(d): return d.isoformat()
+    # MachineId captured from Angie's browser traffic
+    _CLOUD_MACHINE_ID = "c60c7180-c208-2554-1614-7bac32ddc4ed"
 
-    def _base(**extra):
+    def _sender_exact(pos_id=0):
+        """Sender block matching exactly what Angie's browser sends."""
+        return {
+            "ApplicationName": "AgoraWebAdmin",
+            "ApplicationVersion": "8.5.6",
+            "LanguageCode": "es",
+            "MachineId": _CLOUD_MACHINE_ID,
+            "MachineName": "Web Device",
+            "MachineType": 4,
+            "PosId": pos_id,
+            "PosName": "",
+            "UserId": 31,
+            "UserName": "Angie",
+        }
+
+    def _base(sender_fn=None, **extra):
         msg = {
             "CLRType": CLR,
             "IsBlocking": False,
             "OutOfBandMessages": [],
-            "Sender": _sender(),
-            "PosGroupsIds": [1],
-            "TimeFrameGroupId": 1,
+            "Sender": (sender_fn or _sender_exact)(),
+            # NOTE: correct field name is PosGroupIds (singular Group), not PosGroupsIds
+            "PosGroupIds": [1],
         }
         msg.update(extra)
         return msg
 
+    # Date strings in the format from the captured payload
+    from_close = f"{d_prev.isoformat()}T00:00:00.000"
+    to_close   = f"{d0.isoformat()}T00:00:00.000"
+
     variations = [
-        # ── OpenDate / CloseDate (overnight split: open=prev day, close=query day) ──
-        ("open_close_date_prev_curr",
-         _base(OpenDate=f"{_iso(d_prev)}T00:00:00.000",
-               CloseDate=f"{_iso(d0)}T23:59:59.000")),
+        # v1: EXACT payload from Angie's browser — this is the one that should work
+        ("v1_exact_browser_payload",
+         _base(
+             FromCloseDate=from_close,
+             ToCloseDate=to_close,
+         )),
 
-        ("open_close_date_prev2_prev",
-         _base(OpenDate=f"{_iso(d_prev2)}T00:00:00.000",
-               CloseDate=f"{_iso(d_prev)}T23:59:59.000")),
+        # v2: same but ToCloseDate = end of day
+        ("v2_to_end_of_day",
+         _base(
+             FromCloseDate=from_close,
+             ToCloseDate=f"{d0.isoformat()}T23:59:59.000",
+         )),
 
-        # same with plain date strings (no time component)
-        ("open_close_date_plain",
-         _base(OpenDate=_iso(d_prev), CloseDate=_iso(d0))),
+        # v3: widen range — last 7 days
+        ("v3_last_7_days",
+         _base(
+             FromCloseDate=f"{(d0 - _dt.timedelta(days=7)).isoformat()}T00:00:00.000",
+             ToCloseDate=f"{d0.isoformat()}T23:59:59.000",
+         )),
 
-        # ── FromDate / ToDate ─────────────────────────────────────────────────
-        ("from_to_date_prev_curr",
-         _base(FromDate=f"{_iso(d_prev)}T00:00:00.000",
-               ToDate=f"{_iso(d0)}T23:59:59.000")),
-
-        ("from_to_date_plain",
-         _base(FromDate=_iso(d_prev), ToDate=_iso(d0))),
-
-        # ── StartDate / EndDate ───────────────────────────────────────────────
-        ("start_end_date_prev_curr",
-         _base(StartDate=f"{_iso(d_prev)}T00:00:00.000",
-               EndDate=f"{_iso(d0)}T23:59:59.000")),
-
-        ("start_end_date_plain",
-         _base(StartDate=_iso(d_prev), EndDate=_iso(d0))),
-
-        # ── Original From/To but spanning overnight ───────────────────────────
-        ("from_to_overnight",
-         _base(From=f"{_iso(d_prev)}T00:00:00.000",
-               To=f"{_iso(d0)}T23:59:59.000")),
-
-        # ── Previous overnight pair ───────────────────────────────────────────
-        ("from_to_prev2_prev",
-         _base(From=f"{_iso(d_prev2)}T00:00:00.000",
-               To=f"{_iso(d_prev)}T23:59:59.000")),
-
-        # ── Single day with From/To (original style, kept for baseline) ───────
-        ("from_to_single_day",
-         _base(From=frm, To=to)),
-
-        # ── No dates at all ───────────────────────────────────────────────────
-        ("no_dates",
+        # v4: no date filter — return all records
+        ("v4_no_dates",
          _base()),
 
-        # ── Last 30 days with From/To ─────────────────────────────────────────
-        ("from_to_30_days",
-         _base(From=f"{(d0 - _dt.timedelta(days=30)).isoformat()}T00:00:00.000",
-               To=f"{_iso(d0)}T23:59:59.000")),
+        # v5: exact browser payload but with original MachineId (in case cloud vs local differs)
+        ("v5_original_machine_id",
+         {
+             "CLRType": CLR,
+             "IsBlocking": False,
+             "OutOfBandMessages": [],
+             "Sender": _sender(pos_id=0),
+             "PosGroupIds": [1],
+             "FromCloseDate": from_close,
+             "ToCloseDate": to_close,
+         }),
 
-        # ── OpenDate/CloseDate with 30-day range ──────────────────────────────
-        ("open_close_30_days",
-         _base(OpenDate=f"{(d0 - _dt.timedelta(days=30)).isoformat()}T00:00:00.000",
-               CloseDate=f"{_iso(d0)}T23:59:59.000")),
+        # v6: IsBlocking=True with exact structure
+        ("v6_blocking",
+         {**_base(FromCloseDate=from_close, ToCloseDate=to_close), "IsBlocking": True}),
     ]
 
     attempts = []
