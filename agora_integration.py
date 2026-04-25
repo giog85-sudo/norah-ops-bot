@@ -26,7 +26,11 @@ AGORA_URL      = os.getenv("AGORA_URL",      "").rstrip("/")
 AGORA_USER     = os.getenv("AGORA_USER",     "").strip()
 AGORA_PASSWORD = os.getenv("AGORA_PASSWORD", "").strip()
 DATABASE_URL   = os.getenv("DATABASE_URL",   "")
+
+# MachineId for local bus requests (GetSalesAnalyticsReportRequest etc.)
 AGORA_MACHINE_ID = "582a8d9b-9fba-eae6-75c4-a4658936424f"
+# MachineId captured from Angie's browser — required for GetPosCloseOutsRequest
+AGORA_CLOUD_MACHINE_ID = "c60c7180-c208-2554-1614-7bac32ddc4ed"
 
 # TimeFrame values confirmed from live data:
 #   Mediodía, Tarde  → lunch
@@ -72,6 +76,10 @@ class DailySales:
     # ── Top products ──────────────────────────────────────────────────────────
     # Each entry: {product, net, qty}  — top 10 by net
     top_products: list = field(default_factory=list)
+
+    # ── Payment method split (from Z report / GetPosCloseOutsRequest) ────────
+    visa: float = 0.0               # card/Tarjeta total
+    cash: float = 0.0               # cash/Efectivo total
 
     # ── Discounts ─────────────────────────────────────────────────────────────
     discounts_total: float = 0.0    # sum of all discount amounts
@@ -190,6 +198,89 @@ def _fetch_sales_rows(auth_token: str, session: dict, from_date: str, to_date: s
         return []
 
     return json.loads(text).get("Message", {}).get("Report", {}).get("Sales", [])
+
+
+# =============================================================================
+# Fetch Z report (POS close-outs) for payment method split
+# =============================================================================
+
+def _fetch_closeouts(auth_token: str, session: dict, date_str: str) -> Optional[dict]:
+    """
+    Fetch POS close-out records for date_str and return aggregated payment totals.
+
+    Queries a wide window (date_str → date_str+2 days) then filters by
+    BusinessDay to catch records closed after midnight.
+
+    Returns:
+        {"total_sales": float, "cash": float, "visa": float}
+        or None if no matching records found.
+    """
+    import datetime as _dt
+
+    d0   = date.fromisoformat(date_str)
+    d_to = d0 + _dt.timedelta(days=2)
+
+    CLR = "IGT.POS.Bus.Reporting.Messages.GetPosCloseOutsRequest"
+    msg = {
+        "CLRType": CLR,
+        "IsBlocking": False,
+        "OutOfBandMessages": [],
+        "Sender": {
+            "ApplicationName": "AgoraWebAdmin",
+            "ApplicationVersion": "8.5.6",
+            "LanguageCode": "es",
+            "MachineId": AGORA_CLOUD_MACHINE_ID,
+            "MachineName": "Web Device",
+            "MachineType": 4,
+            "PosId": 0,
+            "PosName": "",
+            "UserId": session["UserId"],
+            "UserName": session["UserName"],
+        },
+        "PosGroupIds": [1],
+        "FromCloseDate": f"{date_str}T00:00:00.000",
+        "ToCloseDate":   f"{d_to.isoformat()}T23:59:59.000",
+    }
+
+    status, _, text = _post(
+        "/bus/",
+        {"CLRType": CLR, "Message": msg},
+        cookie=f"auth-token={auth_token}",
+    )
+
+    if status != 200 or not text.strip():
+        return None
+
+    closeouts = json.loads(text).get("Message", {}).get("PosCloseOuts", [])
+
+    # Filter to records whose BusinessDay matches the requested date
+    matching = [
+        c for c in closeouts
+        if (c.get("BusinessDay") or "")[:10] == date_str
+    ]
+
+    if not matching:
+        return None
+
+    total_sales = 0.0
+    cash        = 0.0
+    visa        = 0.0
+
+    for c in matching:
+        total_sales += float(c.get("TotalSales", 0) or 0)
+        for p in c.get("Payments", []):
+            method = (p.get("MethodName") or "").strip().lower()
+            amount = float(p.get("Amount", 0) or 0)
+            if "efectivo" in method:
+                cash += amount
+            elif "tarjeta" in method:
+                visa += amount
+
+    return {
+        "total_sales": round(total_sales, 2),
+        "cash":        round(cash, 2),
+        "visa":        round(visa, 2),
+    }
 
 
 # =============================================================================
@@ -328,8 +419,8 @@ def _aggregate(query_date: str, rows: list[dict]) -> DailySales:
 
 # =============================================================================
 # Auto-save to full_daily_stats
-# Only writes Agora-sourced columns; never touches visa/cash/tips/walkins/noshows
-# which are entered manually by staff.
+# Writes all Agora-sourced columns including visa/cash from Z report.
+# Never touches tips/walkins/noshows which are entered manually by staff.
 # =============================================================================
 
 def _save_to_db(ds: DailySales) -> None:
@@ -346,10 +437,13 @@ def _save_to_db(ds: DailySales) -> None:
                 cur.execute(
                     """
                     INSERT INTO full_daily_stats
-                        (day, total_sales, lunch_sales, lunch_pax, dinner_sales, dinner_pax)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                        (day, total_sales, visa, cash,
+                         lunch_sales, lunch_pax, dinner_sales, dinner_pax)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (day) DO UPDATE SET
                         total_sales  = EXCLUDED.total_sales,
+                        visa         = EXCLUDED.visa,
+                        cash         = EXCLUDED.cash,
                         lunch_sales  = EXCLUDED.lunch_sales,
                         lunch_pax    = EXCLUDED.lunch_pax,
                         dinner_sales = EXCLUDED.dinner_sales,
@@ -358,6 +452,8 @@ def _save_to_db(ds: DailySales) -> None:
                     (
                         ds.date,
                         ds.total_net,
+                        ds.visa,
+                        ds.cash,
                         ds.lunch_net,
                         ds.lunch_covers,
                         ds.dinner_net,
@@ -365,7 +461,8 @@ def _save_to_db(ds: DailySales) -> None:
                     ),
                 )
             conn.commit()
-        print(f"[agora] saved {ds.date} to full_daily_stats (total={ds.total_net})")
+        print(f"[agora] saved {ds.date} to full_daily_stats "
+              f"(total={ds.total_net}, visa={ds.visa}, cash={ds.cash})")
     except Exception as e:
         print(f"[agora] DB save failed for {ds.date}: {e}")
 
@@ -400,6 +497,17 @@ def get_daily_sales(query_date, save_to_db: bool = True) -> Optional[DailySales]
         return None
 
     ds = _aggregate(date_str, rows)
+
+    # Enrich with payment method split from Z report
+    try:
+        closeout = _fetch_closeouts(auth_token, session, date_str)
+        if closeout:
+            ds.visa        = closeout["visa"]
+            ds.cash        = closeout["cash"]
+            # Z report TotalSales is authoritative — override the sales-analytics total
+            ds.total_net   = closeout["total_sales"]
+    except Exception as e:
+        print(f"[agora] closeout fetch failed for {date_str}: {e}")
 
     if save_to_db:
         _save_to_db(ds)

@@ -3167,13 +3167,41 @@ def build_owners_post_for_day(report_day: date) -> str:
             f"📝 Notes:\n{notes_block}"
         )
     else:
-        # No manual entry.
-        # TODO: re-enable Agora fallback once Z report (GetCashRegisterReportRequest)
-        # is accessible and we can pull real Comensales cover counts.
-        # agora = _try_agora(report_day)
-        # if agora: ...
-        if False:
-            pass
+        # No manual entry — fill from Agora POS (sales analytics + Z report)
+        # and CoverManager (walk-ins / no-shows).
+        agora = _try_agora(report_day)
+        if agora:
+            cm = _try_cm_walkins_noshows(report_day)
+            upsert_full_day(
+                report_day,
+                agora.total_net, agora.visa, agora.cash, 0.0,
+                agora.lunch_net, agora.lunch_covers, cm["lunch_walkins"], cm["lunch_noshows"],
+                agora.dinner_net, agora.dinner_covers, cm["dinner_walkins"], cm["dinner_noshows"],
+            )
+            upsert_daily(report_day, agora.total_net, agora.total_covers)
+            total_avg = agora.avg_ticket
+            visa_str = euro_comma(agora.visa) if agora.visa else "—"
+            cash_str = euro_comma(agora.cash) if agora.cash else "—"
+            msg = (
+                f"📌 Norah Daily Post\n"
+                f"Day: {fmt_day_ddmmyyyy(report_day)}\n"
+                f"Total Sales Day: {euro_comma(agora.total_net)} *(Agora POS)*\n"
+                f"Total Covers: {agora.total_covers}  |  Avg Ticket: {euro_comma(total_avg)}\n\n"
+                f"Visa: {visa_str}\n"
+                f"Cash: {cash_str}\n"
+                f"Tips: —\n\n"
+                f"Lunch: {euro_comma(agora.lunch_net)}\n"
+                f"Pax: {agora.lunch_covers}\n"
+                f"Avg Ticket: {euro_comma(agora.lunch_avg_ticket)}\n"
+                f"Walk in: {cm['lunch_walkins']}\n"
+                f"No show: {cm['lunch_noshows']}\n\n"
+                f"Dinner: {euro_comma(agora.dinner_net)}\n"
+                f"Pax: {agora.dinner_covers}\n"
+                f"Avg Ticket: {euro_comma(agora.dinner_avg_ticket)}\n"
+                f"Walk in: {cm['dinner_walkins']}\n"
+                f"No show: {cm['dinner_noshows']}\n\n"
+                f"📝 Notes:\n{notes_block}"
+            )
         else:
             msg = (
                 f"📌 Norah Daily Post\n"
