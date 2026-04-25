@@ -516,6 +516,145 @@ def get_daily_sales(query_date, save_to_db: bool = True) -> Optional[DailySales]
 
 
 # =============================================================================
+# Covers report probe
+# =============================================================================
+
+def get_covers_report(query_date) -> dict:
+    """
+    Try GetCoversReportRequest with the exact Sender parameters captured
+    from Angie's browser (PosGroupIds, cloud MachineId, UserId/UserName).
+    Tries multiple date parameter names since the correct one is unknown.
+    Returns all attempts with full raw responses.
+    """
+    if not AGORA_URL:
+        raise RuntimeError("AGORA_URL env var is not set")
+    if not AGORA_USER or not AGORA_PASSWORD:
+        raise RuntimeError("AGORA_USER and AGORA_PASSWORD env vars must be set")
+
+    if isinstance(query_date, date):
+        date_str = query_date.isoformat()
+    else:
+        date_str = str(query_date)
+
+    auth_token, session = _login()
+
+    CLR = "IGT.POS.Bus.Reporting.Messages.GetCoversReportRequest"
+    frm = f"{date_str}T00:00:00.000"
+    to  = f"{date_str}T23:59:59.000"
+
+    def _sender():
+        return {
+            "ApplicationName": "AgoraWebAdmin",
+            "ApplicationVersion": "8.5.6",
+            "LanguageCode": "es",
+            "MachineId": AGORA_CLOUD_MACHINE_ID,
+            "MachineName": "Web Device",
+            "MachineType": 4,
+            "PosId": 0,
+            "PosName": "",
+            "UserId": session["UserId"],
+            "UserName": session["UserName"],
+        }
+
+    def _base(**extra):
+        msg = {
+            "CLRType": CLR,
+            "IsBlocking": False,
+            "OutOfBandMessages": [],
+            "Sender": _sender(),
+            "PosGroupIds": [1],
+        }
+        msg.update(extra)
+        return msg
+
+    variations = [
+        # v1: From/To (same as working sales endpoint)
+        ("v1_from_to",
+         _base(From=frm, To=to)),
+
+        # v2: FromDate/ToDate
+        ("v2_from_to_date",
+         _base(FromDate=frm, ToDate=to)),
+
+        # v3: BusinessDay single field
+        ("v3_business_day",
+         _base(BusinessDay=frm)),
+
+        # v4: FromCloseDate/ToCloseDate (worked for Z report)
+        ("v4_from_close_to_close",
+         _base(FromCloseDate=frm, ToCloseDate=to)),
+
+        # v5: StartDate/EndDate
+        ("v5_start_end",
+         _base(StartDate=frm, EndDate=to)),
+
+        # v6: From/To with TimeFrameGroupId (mirror of sales analytics)
+        ("v6_from_to_timeframe",
+         _base(From=frm, To=to, TimeFrameGroupId=1)),
+
+        # v7: IsBlocking=True with From/To
+        ("v7_blocking_from_to",
+         {**_base(From=frm, To=to), "IsBlocking": True}),
+
+        # v8: no date params at all
+        ("v8_no_dates",
+         _base()),
+
+        # v9: original local MachineId instead of cloud
+        ("v9_local_machine_id",
+         {
+             "CLRType": CLR,
+             "IsBlocking": False,
+             "OutOfBandMessages": [],
+             "Sender": {
+                 **_sender(),
+                 "MachineId": AGORA_MACHINE_ID,
+             },
+             "PosGroupIds": [1],
+             "From": frm,
+             "To":   to,
+         }),
+
+        # v10: PosGroupsIds (plural, as in sales analytics) with From/To
+        ("v10_pos_groups_ids_plural",
+         {
+             "CLRType": CLR,
+             "IsBlocking": False,
+             "OutOfBandMessages": [],
+             "Sender": _sender(),
+             "PosGroupsIds": [1],
+             "From": frm,
+             "To":   to,
+         }),
+    ]
+
+    attempts = []
+    for label, body in variations:
+        status, _, text = _post(
+            "/bus/",
+            {"CLRType": CLR, "Message": body},
+            cookie=f"auth-token={auth_token}",
+        )
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = {"_raw": text[:5000]}
+
+        err = (parsed.get("Error")
+               or parsed.get("Message", {}).get("ErrorMessage")
+               or parsed.get("Message", {}).get("Error"))
+
+        attempts.append({
+            "label":       label,
+            "http_status": status,
+            "error":       str(err)[:300] if err else None,
+            "body":        parsed,
+        })
+
+    return {"date": date_str, "attempts": attempts}
+
+
+# =============================================================================
 # Payment methods — raw response probe
 # =============================================================================
 

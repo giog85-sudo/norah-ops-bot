@@ -4019,6 +4019,18 @@ def test_zreport():
         return jsonify({"error": str(e)}), 500
 
 
+@flask_app.route("/test-covers")
+def test_covers():
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    date_str = request.args.get("date", "2026-04-23")
+    try:
+        result = _agora_mod.get_covers_report(date_str)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @flask_app.route("/test-closure2")
 def test_closure2():
     if not _api_check_auth():
