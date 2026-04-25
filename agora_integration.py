@@ -655,6 +655,109 @@ def get_covers_report(query_date) -> dict:
 
 
 # =============================================================================
+# Remaining endpoints probe — exact browser params
+# =============================================================================
+
+def get_remaining_reports(query_date) -> dict:
+    """
+    Try 7 CLRTypes that might contain covers/tips/waiter/shift data,
+    using the exact Sender parameters from Angie's browser.
+    Returns all attempts with full raw responses.
+    """
+    if not AGORA_URL:
+        raise RuntimeError("AGORA_URL env var is not set")
+    if not AGORA_USER or not AGORA_PASSWORD:
+        raise RuntimeError("AGORA_USER and AGORA_PASSWORD env vars must be set")
+
+    if isinstance(query_date, date):
+        date_str = query_date.isoformat()
+    else:
+        date_str = str(query_date)
+
+    auth_token, session = _login()
+
+    frm = f"{date_str}T00:00:00.000"
+    to  = f"{date_str}T23:59:59.000"
+
+    def _sender():
+        return {
+            "ApplicationName": "AgoraWebAdmin",
+            "ApplicationVersion": "8.5.6",
+            "LanguageCode": "es",
+            "MachineId": AGORA_CLOUD_MACHINE_ID,
+            "MachineName": "Web Device",
+            "MachineType": 4,
+            "PosId": 0,
+            "PosName": "",
+            "UserId": session["UserId"],
+            "UserName": session["UserName"],
+        }
+
+    _BASE = "IGT.POS.Bus.Reporting.Messages."
+    targets = [
+        "GetTicketDetailReportRequest",
+        "GetShiftReportRequest",
+        "GetShiftSummaryReportRequest",
+        "GetTableReportRequest",
+        "GetInvitationsReportRequest",
+        "GetTipsReportRequest",
+        "GetWaiterSalesReportRequest",
+    ]
+
+    # For each CLRType try two date param styles: From/To and FromDate/ToDate
+    variations = []
+    for name in targets:
+        clr = _BASE + name
+        base = {
+            "CLRType": clr,
+            "IsBlocking": False,
+            "OutOfBandMessages": [],
+            "Sender": _sender(),
+            "PosGroupIds": [1],
+        }
+        variations.append((f"{name}__from_to",
+                           {**base, "From": frm, "To": to}))
+        variations.append((f"{name}__from_to_date",
+                           {**base, "FromDate": frm, "ToDate": to}))
+
+    attempts = []
+    for label, body in variations:
+        clr = body["CLRType"]
+        status, _, text = _post(
+            "/bus/",
+            {"CLRType": clr, "Message": body},
+            cookie=f"auth-token={auth_token}",
+        )
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = {"_raw": text[:5000]}
+
+        err = (parsed.get("Error")
+               or parsed.get("Message", {}).get("ErrorMessage")
+               or parsed.get("Message", {}).get("Error"))
+
+        # Summarise what non-empty keys came back in Message
+        msg = parsed.get("Message", {})
+        data_keys = {
+            k: (len(v) if isinstance(v, list) else v)
+            for k, v in msg.items()
+            if k != "Sender" and v not in (None, [], {}, "", 0, 0.0, False)
+        }
+
+        attempts.append({
+            "label":       label,
+            "http_status": status,
+            "success":     status == 200 and not err,
+            "error":       str(err)[:200] if err else None,
+            "data_keys":   data_keys,
+            "body":        parsed,
+        })
+
+    return {"date": date_str, "attempts": attempts}
+
+
+# =============================================================================
 # Payment methods — raw response probe
 # =============================================================================
 
