@@ -3989,6 +3989,7 @@ def run_pipeline():
             "waiters":           ds.waiters,
             "families":          ds.families,
             "top_products":      ds.top_products,
+            "line_items":        ds.line_items,
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
