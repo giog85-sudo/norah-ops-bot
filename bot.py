@@ -4014,6 +4014,30 @@ def test_payment_methods():
         return jsonify({"error": str(e)}), 500
 
 
+@flask_app.route("/test-salecenter")
+def test_salecenter():
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    date_str = request.args.get("date", "2026-04-23")
+    try:
+        result = _agora_mod.get_salecenter_sales_file(date_str)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@flask_app.route("/test-tips-byuser")
+def test_tips_byuser():
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    date_str = request.args.get("date", "2026-04-23")
+    try:
+        result = _agora_mod.get_tips_by_user(date_str)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @flask_app.route("/test-zreport")
 def test_zreport():
     if not _api_check_auth():

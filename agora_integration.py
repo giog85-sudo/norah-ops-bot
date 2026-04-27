@@ -758,6 +758,208 @@ def get_remaining_reports(query_date) -> dict:
 
 
 # =============================================================================
+# SaleCenter sales file — Comensales probe
+# =============================================================================
+
+def get_salecenter_sales_file(query_date) -> dict:
+    """
+    Try GetSaleCenterSalesFileReportRequest — potential source of Comensales
+    (guest/cover) data.  Uses exact Sender params from Angie's browser
+    (MachineId: 9067403c-a238-5bc2-d463-be8d23370e65, UserId:31).
+    Tries several date-parameter styles to find the working combination.
+    """
+    if not AGORA_URL:
+        raise RuntimeError("AGORA_URL env var is not set")
+    if not AGORA_USER or not AGORA_PASSWORD:
+        raise RuntimeError("AGORA_USER and AGORA_PASSWORD env vars must be set")
+
+    if isinstance(query_date, date):
+        date_str = query_date.isoformat()
+    else:
+        date_str = str(query_date)
+
+    auth_token, session = _login()
+
+    CLR = "IGT.POS.Bus.Reporting.Messages.GetSaleCenterSalesFileReportRequest"
+    SALECENTER_MACHINE_ID = "9067403c-a238-5bc2-d463-be8d23370e65"
+    frm = f"{date_str}T00:00:00.000"
+    to  = f"{date_str}T23:59:59.000"
+
+    def _sender():
+        return {
+            "ApplicationName": "AgoraWebAdmin",
+            "ApplicationVersion": "8.5.6",
+            "LanguageCode": "es",
+            "MachineId": SALECENTER_MACHINE_ID,
+            "MachineName": "Web Device",
+            "MachineType": 4,
+            "PosId": 0,
+            "PosName": "",
+            "UserId": 31,
+            "UserName": "Angie",
+        }
+
+    def _base(**extra):
+        msg = {
+            "CLRType": CLR,
+            "IsBlocking": True,
+            "OutOfBandMessages": [],
+            "Sender": _sender(),
+            "PosGroupsIds": [1],
+        }
+        msg.update(extra)
+        return msg
+
+    variations = [
+        ("v1_from_to",             _base(From=frm, To=to)),
+        ("v2_from_to_date",        _base(FromDate=frm, ToDate=to)),
+        ("v3_from_close_to_close", _base(FromCloseDate=frm, ToCloseDate=to)),
+        ("v4_start_end",           _base(StartDate=frm, EndDate=to)),
+        ("v5_business_day",        _base(BusinessDay=date_str)),
+        ("v6_no_dates",            _base()),
+        ("v7_pos_group_ids_sing",  {**_base(From=frm, To=to), "PosGroupsIds": None, "PosGroupIds": [1]}),
+        ("v8_timeframe",           _base(From=frm, To=to, TimeFrameGroupId=1)),
+        ("v9_is_blocking_false",   {**_base(From=frm, To=to), "IsBlocking": False}),
+        ("v10_local_machine",      {**_base(From=frm, To=to), "Sender": {**_sender(), "MachineId": AGORA_MACHINE_ID}}),
+    ]
+
+    attempts = []
+    for label, body in variations:
+        status, _, text = _post(
+            "/bus/",
+            {"CLRType": CLR, "Message": body},
+            cookie=f"auth-token={auth_token}",
+        )
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = {"_raw": text[:5000]}
+
+        err = (parsed.get("Error")
+               or parsed.get("Message", {}).get("ErrorMessage")
+               or parsed.get("Message", {}).get("Error"))
+
+        msg_data = parsed.get("Message", {})
+        data_keys = {
+            k: (len(v) if isinstance(v, list) else v)
+            for k, v in msg_data.items()
+            if k != "Sender" and v not in (None, [], {}, "", 0, 0.0, False)
+        }
+
+        attempts.append({
+            "label":       label,
+            "http_status": status,
+            "success":     status == 200 and not err,
+            "error":       str(err)[:300] if err else None,
+            "data_keys":   data_keys,
+            "body":        parsed,
+        })
+
+    return {"date": date_str, "clr_type": CLR, "attempts": attempts}
+
+
+# =============================================================================
+# Tips by user — propinas probe
+# =============================================================================
+
+def get_tips_by_user(query_date) -> dict:
+    """
+    Try GetTipsByUserReportRequest — potential source of tips/propinas data
+    split by waiter.  Uses exact Sender params from Angie's browser
+    (MachineId: 9067403c-a238-5bc2-d463-be8d23370e65, UserId:31).
+    Tries several date-parameter styles to find the working combination.
+    """
+    if not AGORA_URL:
+        raise RuntimeError("AGORA_URL env var is not set")
+    if not AGORA_USER or not AGORA_PASSWORD:
+        raise RuntimeError("AGORA_USER and AGORA_PASSWORD env vars must be set")
+
+    if isinstance(query_date, date):
+        date_str = query_date.isoformat()
+    else:
+        date_str = str(query_date)
+
+    auth_token, session = _login()
+
+    CLR = "IGT.POS.Bus.Reporting.Messages.GetTipsByUserReportRequest"
+    SALECENTER_MACHINE_ID = "9067403c-a238-5bc2-d463-be8d23370e65"
+    frm = f"{date_str}T00:00:00.000"
+    to  = f"{date_str}T23:59:59.000"
+
+    def _sender():
+        return {
+            "ApplicationName": "AgoraWebAdmin",
+            "ApplicationVersion": "8.5.6",
+            "LanguageCode": "es",
+            "MachineId": SALECENTER_MACHINE_ID,
+            "MachineName": "Web Device",
+            "MachineType": 4,
+            "PosId": 0,
+            "PosName": "",
+            "UserId": 31,
+            "UserName": "Angie",
+        }
+
+    def _base(**extra):
+        msg = {
+            "CLRType": CLR,
+            "IsBlocking": True,
+            "OutOfBandMessages": [],
+            "Sender": _sender(),
+            "PosGroupsIds": [1],
+        }
+        msg.update(extra)
+        return msg
+
+    variations = [
+        ("v1_from_to",             _base(From=frm, To=to)),
+        ("v2_from_to_date",        _base(FromDate=frm, ToDate=to)),
+        ("v3_from_close_to_close", _base(FromCloseDate=frm, ToCloseDate=to)),
+        ("v4_start_end",           _base(StartDate=frm, EndDate=to)),
+        ("v5_business_day",        _base(BusinessDay=date_str)),
+        ("v6_no_dates",            _base()),
+        ("v7_pos_group_ids_sing",  {**_base(From=frm, To=to), "PosGroupsIds": None, "PosGroupIds": [1]}),
+        ("v8_timeframe",           _base(From=frm, To=to, TimeFrameGroupId=1)),
+        ("v9_is_blocking_false",   {**_base(From=frm, To=to), "IsBlocking": False}),
+        ("v10_local_machine",      {**_base(From=frm, To=to), "Sender": {**_sender(), "MachineId": AGORA_MACHINE_ID}}),
+    ]
+
+    attempts = []
+    for label, body in variations:
+        status, _, text = _post(
+            "/bus/",
+            {"CLRType": CLR, "Message": body},
+            cookie=f"auth-token={auth_token}",
+        )
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = {"_raw": text[:5000]}
+
+        err = (parsed.get("Error")
+               or parsed.get("Message", {}).get("ErrorMessage")
+               or parsed.get("Message", {}).get("Error"))
+
+        msg_data = parsed.get("Message", {})
+        data_keys = {
+            k: (len(v) if isinstance(v, list) else v)
+            for k, v in msg_data.items()
+            if k != "Sender" and v not in (None, [], {}, "", 0, 0.0, False)
+        }
+
+        attempts.append({
+            "label":       label,
+            "http_status": status,
+            "success":     status == 200 and not err,
+            "error":       str(err)[:300] if err else None,
+            "data_keys":   data_keys,
+            "body":        parsed,
+        })
+
+    return {"date": date_str, "clr_type": CLR, "attempts": attempts}
+
+
+# =============================================================================
 # Payment methods — raw response probe
 # =============================================================================
 
