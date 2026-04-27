@@ -293,11 +293,14 @@ def _fetch_closeouts(auth_token: str, session: dict, date_str: str) -> Optional[
 # Fetch real cover count from GetSaleCenterSalesFileReportRequest
 # =============================================================================
 
-def _fetch_salecenter(auth_token: str, session: dict, date_str: str) -> int:
+def _fetch_salecenter(auth_token: str, session: dict, date_str: str) -> list:
     """
-    Fetch TableCompanions (real guest count) from the SaleCenter sales file.
-    Returns the sum of TableCompanions across all sale centers (e.g. Barra + Sala).
-    Returns 0 if the request fails or returns no data.
+    Fetch TableCompanions (real guest count) per SaleCenter from the SaleCenter
+    sales file report.
+
+    Returns a list of {"name": str, "companions": int} dicts — one per sale center
+    (e.g. [{"name": "Sala", "companions": 75}, {"name": "Barra", "companions": 2}]).
+    Returns [] if the request fails or no data is available.
     """
     CLR = "IGT.POS.Bus.Reporting.Messages.GetSaleCenterSalesFileReportRequest"
     msg = {
@@ -328,10 +331,13 @@ def _fetch_salecenter(auth_token: str, session: dict, date_str: str) -> int:
     )
 
     if status != 200 or not text.strip():
-        return 0
+        return []
 
     sales = json.loads(text).get("Message", {}).get("Report", {}).get("Sales", [])
-    return sum(int(s.get("TableCompanions") or 0) for s in sales)
+    return [
+        {"name": s.get("SaleCenterName", ""), "companions": int(s.get("TableCompanions") or 0)}
+        for s in sales
+    ]
 
 
 # =============================================================================
@@ -608,24 +614,49 @@ def get_daily_sales(query_date, save_to_db: bool = True) -> Optional[DailySales]
     except Exception as e:
         print(f"[agora] closeout fetch failed for {date_str}: {e}")
 
-    # Enrich with real cover count from SaleCenter (TableCompanions = actual guests)
+    # Enrich with real cover count from SaleCenter (TableCompanions = actual guests).
+    # Lunch/dinner split: for each SaleCenter, use the revenue ratio of that SaleCenter's
+    # lunch vs dinner sales from the raw line items.  Revenue weighting is more accurate
+    # than ticket-count weighting because lunch menus are cheaper (fewer euros per guest)
+    # than à-la-carte dinner, so a pure ticket ratio over-estimates lunch pax.
     try:
-        real_covers = _fetch_salecenter(auth_token, session, date_str)
-        if real_covers > 0:
-            ticket_total = ds.lunch_covers + ds.dinner_covers
-            if ticket_total > 0:
-                # Proportionally split real covers across lunch/dinner using ticket ratio
-                real_lunch  = round(real_covers * ds.lunch_covers / ticket_total)
-                real_dinner = real_covers - real_lunch
-            else:
-                real_lunch  = real_covers
-                real_dinner = 0
-            ds.lunch_covers       = real_lunch
-            ds.dinner_covers      = real_dinner
-            ds.total_covers       = real_covers
-            ds.avg_ticket         = round(ds.total_net / real_covers, 2) if real_covers else 0.0
-            ds.lunch_avg_ticket   = round(ds.lunch_net / real_lunch,  2) if real_lunch  else 0.0
-            ds.dinner_avg_ticket  = round(ds.dinner_net / real_dinner, 2) if real_dinner else 0.0
+        sc_records = _fetch_salecenter(auth_token, session, date_str)
+        if sc_records:
+            # Build per-SaleCenter revenue totals by service from raw line items
+            from collections import defaultdict as _dd
+            sc_lunch_rev:  dict = _dd(float)
+            sc_dinner_rev: dict = _dd(float)
+            for r in ds.line_items:
+                tf  = (r.get("TimeFrame") or "").strip().lower()
+                sc  = (r.get("SaleCenter") or "").strip()
+                net = float(r.get("Net", 0) or 0)
+                if tf in _LUNCH_FRAMES:
+                    sc_lunch_rev[sc]  += net
+                elif tf in _DINNER_FRAMES:
+                    sc_dinner_rev[sc] += net
+
+            real_lunch  = 0
+            real_dinner = 0
+            for rec in sc_records:
+                sc_name    = rec["name"]
+                companions = rec["companions"]
+                l_rev = sc_lunch_rev[sc_name]
+                d_rev = sc_dinner_rev[sc_name]
+                total_rev = l_rev + d_rev
+                if total_rev > 0:
+                    sc_lunch_pax = round(companions * l_rev / total_rev)
+                else:
+                    sc_lunch_pax = companions   # fallback: all to lunch
+                real_lunch  += sc_lunch_pax
+                real_dinner += companions - sc_lunch_pax
+
+            real_covers = real_lunch + real_dinner
+            ds.lunch_covers      = real_lunch
+            ds.dinner_covers     = real_dinner
+            ds.total_covers      = real_covers
+            ds.avg_ticket        = round(ds.total_net / real_covers, 2) if real_covers else 0.0
+            ds.lunch_avg_ticket  = round(ds.lunch_net / real_lunch,  2) if real_lunch  else 0.0
+            ds.dinner_avg_ticket = round(ds.dinner_net / real_dinner, 2) if real_dinner else 0.0
     except Exception as e:
         print(f"[agora] salecenter fetch failed for {date_str}: {e}")
 
