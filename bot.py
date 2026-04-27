@@ -3230,6 +3230,9 @@ async def send_daily_post_to_owners(context: ContextTypes.DEFAULT_TYPE):
     if not chats:
         return
     report_day = previous_business_day(now_local())
+    if report_day.weekday() == 6:   # Sunday — Norah is closed, skip silently
+        print(f"[daily_post] skipping Sunday {report_day.isoformat()}")
+        return
     msg = build_owners_post_for_day(report_day)
     for chat_id in chats:
         try:
@@ -3434,6 +3437,10 @@ async def postday(update: Update, context: ContextTypes.DEFAULT_TYPE):
         d = parse_any_date(raw)
     except:
         await update.message.reply_text("Usage: /postday YYYY-MM-DD  (or DD/MM/YYYY)")
+        return
+
+    if d.weekday() == 6:
+        await update.message.reply_text(f"⚠️ {d.isoformat()} is a Sunday — Norah is closed, no post to send.")
         return
 
     chats = owners_silent_chat_ids()
