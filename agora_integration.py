@@ -31,6 +31,9 @@ DATABASE_URL   = os.getenv("DATABASE_URL",   "")
 AGORA_MACHINE_ID = "582a8d9b-9fba-eae6-75c4-a4658936424f"
 # MachineId captured from Angie's browser — required for GetPosCloseOutsRequest
 AGORA_CLOUD_MACHINE_ID = "c60c7180-c208-2554-1614-7bac32ddc4ed"
+# MachineId captured from Angie's browser — required for GetSaleCenterSalesFileReportRequest
+# and GetTipsByUserReportRequest
+AGORA_SALECENTER_MACHINE_ID = "9067403c-a238-5bc2-d463-be8d23370e65"
 
 # TimeFrame values confirmed from live data:
 #   Mediodía, Tarde  → lunch
@@ -80,6 +83,9 @@ class DailySales:
     # ── Payment method split (from Z report / GetPosCloseOutsRequest) ────────
     visa: float = 0.0               # card/Tarjeta total
     cash: float = 0.0               # cash/Efectivo total
+
+    # ── Tips (from GetTipsByUserReportRequest) ────────────────────────────────
+    tips: float = 0.0               # total tips across all waiters
 
     # ── Discounts ─────────────────────────────────────────────────────────────
     discounts_total: float = 0.0    # sum of all discount amounts
@@ -284,6 +290,95 @@ def _fetch_closeouts(auth_token: str, session: dict, date_str: str) -> Optional[
 
 
 # =============================================================================
+# Fetch real cover count from GetSaleCenterSalesFileReportRequest
+# =============================================================================
+
+def _fetch_salecenter(auth_token: str, session: dict, date_str: str) -> int:
+    """
+    Fetch TableCompanions (real guest count) from the SaleCenter sales file.
+    Returns the sum of TableCompanions across all sale centers (e.g. Barra + Sala).
+    Returns 0 if the request fails or returns no data.
+    """
+    CLR = "IGT.POS.Bus.Reporting.Messages.GetSaleCenterSalesFileReportRequest"
+    msg = {
+        "CLRType": CLR,
+        "IsBlocking": True,
+        "OutOfBandMessages": [],
+        "Sender": {
+            "ApplicationName": "AgoraWebAdmin",
+            "ApplicationVersion": "8.5.6",
+            "LanguageCode": "es",
+            "MachineId": AGORA_SALECENTER_MACHINE_ID,
+            "MachineName": "Web Device",
+            "MachineType": 4,
+            "PosId": 0,
+            "PosName": "",
+            "UserId": session["UserId"],
+            "UserName": session["UserName"],
+        },
+        "PosGroupsIds": [1],
+        "From": f"{date_str}T00:00:00.000",
+        "To":   f"{date_str}T23:59:59.000",
+    }
+
+    status, _, text = _post(
+        "/bus/",
+        {"CLRType": CLR, "Message": msg},
+        cookie=f"auth-token={auth_token}",
+    )
+
+    if status != 200 or not text.strip():
+        return 0
+
+    sales = json.loads(text).get("Message", {}).get("Report", {}).get("Sales", [])
+    return sum(int(s.get("TableCompanions") or 0) for s in sales)
+
+
+# =============================================================================
+# Fetch total tips from GetTipsByUserReportRequest
+# =============================================================================
+
+def _fetch_tips_by_user(auth_token: str, session: dict, date_str: str) -> float:
+    """
+    Fetch total tips by summing TipAmount across all waiter records.
+    Returns 0.0 if the request fails or returns no data.
+    """
+    CLR = "IGT.POS.Bus.Reporting.Messages.GetTipsByUserReportRequest"
+    msg = {
+        "CLRType": CLR,
+        "IsBlocking": True,
+        "OutOfBandMessages": [],
+        "Sender": {
+            "ApplicationName": "AgoraWebAdmin",
+            "ApplicationVersion": "8.5.6",
+            "LanguageCode": "es",
+            "MachineId": AGORA_SALECENTER_MACHINE_ID,
+            "MachineName": "Web Device",
+            "MachineType": 4,
+            "PosId": 0,
+            "PosName": "",
+            "UserId": session["UserId"],
+            "UserName": session["UserName"],
+        },
+        "PosGroupsIds": [1],
+        "From": f"{date_str}T00:00:00.000",
+        "To":   f"{date_str}T23:59:59.000",
+    }
+
+    status, _, text = _post(
+        "/bus/",
+        {"CLRType": CLR, "Message": msg},
+        cookie=f"auth-token={auth_token}",
+    )
+
+    if status != 200 or not text.strip():
+        return 0.0
+
+    tips = json.loads(text).get("Message", {}).get("Report", {}).get("Tips", [])
+    return round(sum(float(t.get("TipAmount") or 0) for t in tips), 2)
+
+
+# =============================================================================
 # Aggregate raw rows → DailySales
 # =============================================================================
 
@@ -419,8 +514,9 @@ def _aggregate(query_date: str, rows: list[dict]) -> DailySales:
 
 # =============================================================================
 # Auto-save to full_daily_stats
-# Writes all Agora-sourced columns including visa/cash from Z report.
-# Never touches tips/walkins/noshows which are entered manually by staff.
+# Writes all Agora-sourced columns: sales, visa/cash (Z report),
+# tips (GetTipsByUserReportRequest), and real covers (SaleCenter).
+# Never touches walkins/noshows which come from CoverManager.
 # =============================================================================
 
 def _save_to_db(ds: DailySales) -> None:
@@ -437,13 +533,14 @@ def _save_to_db(ds: DailySales) -> None:
                 cur.execute(
                     """
                     INSERT INTO full_daily_stats
-                        (day, total_sales, visa, cash,
+                        (day, total_sales, visa, cash, tips,
                          lunch_sales, lunch_pax, dinner_sales, dinner_pax)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (day) DO UPDATE SET
                         total_sales  = EXCLUDED.total_sales,
                         visa         = EXCLUDED.visa,
                         cash         = EXCLUDED.cash,
+                        tips         = EXCLUDED.tips,
                         lunch_sales  = EXCLUDED.lunch_sales,
                         lunch_pax    = EXCLUDED.lunch_pax,
                         dinner_sales = EXCLUDED.dinner_sales,
@@ -454,6 +551,7 @@ def _save_to_db(ds: DailySales) -> None:
                         ds.total_net,
                         ds.visa,
                         ds.cash,
+                        ds.tips,
                         ds.lunch_net,
                         ds.lunch_covers,
                         ds.dinner_net,
@@ -462,7 +560,8 @@ def _save_to_db(ds: DailySales) -> None:
                 )
             conn.commit()
         print(f"[agora] saved {ds.date} to full_daily_stats "
-              f"(total={ds.total_net}, visa={ds.visa}, cash={ds.cash})")
+              f"(total={ds.total_net}, visa={ds.visa}, cash={ds.cash}, tips={ds.tips}, "
+              f"covers={ds.total_covers})")
     except Exception as e:
         print(f"[agora] DB save failed for {ds.date}: {e}")
 
@@ -508,6 +607,33 @@ def get_daily_sales(query_date, save_to_db: bool = True) -> Optional[DailySales]
             ds.total_net   = closeout["total_sales"]
     except Exception as e:
         print(f"[agora] closeout fetch failed for {date_str}: {e}")
+
+    # Enrich with real cover count from SaleCenter (TableCompanions = actual guests)
+    try:
+        real_covers = _fetch_salecenter(auth_token, session, date_str)
+        if real_covers > 0:
+            ticket_total = ds.lunch_covers + ds.dinner_covers
+            if ticket_total > 0:
+                # Proportionally split real covers across lunch/dinner using ticket ratio
+                real_lunch  = round(real_covers * ds.lunch_covers / ticket_total)
+                real_dinner = real_covers - real_lunch
+            else:
+                real_lunch  = real_covers
+                real_dinner = 0
+            ds.lunch_covers       = real_lunch
+            ds.dinner_covers      = real_dinner
+            ds.total_covers       = real_covers
+            ds.avg_ticket         = round(ds.total_net / real_covers, 2) if real_covers else 0.0
+            ds.lunch_avg_ticket   = round(ds.lunch_net / real_lunch,  2) if real_lunch  else 0.0
+            ds.dinner_avg_ticket  = round(ds.dinner_net / real_dinner, 2) if real_dinner else 0.0
+    except Exception as e:
+        print(f"[agora] salecenter fetch failed for {date_str}: {e}")
+
+    # Enrich with tips from GetTipsByUserReportRequest
+    try:
+        ds.tips = _fetch_tips_by_user(auth_token, session, date_str)
+    except Exception as e:
+        print(f"[agora] tips fetch failed for {date_str}: {e}")
 
     if save_to_db:
         _save_to_db(ds)

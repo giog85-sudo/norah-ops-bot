@@ -3174,22 +3174,22 @@ def build_owners_post_for_day(report_day: date) -> str:
             cm = _try_cm_walkins_noshows(report_day)
             upsert_full_day(
                 report_day,
-                agora.total_net, agora.visa, agora.cash, 0.0,
+                agora.total_net, agora.visa, agora.cash, agora.tips,
                 agora.lunch_net, agora.lunch_covers, cm["lunch_walkins"], cm["lunch_noshows"],
                 agora.dinner_net, agora.dinner_covers, cm["dinner_walkins"], cm["dinner_noshows"],
             )
             upsert_daily(report_day, agora.total_net, agora.total_covers)
-            total_avg = agora.avg_ticket
             visa_str = euro_comma(agora.visa) if agora.visa else "—"
             cash_str = euro_comma(agora.cash) if agora.cash else "—"
+            tips_str = euro_comma(agora.tips) if agora.tips else "—"
             msg = (
                 f"📌 Norah Daily Post\n"
                 f"Day: {fmt_day_ddmmyyyy(report_day)}\n"
                 f"Total Sales Day: {euro_comma(agora.total_net)} *(Agora POS)*\n"
-                f"Total Covers: {agora.total_covers}  |  Avg Ticket: {euro_comma(total_avg)}\n\n"
+                f"Total Covers: {agora.total_covers}  |  Avg Ticket: {euro_comma(agora.avg_ticket)}\n\n"
                 f"Visa: {visa_str}\n"
                 f"Cash: {cash_str}\n"
-                f"Tips: —\n\n"
+                f"Tips: {tips_str}\n\n"
                 f"Lunch: {euro_comma(agora.lunch_net)}\n"
                 f"Pax: {agora.lunch_covers}\n"
                 f"Avg Ticket: {euro_comma(agora.lunch_avg_ticket)}\n"
