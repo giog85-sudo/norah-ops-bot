@@ -3958,26 +3958,40 @@ def run_pipeline():
         return jsonify({"error": "Unauthorized"}), 401
     date_str = request.args.get("date", "2026-04-23")
     try:
+        from datetime import date as _date
+        day_ = _date.fromisoformat(date_str)
+
         ds = _agora_mod.get_daily_sales(date_str, save_to_db=False)
         if ds is None:
             return jsonify({"error": f"No sales data for {date_str}"}), 404
+
+        cm = _try_cm_covers(day_)
+
         return jsonify({
             "date":              ds.date,
+            # ── Revenue (Agora) ───────────────────────────────────────────────
             "total_sales":       ds.total_net,
             "visa":              ds.visa,
             "cash":              ds.cash,
+            "tips":              ds.tips,
             "lunch_sales":       ds.lunch_net,
-            "lunch_pax":         ds.lunch_covers,
             "lunch_avg_ticket":  ds.lunch_avg_ticket,
             "dinner_sales":      ds.dinner_net,
-            "dinner_pax":        ds.dinner_covers,
             "dinner_avg_ticket": ds.dinner_avg_ticket,
-            "total_covers":      ds.total_covers,
             "avg_ticket":        ds.avg_ticket,
-            "raw_line_items":    ds.raw_items,
+            # ── Covers (CoverManager) ─────────────────────────────────────────
+            "total_covers":      cm["total_covers"],
+            "lunch_pax":         cm["lunch_pax"],
+            "dinner_pax":        cm["dinner_pax"],
+            "lunch_walkins":     cm["lunch_walkins"],
+            "dinner_walkins":    cm["dinner_walkins"],
+            "lunch_noshows":     cm["lunch_noshows"],
+            "dinner_noshows":    cm["dinner_noshows"],
+            # ── Breakdowns ────────────────────────────────────────────────────
             "waiters":           ds.waiters,
             "families":          ds.families,
             "top_products":      ds.top_products,
+            "raw_line_items":    ds.raw_items,
             "line_items":        ds.line_items,
         })
     except Exception as e:

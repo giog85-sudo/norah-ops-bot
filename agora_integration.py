@@ -345,8 +345,16 @@ def _fetch_salecenter(auth_token: str, session: dict, date_str: str) -> int:
 def _fetch_tips_by_user(auth_token: str, session: dict, date_str: str) -> float:
     """
     Fetch total tips by summing TipAmount across all waiter records.
+
+    Queries a wider window (day-1 → day+1) and filters by BusinessDay,
+    because tips can be entered after midnight (same as Z report pattern).
     Returns 0.0 if the request fails or returns no data.
     """
+    import datetime as _dt
+    d0      = date.fromisoformat(date_str)
+    d_from  = (d0 - _dt.timedelta(days=1)).isoformat()
+    d_to    = (d0 + _dt.timedelta(days=1)).isoformat()
+
     CLR = "IGT.POS.Bus.Reporting.Messages.GetTipsByUserReportRequest"
     msg = {
         "CLRType": CLR,
@@ -365,8 +373,8 @@ def _fetch_tips_by_user(auth_token: str, session: dict, date_str: str) -> float:
             "UserName": session["UserName"],
         },
         "PosGroupsIds": [1],
-        "From": f"{date_str}T00:00:00.000",
-        "To":   f"{date_str}T23:59:59.000",
+        "From": f"{d_from}T00:00:00.000",
+        "To":   f"{d_to}T23:59:59.000",
     }
 
     status, _, text = _post(
@@ -376,10 +384,21 @@ def _fetch_tips_by_user(auth_token: str, session: dict, date_str: str) -> float:
     )
 
     if status != 200 or not text.strip():
+        print(f"[agora] tips HTTP {status} for {date_str} — raw: {text[:300]}")
         return 0.0
 
-    tips = json.loads(text).get("Message", {}).get("Report", {}).get("Tips", [])
-    return round(sum(float(t.get("TipAmount") or 0) for t in tips), 2)
+    all_tips = json.loads(text).get("Message", {}).get("Report", {}).get("Tips", [])
+    print(f"[agora] tips raw count={len(all_tips)} in window {d_from}→{d_to}")
+
+    # Filter to records whose BusinessDay matches the requested date
+    matching = [
+        t for t in all_tips
+        if (t.get("BusinessDay") or "")[:10] == date_str
+    ]
+    print(f"[agora] tips matching BusinessDay={date_str}: {len(matching)} records, "
+          f"amounts={[t.get('TipAmount') for t in matching]}")
+
+    return round(sum(float(t.get("TipAmount") or 0) for t in matching), 2)
 
 
 # =============================================================================
