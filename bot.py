@@ -145,6 +145,7 @@ def _try_cm_covers(day_: date) -> dict:
             status = int(r.get("status", 0))
             shift  = (r.get("meal_shift") or "").strip().lower()
             prov   = (r.get("provenance") or "").strip().lower()
+            pax    = int(r.get("for", 0) or 0)
             is_lunch  = any(w in shift for w in _LUNCH)
             is_dinner = any(w in shift for w in _DINNER)
 
