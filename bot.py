@@ -3199,28 +3199,65 @@ def build_owners_post_for_day(report_day: date) -> str:
             f"📝 Notes:\n{notes_block}"
         )
     else:
-        # No manual entry — show dashes.
-        # Agora auto-fill is disabled; manager must submit the full report.
-        msg = (
-            f"📌 Norah Daily Post\n"
-            f"Day: {fmt_day_ddmmyyyy(report_day)}\n"
-            f"Total Sales Day: —\n"
-            f"Total Covers: —  |  Avg Ticket: —\n\n"
-            f"Visa: —\n"
-            f"Cash: —\n"
-            f"Tips: —\n\n"
-            f"Lunch: —\n"
-            f"Pax: —\n"
-            f"Avg Ticket: —\n"
-            f"Walk in: —\n"
-            f"No show: —\n\n"
-            f"Dinner: —\n"
-            f"Pax: —\n"
-            f"Avg Ticket: —\n"
-            f"Walk in: —\n"
-            f"No show: —\n\n"
-            f"📝 Notes:\n{notes_block}"
-        )
+        # No manual entry — pull from Agora (revenue) + CoverManager (pax/walkins/noshows).
+        agora = _try_agora(report_day)
+        if agora:
+            cm = _try_cm_covers(report_day)
+            upsert_full_day(
+                report_day,
+                agora.total_net, agora.visa, agora.cash, agora.tips,
+                agora.lunch_net, cm["lunch_pax"], cm["lunch_walkins"], cm["lunch_noshows"],
+                agora.dinner_net, cm["dinner_pax"], cm["dinner_walkins"], cm["dinner_noshows"],
+            )
+            upsert_daily(report_day, agora.total_net, cm["total_covers"])
+            total_covers = cm["total_covers"]
+            total_avg = round(agora.total_net / total_covers, 2) if total_covers else 0.0
+            lunch_avg = round(agora.lunch_net / cm["lunch_pax"], 2) if cm["lunch_pax"] else 0.0
+            dinner_avg = round(agora.dinner_net / cm["dinner_pax"], 2) if cm["dinner_pax"] else 0.0
+            visa_str = euro_comma(agora.visa) if agora.visa else "—"
+            cash_str = euro_comma(agora.cash) if agora.cash else "—"
+            tips_str = euro_comma(agora.tips) if agora.tips else "—"
+            msg = (
+                f"📌 Norah Daily Post\n"
+                f"Day: {fmt_day_ddmmyyyy(report_day)}\n"
+                f"Total Sales Day: {euro_comma(agora.total_net)} *(Agora POS)*\n"
+                f"Total Covers: {total_covers}  |  Avg Ticket: {euro_comma(total_avg)}\n\n"
+                f"Visa: {visa_str}\n"
+                f"Cash: {cash_str}\n"
+                f"Tips: {tips_str}\n\n"
+                f"Lunch: {euro_comma(agora.lunch_net)}\n"
+                f"Pax: {cm['lunch_pax']}\n"
+                f"Avg Ticket: {euro_comma(lunch_avg)}\n"
+                f"Walk in: {cm['lunch_walkins']}\n"
+                f"No show: {cm['lunch_noshows']}\n\n"
+                f"Dinner: {euro_comma(agora.dinner_net)}\n"
+                f"Pax: {cm['dinner_pax']}\n"
+                f"Avg Ticket: {euro_comma(dinner_avg)}\n"
+                f"Walk in: {cm['dinner_walkins']}\n"
+                f"No show: {cm['dinner_noshows']}\n\n"
+                f"📝 Notes:\n{notes_block}"
+            )
+        else:
+            msg = (
+                f"📌 Norah Daily Post\n"
+                f"Day: {fmt_day_ddmmyyyy(report_day)}\n"
+                f"Total Sales Day: —\n"
+                f"Total Covers: —  |  Avg Ticket: —\n\n"
+                f"Visa: —\n"
+                f"Cash: —\n"
+                f"Tips: —\n\n"
+                f"Lunch: —\n"
+                f"Pax: —\n"
+                f"Avg Ticket: —\n"
+                f"Walk in: —\n"
+                f"No show: —\n\n"
+                f"Dinner: —\n"
+                f"Pax: —\n"
+                f"Avg Ticket: —\n"
+                f"Walk in: —\n"
+                f"No show: —\n\n"
+                f"📝 Notes:\n{notes_block}"
+            )
     return msg
 
 async def send_daily_post_to_owners(context: ContextTypes.DEFAULT_TYPE):
