@@ -103,10 +103,8 @@ def _try_cm_covers(day_: date) -> dict:
     """
     Fetch all cover/pax data from CoverManager for a single date.
 
-    Active covers: any status that is NOT no-show (-2) or cancelled (-5).
-    Walk-ins: provenance == "walk in", counted regardless of status.
-    No-shows: status -2 strictly, counted by reservation (not pax).
-    Pax counted via the 'for' field.
+    Uses get_reservations_range (same as _exec_get_reservations) for covers,
+    and scans raw reservations for walk-ins and no-shows.
 
     Returns a dict with keys:
         total_covers, lunch_pax, dinner_pax,
@@ -124,62 +122,47 @@ def _try_cm_covers(day_: date) -> dict:
     if not _CM_AVAILABLE:
         return zeros
     try:
-        res = _cm_mod.get_daily_reservations(day_)
-        if not res:
-            return zeros
+        date_str = day_.isoformat()
 
+        # Covers — use the same aggregated path as _exec_get_reservations
+        days = _cm_mod.get_reservations_range(day_, day_)
+        day_data = next((d for d in days if d.get("date") == date_str), None)
+        if day_data:
+            total_covers = int(day_data.get("total_covers", 0) or 0)
+            lunch_pax    = int(day_data.get("lunch_covers",  0) or 0)
+            dinner_pax   = int(day_data.get("dinner_covers", 0) or 0)
+        else:
+            total_covers = lunch_pax = dinner_pax = 0
+
+        # Walk-ins and no-shows — scan raw records
         _LUNCH  = {"comida", "almuerzo", "mediodía", "mediodia"}
         _DINNER = {"cena", "noche", "tarde"}
 
-        _EXCLUDED = {-2, -5}   # no-show, cancelled
-
-        total_covers = lunch_pax = dinner_pax = 0
         lunch_walkins = dinner_walkins = lunch_noshows = dinner_noshows = 0
 
-        # Diagnostic: collect every unique status and provenance value seen
-        all_statuses   = {}
-        all_provenance = {}
-
-        for r in res.reservations:
+        raw = _cm_mod.get_raw_records(day_, day_)
+        for r in raw:
             status = int(r.get("status", 0))
             shift  = (r.get("meal_shift") or "").strip().lower()
             prov   = (r.get("provenance") or "").strip().lower()
-            pax    = int(r.get("for", 0) or 0)
-
-            all_statuses[status]   = all_statuses.get(status, 0) + 1
-            all_provenance[prov]   = all_provenance.get(prov, 0) + 1
-
             is_lunch  = any(w in shift for w in _LUNCH)
             is_dinner = any(w in shift for w in _DINNER)
 
-            # Active covers: everything except no-show and cancelled
-            if status not in _EXCLUDED:
-                total_covers += pax
-                if is_lunch:
-                    lunch_pax += pax
-                elif is_dinner:
-                    dinner_pax += pax
-
-            # Walk-ins: provenance "walk in", any status (including 0/unknown)
             if prov == "walk in":
                 if is_lunch:
                     lunch_walkins += 1
                 elif is_dinner:
                     dinner_walkins += 1
 
-            # No-shows: status -2 only, by reservation count
             if status == -2:
                 if is_lunch:
                     lunch_noshows += 1
                 elif is_dinner:
                     dinner_noshows += 1
 
-        print(f"[cm] {day_} reservations={len(res.reservations)} "
-              f"covers={total_covers} lunch_pax={lunch_pax} dinner_pax={dinner_pax} "
+        print(f"[cm] {day_} covers={total_covers} lunch={lunch_pax} dinner={dinner_pax} "
               f"walkins_l={lunch_walkins} walkins_d={dinner_walkins} "
               f"noshows_l={lunch_noshows} noshows_d={dinner_noshows}")
-        print(f"[cm] {day_} all_statuses={all_statuses}")
-        print(f"[cm] {day_} all_provenance={all_provenance}")
 
         return {
             "total_covers":   total_covers,
