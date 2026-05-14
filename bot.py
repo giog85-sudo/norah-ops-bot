@@ -156,9 +156,9 @@ def _try_cm_covers(day_: date) -> dict:
 
             if status == -2:
                 if is_lunch:
-                    lunch_noshows += 1
+                    lunch_noshows += pax
                 elif is_dinner:
-                    dinner_noshows += 1
+                    dinner_noshows += pax
 
         print(f"[cm] {day_} covers={total_covers} lunch={lunch_pax} dinner={dinner_pax} "
               f"walkins_l={lunch_walkins} walkins_d={dinner_walkins} "

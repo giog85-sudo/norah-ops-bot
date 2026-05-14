@@ -28,6 +28,7 @@ COVERMANAGER_RESTAURANT = os.getenv("COVERMANAGER_RESTAURANT", "Restaurante-Nora
 # Reservation status codes returned by CoverManager
 STATUS_CONFIRMED  =  1   # booked / confirmed
 STATUS_SEATED     =  2   # arrived / seated
+STATUS_ARRIVED    =  5   # arrived/active — used by this CoverManager installation
 STATUS_NOSHOW     = -2   # no-show
 STATUS_CANCELLED  = -5   # cancelled by guest or restaurant
 
@@ -121,8 +122,8 @@ def _aggregate(date_str: str, records: list) -> DailyReservations:
         pax    = int(r.get("for", 0) or 0)
         shift  = (r.get("meal_shift") or "").strip().lower()
 
-        # Count covers only for active reservations (confirmed or seated)
-        is_active = status in (STATUS_CONFIRMED, STATUS_SEATED)
+        # Count covers for confirmed, seated, or arrived (status 5)
+        is_active = status in (STATUS_CONFIRMED, STATUS_SEATED, STATUS_ARRIVED)
 
         if is_active:
             total_covers += pax
@@ -133,10 +134,10 @@ def _aggregate(date_str: str, records: list) -> DailyReservations:
                 dinner_covers += pax
                 dinner_reservations += 1
 
-        if status in (STATUS_CONFIRMED, STATUS_SEATED):
+        if is_active:
             confirmed_count += 1
         elif status == STATUS_NOSHOW:
-            noshow_count += 1
+            noshow_count += pax   # sum guest count, not reservation count
         elif status == STATUS_CANCELLED:
             cancelled_count += 1
 
