@@ -518,9 +518,10 @@ def _aggregate(query_date: str, rows: list[dict]) -> DailySales:
 
 # =============================================================================
 # Auto-save to full_daily_stats
-# Writes all Agora-sourced columns: sales, visa/cash (Z report),
-# tips (GetTipsByUserReportRequest), and real covers (SaleCenter).
-# Never touches walkins/noshows which come from CoverManager.
+# Writes Agora-sourced revenue columns only: total_sales, visa, cash, tips,
+# lunch_sales, dinner_sales.
+# Pax (lunch_pax, dinner_pax) and walkins/noshows come from CoverManager
+# and are written separately by bot.py via upsert_full_day().
 # =============================================================================
 
 def _save_to_db(ds: DailySales) -> None:
@@ -538,17 +539,15 @@ def _save_to_db(ds: DailySales) -> None:
                     """
                     INSERT INTO full_daily_stats
                         (day, total_sales, visa, cash, tips,
-                         lunch_sales, lunch_pax, dinner_sales, dinner_pax)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         lunch_sales, dinner_sales)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (day) DO UPDATE SET
                         total_sales  = EXCLUDED.total_sales,
                         visa         = EXCLUDED.visa,
                         cash         = EXCLUDED.cash,
                         tips         = EXCLUDED.tips,
                         lunch_sales  = EXCLUDED.lunch_sales,
-                        lunch_pax    = EXCLUDED.lunch_pax,
-                        dinner_sales = EXCLUDED.dinner_sales,
-                        dinner_pax   = EXCLUDED.dinner_pax
+                        dinner_sales = EXCLUDED.dinner_sales
                     """,
                     (
                         ds.date,
@@ -557,15 +556,12 @@ def _save_to_db(ds: DailySales) -> None:
                         ds.cash,
                         ds.tips,
                         ds.lunch_net,
-                        ds.lunch_covers,
                         ds.dinner_net,
-                        ds.dinner_covers,
                     ),
                 )
             conn.commit()
         print(f"[agora] saved {ds.date} to full_daily_stats "
-              f"(total={ds.total_net}, visa={ds.visa}, cash={ds.cash}, tips={ds.tips}, "
-              f"covers={ds.total_covers})")
+              f"(total={ds.total_net}, visa={ds.visa}, cash={ds.cash}, tips={ds.tips})")
     except Exception as e:
         print(f"[agora] DB save failed for {ds.date}: {e}")
 
@@ -612,19 +608,9 @@ def get_daily_sales(query_date, save_to_db: bool = True) -> Optional[DailySales]
     except Exception as e:
         print(f"[agora] closeout fetch failed for {date_str}: {e}")
 
-    # Enrich total covers from SaleCenter (Sala only — Barra is unreliable).
-    # lunch_covers / dinner_covers are set to 0: no estimation, exact numbers only.
-    try:
-        sala_covers = _fetch_salecenter(auth_token, session, date_str)
-        if sala_covers > 0:
-            ds.total_covers      = sala_covers
-            ds.lunch_covers      = 0
-            ds.dinner_covers     = 0
-            ds.avg_ticket        = round(ds.total_net / sala_covers, 2)
-            ds.lunch_avg_ticket  = 0.0
-            ds.dinner_avg_ticket = 0.0
-    except Exception as e:
-        print(f"[agora] salecenter fetch failed for {date_str}: {e}")
+    # Covers (total, lunch, dinner) come from CoverManager, not Agora.
+    # ds.total_covers / lunch_covers / dinner_covers remain as ticket-based
+    # proxies from _aggregate() and are not persisted to the DB.
 
     # Enrich with tips from GetTipsByUserReportRequest
     try:

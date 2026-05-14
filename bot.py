@@ -99,13 +99,26 @@ def _try_agora(day_: date):
         return None
 
 
-def _try_cm_walkins_noshows(day_: date) -> dict:
+def _try_cm_covers(day_: date) -> dict:
     """
-    Fetch walk-ins and no-shows from CoverManager for a single date.
-    Returns a dict with keys: lunch_walkins, dinner_walkins, lunch_noshows, dinner_noshows.
+    Fetch all cover/pax data from CoverManager for a single date.
+
+    Returns a dict with keys:
+        total_covers, lunch_pax, dinner_pax,
+        lunch_walkins, dinner_walkins, lunch_noshows, dinner_noshows.
+
+    CoverManager is the single source of truth for all pax and attendance data.
     Falls back to zeros on any error or if CM is unavailable.
     """
-    zeros = {"lunch_walkins": 0, "dinner_walkins": 0, "lunch_noshows": 0, "dinner_noshows": 0}
+    zeros = {
+        "total_covers":  0,
+        "lunch_pax":     0,
+        "dinner_pax":    0,
+        "lunch_walkins":  0,
+        "dinner_walkins": 0,
+        "lunch_noshows":  0,
+        "dinner_noshows": 0,
+    }
     if not _CM_AVAILABLE:
         return zeros
     try:
@@ -137,13 +150,16 @@ def _try_cm_walkins_noshows(day_: date) -> dict:
                     dinner_noshows += 1
 
         return {
+            "total_covers":   res.total_covers,
+            "lunch_pax":      res.lunch_covers,
+            "dinner_pax":     res.dinner_covers,
             "lunch_walkins":  lunch_walkins,
             "dinner_walkins": dinner_walkins,
             "lunch_noshows":  lunch_noshows,
             "dinner_noshows": dinner_noshows,
         }
     except Exception as e:
-        print(f"CM walkins/noshows fetch failed for {day_}: {e}")
+        print(f"CM covers fetch failed for {day_}: {e}")
         return zeros
 
 
