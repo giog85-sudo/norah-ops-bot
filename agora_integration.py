@@ -52,21 +52,23 @@ class DailySales:
 
     # ── Revenue totals ────────────────────────────────────────────────────────
     total_net: float                # total revenue inc VAT
-    total_gross: float              # total revenue ex VAT
+    total_gross: float              # total revenue ex VAT (sum of Gross line items)
 
     # ── Lunch service ─────────────────────────────────────────────────────────
     lunch_net: float                # lunch revenue inc VAT
+    lunch_gross: float              # lunch revenue ex VAT
     lunch_covers: int               # unique lunch tickets (covers proxy)
     lunch_avg_ticket: float
 
     # ── Dinner service ────────────────────────────────────────────────────────
     dinner_net: float               # dinner revenue inc VAT
+    dinner_gross: float             # dinner revenue ex VAT
     dinner_covers: int              # unique dinner tickets
     dinner_avg_ticket: float
 
     # ── Combined ──────────────────────────────────────────────────────────────
     total_covers: int               # lunch + dinner
-    avg_ticket: float               # total_net / total_covers
+    avg_ticket: float               # total_gross / total_covers
 
     # ── Per-waiter breakdown ──────────────────────────────────────────────────
     # Each entry: {name, net, tickets, avg_ticket}
@@ -406,10 +408,12 @@ def _fetch_tips_by_user(auth_token: str, session: dict, date_str: str) -> float:
 # =============================================================================
 
 def _aggregate(query_date: str, rows: list[dict]) -> DailySales:
-    total_net   = 0.0
-    total_gross = 0.0
-    lunch_net   = 0.0
-    dinner_net  = 0.0
+    total_net    = 0.0
+    total_gross  = 0.0
+    lunch_net    = 0.0
+    lunch_gross  = 0.0
+    dinner_net   = 0.0
+    dinner_gross = 0.0
     # Each DocumentId is a unique check/ticket (one per table turn).
     # There is no per-guest pax field in GetSalesAnalyticsReportRequest rows —
     # Quantity is product units sold, not guest count.  Unique check count is
@@ -460,11 +464,13 @@ def _aggregate(query_date: str, rows: list[dict]) -> DailySales:
 
         # ── Service split ──────────────────────────────────────────────────
         if tf in _LUNCH_FRAMES:
-            lunch_net += net
+            lunch_net   += net
+            lunch_gross += gross
             if doc:
                 lunch_tickets.add(doc)
         elif tf in _DINNER_FRAMES:
-            dinner_net += net
+            dinner_net   += net
+            dinner_gross += gross
             if doc:
                 dinner_tickets.add(doc)
 
@@ -518,13 +524,15 @@ def _aggregate(query_date: str, rows: list[dict]) -> DailySales:
         total_net=round(total_net, 2),
         total_gross=round(total_gross, 2),
         lunch_net=round(lunch_net, 2),
+        lunch_gross=round(lunch_gross, 2),
         lunch_covers=lunch_covers,
-        lunch_avg_ticket=round(lunch_net / lunch_covers, 2) if lunch_covers else 0.0,
+        lunch_avg_ticket=round(lunch_gross / lunch_covers, 2) if lunch_covers else 0.0,
         dinner_net=round(dinner_net, 2),
+        dinner_gross=round(dinner_gross, 2),
         dinner_covers=dinner_covers,
-        dinner_avg_ticket=round(dinner_net / dinner_covers, 2) if dinner_covers else 0.0,
+        dinner_avg_ticket=round(dinner_gross / dinner_covers, 2) if dinner_covers else 0.0,
         total_covers=total_covers,
-        avg_ticket=round(total_net / total_covers, 2) if total_covers else 0.0,
+        avg_ticket=round(total_gross / total_covers, 2) if total_covers else 0.0,
         waiters=waiters,
         families=families,
         top_products=top_products,
@@ -570,17 +578,17 @@ def _save_to_db(ds: DailySales) -> None:
                     """,
                     (
                         ds.date,
-                        ds.total_net,
+                        ds.total_gross,
                         ds.visa,
                         ds.cash,
                         ds.tips,
-                        ds.lunch_net,
-                        ds.dinner_net,
+                        ds.lunch_gross,
+                        ds.dinner_gross,
                     ),
                 )
             conn.commit()
         print(f"[agora] saved {ds.date} to full_daily_stats "
-              f"(total={ds.total_net}, visa={ds.visa}, cash={ds.cash}, tips={ds.tips})")
+              f"(total_ex_vat={ds.total_gross}, visa={ds.visa}, cash={ds.cash}, tips={ds.tips})")
     except Exception as e:
         print(f"[agora] DB save failed for {ds.date}: {e}")
 
@@ -620,10 +628,8 @@ def get_daily_sales(query_date, save_to_db: bool = True) -> Optional[DailySales]
     try:
         closeout = _fetch_closeouts(auth_token, session, date_str)
         if closeout:
-            ds.visa        = closeout["visa"]
-            ds.cash        = closeout["cash"]
-            # Z report TotalSales is authoritative — override the sales-analytics total
-            ds.total_net   = closeout["total_sales"]
+            ds.visa = closeout["visa"]
+            ds.cash = closeout["cash"]
     except Exception as e:
         print(f"[agora] closeout fetch failed for {date_str}: {e}")
 
