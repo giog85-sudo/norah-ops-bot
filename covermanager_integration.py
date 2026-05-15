@@ -118,7 +118,7 @@ def _aggregate(date_str: str, records: list) -> DailyReservations:
     dinner_reservations = 0
 
     for r in records:
-        status = int(r.get("status", 0))
+        status = int(r.get("status") or 0)
         pax    = int(r.get("for", 0) or 0)
         shift  = (r.get("meal_shift") or "").strip().lower()
 
@@ -213,7 +213,7 @@ def get_reservations_range(from_date, to_date) -> list:
         large_groups = []
         for r in by_day[day_str]:
             pax = int(r.get("for", 0) or 0)
-            st  = int(r.get("status", 0))
+            st  = int(r.get("status") or 0)
             if pax >= 6 and st in (STATUS_CONFIRMED, STATUS_SEATED):
                 large_groups.append({
                     "time":  r.get("time", ""),

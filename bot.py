@@ -142,7 +142,7 @@ def _try_cm_covers(day_: date) -> dict:
 
         raw = _cm_mod.get_raw_records(day_, day_)
         for r in raw:
-            status = int(r.get("status", 0))
+            status = int(r.get("status") or 0)
             shift  = (r.get("meal_shift") or "").strip().lower()
             prov   = (r.get("provenance") or "").strip().lower()
             pax    = int(r.get("for", 0) or 0)
