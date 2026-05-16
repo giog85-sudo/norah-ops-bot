@@ -65,6 +65,7 @@ def _remap_overnight_walkins(records: list) -> list:
                 r["date"] = (date.fromisoformat(r["date"]) - timedelta(days=1)).isoformat()
             except ValueError:
                 pass
+            r["meal_shift"] = "Cena"  # after midnight always means dinner service
         out.append(r)
     return out
 
