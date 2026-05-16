@@ -526,13 +526,13 @@ def _aggregate(query_date: str, rows: list[dict]) -> DailySales:
         lunch_net=round(lunch_net, 2),
         lunch_gross=round(lunch_gross, 2),
         lunch_covers=lunch_covers,
-        lunch_avg_ticket=round(lunch_gross / lunch_covers, 2) if lunch_covers else 0.0,
+        lunch_avg_ticket=round(lunch_net / lunch_covers, 2) if lunch_covers else 0.0,
         dinner_net=round(dinner_net, 2),
         dinner_gross=round(dinner_gross, 2),
         dinner_covers=dinner_covers,
-        dinner_avg_ticket=round(dinner_gross / dinner_covers, 2) if dinner_covers else 0.0,
+        dinner_avg_ticket=round(dinner_net / dinner_covers, 2) if dinner_covers else 0.0,
         total_covers=total_covers,
-        avg_ticket=round(total_gross / total_covers, 2) if total_covers else 0.0,
+        avg_ticket=round(total_net / total_covers, 2) if total_covers else 0.0,
         waiters=waiters,
         families=families,
         top_products=top_products,
@@ -578,17 +578,17 @@ def _save_to_db(ds: DailySales) -> None:
                     """,
                     (
                         ds.date,
-                        ds.total_gross,
+                        ds.total_net,
                         ds.visa,
                         ds.cash,
                         ds.tips,
-                        ds.lunch_gross,
-                        ds.dinner_gross,
+                        ds.lunch_net,
+                        ds.dinner_net,
                     ),
                 )
             conn.commit()
         print(f"[agora] saved {ds.date} to full_daily_stats "
-              f"(total_ex_vat={ds.total_gross}, visa={ds.visa}, cash={ds.cash}, tips={ds.tips})")
+              f"(total={ds.total_net}, visa={ds.visa}, cash={ds.cash}, tips={ds.tips})")
     except Exception as e:
         print(f"[agora] DB save failed for {ds.date}: {e}")
 

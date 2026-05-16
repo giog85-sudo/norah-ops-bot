@@ -3205,32 +3205,32 @@ def build_owners_post_for_day(report_day: date) -> str:
             cm = _try_cm_covers(report_day)
             upsert_full_day(
                 report_day,
-                agora.total_gross, agora.visa, agora.cash, agora.tips,
-                agora.lunch_gross, cm["lunch_pax"], cm["lunch_walkins"], cm["lunch_noshows"],
-                agora.dinner_gross, cm["dinner_pax"], cm["dinner_walkins"], cm["dinner_noshows"],
+                agora.total_net, agora.visa, agora.cash, agora.tips,
+                agora.lunch_net, cm["lunch_pax"], cm["lunch_walkins"], cm["lunch_noshows"],
+                agora.dinner_net, cm["dinner_pax"], cm["dinner_walkins"], cm["dinner_noshows"],
             )
-            upsert_daily(report_day, agora.total_gross, cm["total_covers"])
+            upsert_daily(report_day, agora.total_net, cm["total_covers"])
             total_covers = cm["total_covers"]
-            total_avg = round(agora.total_gross / total_covers, 2) if total_covers else 0.0
-            lunch_avg = round(agora.lunch_gross / cm["lunch_pax"], 2) if cm["lunch_pax"] else 0.0
-            dinner_avg = round(agora.dinner_gross / cm["dinner_pax"], 2) if cm["dinner_pax"] else 0.0
+            total_avg = round(agora.total_net / total_covers, 2) if total_covers else 0.0
+            lunch_avg = round(agora.lunch_net / cm["lunch_pax"], 2) if cm["lunch_pax"] else 0.0
+            dinner_avg = round(agora.dinner_net / cm["dinner_pax"], 2) if cm["dinner_pax"] else 0.0
             visa_str = euro_comma(agora.visa) if agora.visa else "—"
             cash_str = euro_comma(agora.cash) if agora.cash else "—"
             tips_str = euro_comma(agora.tips) if agora.tips else "—"
             msg = (
                 f"📌 Norah Daily Post\n"
                 f"Day: {fmt_day_ddmmyyyy(report_day)}\n"
-                f"Total Sales Day: {euro_comma(agora.total_gross)} *(ex VAT, Agora POS)*\n"
+                f"Total Sales Day: {euro_comma(agora.total_net)} *(Agora POS)*\n"
                 f"Total Covers: {total_covers}  |  Avg Ticket: {euro_comma(total_avg)}\n\n"
                 f"Visa: {visa_str}\n"
                 f"Cash: {cash_str}\n"
                 f"Tips: {tips_str}\n\n"
-                f"Lunch: {euro_comma(agora.lunch_gross)}\n"
+                f"Lunch: {euro_comma(agora.lunch_net)}\n"
                 f"Pax: {cm['lunch_pax']}\n"
                 f"Avg Ticket: {euro_comma(lunch_avg)}\n"
                 f"Walk in: {cm['lunch_walkins']}\n"
                 f"No show: {cm['lunch_noshows']}\n\n"
-                f"Dinner: {euro_comma(agora.dinner_gross)}\n"
+                f"Dinner: {euro_comma(agora.dinner_net)}\n"
                 f"Pax: {cm['dinner_pax']}\n"
                 f"Avg Ticket: {euro_comma(dinner_avg)}\n"
                 f"Walk in: {cm['dinner_walkins']}\n"
@@ -4022,14 +4022,14 @@ def run_pipeline():
 
         return jsonify({
             "date":              ds.date,
-            # ── Revenue ex-VAT (Agora, sum of Gross line items) ───────────────
-            "total_sales":       ds.total_gross,
+            # ── Revenue (Agora) ───────────────────────────────────────────────
+            "total_sales":       ds.total_net,
             "visa":              ds.visa,
             "cash":              ds.cash,
             "tips":              ds.tips,
-            "lunch_sales":       ds.lunch_gross,
+            "lunch_sales":       ds.lunch_net,
             "lunch_avg_ticket":  ds.lunch_avg_ticket,
-            "dinner_sales":      ds.dinner_gross,
+            "dinner_sales":      ds.dinner_net,
             "dinner_avg_ticket": ds.dinner_avg_ticket,
             "avg_ticket":        ds.avg_ticket,
             # ── Covers (CoverManager) ─────────────────────────────────────────
