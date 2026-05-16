@@ -149,7 +149,7 @@ def _try_cm_covers(day_: date) -> dict:
             is_lunch  = any(w in shift for w in _LUNCH)
             is_dinner = any(w in shift for w in _DINNER)
 
-            if prov == "walk in":
+            if prov == "walk in" or status == 9:
                 if is_lunch:
                     lunch_walkins += 1
                 elif is_dinner:
