@@ -46,10 +46,18 @@ def _remap_overnight_walkins(records: list) -> list:
     Walk-in entries (status 9) created after midnight but before 06:00 belong
     to the previous day's service. Remap their date to the previous calendar day
     so they are counted in the correct business day's covers and walk-in totals.
+
+    Requirements for remapping:
+    - status == 9 (walk-in)
+    - date_add == date  (added on the same calendar day as the visit — rules out
+                         pre-booked reservations that happen to have status 9 and
+                         an early time_add from a different booking date)
+    - time_add < 06:00  (entered after midnight, before the business day cutoff)
     """
     out = []
     for r in records:
         if (int(r.get("status") or 0) == STATUS_WALKIN
+                and r.get("date_add", "") == r.get("date", "X")
                 and (r.get("time_add") or "99:99:99") < _OVERNIGHT_CUTOFF
                 and r.get("date")):
             r = dict(r)
