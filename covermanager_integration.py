@@ -176,7 +176,7 @@ def _aggregate(date_str: str, records: list) -> DailyReservations:
         if is_active:
             confirmed_count += 1
         elif status == STATUS_NOSHOW:
-            noshow_count += 1
+            noshow_count += pax
         elif status == STATUS_CANCELLED:
             cancelled_count += 1
 
