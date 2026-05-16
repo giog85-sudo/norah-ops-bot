@@ -16,7 +16,7 @@ import os
 import urllib.request
 import urllib.error
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 
@@ -36,6 +36,29 @@ STATUS_CANCELLED  = -5   # cancelled by guest or restaurant
 # Shift labels (Spanish)
 _LUNCH_SHIFTS  = {"comida", "almuerzo", "mediodía", "mediodia"}
 _DINNER_SHIFTS = {"cena", "noche", "tarde"}
+
+# Service cutoff: walk-ins entered before this hour belong to the previous day
+_OVERNIGHT_CUTOFF = "06:00:00"
+
+
+def _remap_overnight_walkins(records: list) -> list:
+    """
+    Walk-in entries (status 9) created after midnight but before 06:00 belong
+    to the previous day's service. Remap their date to the previous calendar day
+    so they are counted in the correct business day's covers and walk-in totals.
+    """
+    out = []
+    for r in records:
+        if (int(r.get("status") or 0) == STATUS_WALKIN
+                and (r.get("time_add") or "99:99:99") < _OVERNIGHT_CUTOFF
+                and r.get("date")):
+            r = dict(r)
+            try:
+                r["date"] = (date.fromisoformat(r["date"]) - timedelta(days=1)).isoformat()
+            except ValueError:
+                pass
+        out.append(r)
+    return out
 
 
 # =============================================================================
@@ -79,16 +102,21 @@ def _get(url: str) -> tuple:
 # =============================================================================
 
 def _fetch_reservations(date_str: str) -> list:
-    """Fetch raw reservation records from CoverManager for a single date."""
+    """Fetch raw reservation records from CoverManager for a single date.
+
+    Also fetches the next calendar day to capture status=9 walk-in entries
+    created after midnight (before 06:00) that belong to this business day.
+    """
     if not COVERMANAGER_API_KEY:
         raise RuntimeError("COVERMANAGER_API_KEY env var must be set")
     if not COVERMANAGER_RESTAURANT:
         raise RuntimeError("COVERMANAGER_RESTAURANT env var must be set")
 
+    next_day = (date.fromisoformat(date_str) + timedelta(days=1)).isoformat()
     url = (
         f"{COVERMANAGER_BASE}/restaurant/get_reservs"
         f"/{COVERMANAGER_API_KEY}/{COVERMANAGER_RESTAURANT}"
-        f"/{date_str}/{date_str}/"
+        f"/{date_str}/{next_day}/"
     )
 
     status, text = _get(url)
@@ -101,7 +129,8 @@ def _fetch_reservations(date_str: str) -> list:
         error = data.get("error", "unknown error")
         raise RuntimeError(f"CoverManager API error: {error}")
 
-    return data.get("reservs", [])
+    records = _remap_overnight_walkins(data.get("reservs", []))
+    return [r for r in records if r.get("date", "") == date_str]
 
 
 # =============================================================================
@@ -182,10 +211,12 @@ def get_reservations_range(from_date, to_date) -> list:
     if not COVERMANAGER_API_KEY:
         raise RuntimeError("COVERMANAGER_API_KEY env var must be set")
 
+    # Fetch one extra day to capture overnight walk-ins (status 9, time_add < 06:00)
+    fetch_to = (date.fromisoformat(to_str) + timedelta(days=1)).isoformat()
     url = (
         f"{COVERMANAGER_BASE}/restaurant/get_reservs"
         f"/{COVERMANAGER_API_KEY}/{COVERMANAGER_RESTAURANT}"
-        f"/{from_str}/{to_str}/"
+        f"/{from_str}/{fetch_to}/"
     )
 
     status, text = _get(url)
@@ -197,13 +228,13 @@ def get_reservations_range(from_date, to_date) -> list:
         error = data.get("error", "unknown error")
         raise RuntimeError(f"CoverManager API error: {error}")
 
-    all_records = data.get("reservs", [])
+    all_records = _remap_overnight_walkins(data.get("reservs", []))
 
-    # Group records by date
+    # Group records by date, filtering to the originally requested range
     by_day: dict = {}
     for r in all_records:
         d = r.get("date", "")
-        if d:
+        if d and from_str <= d <= to_str:
             by_day.setdefault(d, []).append(r)
 
     results = []
@@ -257,13 +288,16 @@ def get_raw_records(from_date, to_date) -> list:
     from_str = from_date.isoformat() if isinstance(from_date, date) else str(from_date)
     to_str   = to_date.isoformat()   if isinstance(to_date, date)   else str(to_date)
 
+    # Fetch one extra day to capture overnight walk-ins (status 9, time_add < 06:00)
+    fetch_to = (date.fromisoformat(to_str) + timedelta(days=1)).isoformat()
+
     all_records = []
     page = 0
     while True:
         url = (
             f"{COVERMANAGER_BASE}/restaurant/get_reservs"
             f"/{COVERMANAGER_API_KEY}/{COVERMANAGER_RESTAURANT}"
-            f"/{from_str}/{to_str}/{page}"
+            f"/{from_str}/{fetch_to}/{page}"
         )
         status, text = _get(url)
         if status != 200:
@@ -277,7 +311,8 @@ def get_raw_records(from_date, to_date) -> list:
             break
         page += 1
 
-    return all_records
+    all_records = _remap_overnight_walkins(all_records)
+    return [r for r in all_records if from_str <= (r.get("date") or "") <= to_str]
 
 
 def get_daily_reservations(query_date) -> Optional[DailyReservations]:
