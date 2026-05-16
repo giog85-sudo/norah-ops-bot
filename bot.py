@@ -104,11 +104,11 @@ def _try_cm_covers(day_: date) -> dict:
     Fetch all cover/pax data from CoverManager for a single date.
 
     Uses get_reservations_range (same as _exec_get_reservations) for covers,
-    and scans raw reservations for walk-ins and no-shows.
+    and scans raw reservations for walk-ins.
 
     Returns a dict with keys:
         total_covers, lunch_pax, dinner_pax,
-        lunch_walkins, dinner_walkins, lunch_noshows, dinner_noshows.
+        lunch_walkins, dinner_walkins.
     """
     zeros = {
         "total_covers":   0,
@@ -116,8 +116,6 @@ def _try_cm_covers(day_: date) -> dict:
         "dinner_pax":     0,
         "lunch_walkins":  0,
         "dinner_walkins": 0,
-        "lunch_noshows":  0,
-        "dinner_noshows": 0,
     }
     if not _CM_AVAILABLE:
         return zeros
@@ -134,11 +132,11 @@ def _try_cm_covers(day_: date) -> dict:
         else:
             total_covers = lunch_pax = dinner_pax = 0
 
-        # Walk-ins and no-shows — scan raw records
+        # Walk-ins — scan raw records
         _LUNCH  = {"comida", "almuerzo", "mediodía", "mediodia"}
         _DINNER = {"cena", "noche", "tarde"}
 
-        lunch_walkins = dinner_walkins = lunch_noshows = dinner_noshows = 0
+        lunch_walkins = dinner_walkins = 0
 
         raw = _cm_mod.get_raw_records(day_, day_)
         for r in raw:
@@ -155,15 +153,8 @@ def _try_cm_covers(day_: date) -> dict:
                 elif is_dinner:
                     dinner_walkins += pax
 
-            if status == -2:
-                if is_lunch:
-                    lunch_noshows += pax
-                elif is_dinner:
-                    dinner_noshows += pax
-
         print(f"[cm] {day_} covers={total_covers} lunch={lunch_pax} dinner={dinner_pax} "
-              f"walkins_l={lunch_walkins} walkins_d={dinner_walkins} "
-              f"noshows_l={lunch_noshows} noshows_d={dinner_noshows}")
+              f"walkins_l={lunch_walkins} walkins_d={dinner_walkins}")
 
         return {
             "total_covers":   total_covers,
@@ -171,8 +162,6 @@ def _try_cm_covers(day_: date) -> dict:
             "dinner_pax":     dinner_pax,
             "lunch_walkins":  lunch_walkins,
             "dinner_walkins": dinner_walkins,
-            "lunch_noshows":  lunch_noshows,
-            "dinner_noshows": dinner_noshows,
         }
     except Exception as e:
         print(f"[cm] covers fetch failed for {day_}: {e}")
@@ -2320,10 +2309,8 @@ def _append_full_analytics_block(p: Period) -> str:
     avg_tips_day = (agg["tips"] / full_days) if full_days else 0.0
 
     walkins_total = agg["lunch_walkins"] + agg["dinner_walkins"]
-    noshows_total = agg["lunch_noshows"] + agg["dinner_noshows"]
     walkins_rate = (walkins_total / covers_full * 100.0) if covers_full else 0.0
     avg_walkins_day = (walkins_total / full_days) if full_days else 0.0
-    avg_noshows_day = (noshows_total / full_days) if full_days else 0.0
 
     return (
         "\n\n🍽️ Service split (weighted)\n"
@@ -2334,12 +2321,10 @@ def _append_full_analytics_block(p: Period) -> str:
         f"Avg tips/day: €{avg_tips_day:.2f}\n"
         f"Tip/cover: €{tip_per_cover:.2f}\n"
         f"Tips % of sales: {tips_pct:.1f}%\n"
-        "\n🚶 Walk-ins / No-shows\n"
+        "\n🚶 Walk-ins\n"
         f"Total walk-ins: {walkins_total}\n"
         f"Avg walk-ins/day: {avg_walkins_day:.2f}\n"
-        f"Walk-ins rate: {walkins_rate:.1f}%\n"
-        f"Total no-shows: {noshows_total}\n"
-        f"Avg no-shows/day: {avg_noshows_day:.2f}"
+        f"Walk-ins rate: {walkins_rate:.1f}%"
     )
 
 async def setdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3169,8 +3154,8 @@ def build_owners_post_for_day(report_day: date) -> str:
     if full_row:
         (
             total_sales, visa, cash, tips,
-            lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
-            dinner_sales, dinner_pax, dinner_walkins, dinner_noshows
+            lunch_sales, lunch_pax, lunch_walkins, _ln,
+            dinner_sales, dinner_pax, dinner_walkins, _dn
         ) = full_row
 
         lunch_avg = (float(lunch_sales) / int(lunch_pax)) if lunch_pax else 0.0
@@ -3189,13 +3174,11 @@ def build_owners_post_for_day(report_day: date) -> str:
             f"Lunch: {euro_comma(lunch_sales)}\n"
             f"Pax: {int(lunch_pax)}\n"
             f"Avg Ticket: {euro_comma(lunch_avg)}\n"
-            f"Walk in: {int(lunch_walkins)}\n"
-            f"No show: {int(lunch_noshows)}\n\n"
+            f"Walk in: {int(lunch_walkins)}\n\n"
             f"Dinner: {euro_comma(dinner_sales)}\n"
             f"Pax: {int(dinner_pax)}\n"
             f"Avg Ticket: {euro_comma(dinner_avg)}\n"
-            f"Walk in: {int(dinner_walkins)}\n"
-            f"No show: {int(dinner_noshows)}\n\n"
+            f"Walk in: {int(dinner_walkins)}\n\n"
             f"📝 Notes:\n{notes_block}"
         )
     else:
@@ -3206,8 +3189,8 @@ def build_owners_post_for_day(report_day: date) -> str:
             upsert_full_day(
                 report_day,
                 agora.total_net, agora.visa, agora.cash, agora.tips,
-                agora.lunch_net, cm["lunch_pax"], cm["lunch_walkins"], cm["lunch_noshows"],
-                agora.dinner_net, cm["dinner_pax"], cm["dinner_walkins"], cm["dinner_noshows"],
+                agora.lunch_net, cm["lunch_pax"], cm["lunch_walkins"], 0,
+                agora.dinner_net, cm["dinner_pax"], cm["dinner_walkins"], 0,
             )
             upsert_daily(report_day, agora.total_net, cm["total_covers"])
             total_covers = cm["total_covers"]
@@ -3228,13 +3211,11 @@ def build_owners_post_for_day(report_day: date) -> str:
                 f"Lunch: {euro_comma(agora.lunch_net)}\n"
                 f"Pax: {cm['lunch_pax']}\n"
                 f"Avg Ticket: {euro_comma(lunch_avg)}\n"
-                f"Walk in: {cm['lunch_walkins']}\n"
-                f"No show: {cm['lunch_noshows']}\n\n"
+                f"Walk in: {cm['lunch_walkins']}\n\n"
                 f"Dinner: {euro_comma(agora.dinner_net)}\n"
                 f"Pax: {cm['dinner_pax']}\n"
                 f"Avg Ticket: {euro_comma(dinner_avg)}\n"
-                f"Walk in: {cm['dinner_walkins']}\n"
-                f"No show: {cm['dinner_noshows']}\n\n"
+                f"Walk in: {cm['dinner_walkins']}\n\n"
                 f"📝 Notes:\n{notes_block}"
             )
         else:
@@ -3249,13 +3230,11 @@ def build_owners_post_for_day(report_day: date) -> str:
                 f"Lunch: —\n"
                 f"Pax: —\n"
                 f"Avg Ticket: —\n"
-                f"Walk in: —\n"
-                f"No show: —\n\n"
+                f"Walk in: —\n\n"
                 f"Dinner: —\n"
                 f"Pax: —\n"
                 f"Avg Ticket: —\n"
-                f"Walk in: —\n"
-                f"No show: —\n\n"
+                f"Walk in: —\n\n"
                 f"📝 Notes:\n{notes_block}"
             )
     return msg
