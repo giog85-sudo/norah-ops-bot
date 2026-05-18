@@ -4017,8 +4017,6 @@ def run_pipeline():
             "dinner_pax":        cm["dinner_pax"],
             "lunch_walkins":     cm["lunch_walkins"],
             "dinner_walkins":    cm["dinner_walkins"],
-            "lunch_noshows":     cm["lunch_noshows"],
-            "dinner_noshows":    cm["dinner_noshows"],
             # ── Breakdowns ────────────────────────────────────────────────────
             "waiters":           ds.waiters,
             "families":          ds.families,
