@@ -3244,9 +3244,13 @@ async def send_daily_post_to_owners(context: ContextTypes.DEFAULT_TYPE):
     if not chats:
         return
     report_day = previous_business_day(now_local())
-    if report_day.weekday() == 6:   # Sunday — Norah is closed, skip silently
-        print(f"[daily_post] skipping Sunday {report_day.isoformat()}")
-        return
+    if report_day.weekday() == 6:   # Sunday — Norah is closed
+        saturday = report_day - timedelta(days=1)
+        if get_full_day(saturday) is None:
+            print(f"[daily_post] Sunday skip — no Saturday data for {saturday.isoformat()}, skipping")
+            return
+        print(f"[daily_post] Sunday skip — posting Saturday {saturday.isoformat()} instead")
+        report_day = saturday
     msg = build_owners_post_for_day(report_day)
     for chat_id in chats:
         try:
@@ -3390,9 +3394,7 @@ async def send_weekly_digest(context: ContextTypes.DEFAULT_TYPE):
     prev_tips_pct = (prev_tips / prev_sales * 100.0) if prev_sales else 0.0
 
     walkins = agg["lunch_walkins"] + agg["dinner_walkins"]
-    noshows = agg["lunch_noshows"] + agg["dinner_noshows"]
     prev_walkins = agg_prev["lunch_walkins"] + agg_prev["dinner_walkins"]
-    prev_noshows = agg_prev["lunch_noshows"] + agg_prev["dinner_noshows"]
 
     msg = (
         f"🗓️ Norah Weekly Digest\n"
@@ -3420,11 +3422,9 @@ async def send_weekly_digest(context: ContextTypes.DEFAULT_TYPE):
         f"\n💶 Tips\n"
         f"Total: €{tips:.0f} ({tips_pct:.1f}% of sales){_diff(tips, prev_tips)}"
         f"  (prev: €{prev_tips:.0f}, {prev_tips_pct:.1f}%)\n"
-        f"\n🚶 Walk-ins / No-shows\n"
+        f"\n🚶 Walk-ins\n"
         f"Walk-ins: {walkins}{_diff(walkins, prev_walkins)}"
-        f"  (prev: {prev_walkins})\n"
-        f"No-shows: {noshows}{_diff(noshows, prev_noshows)}"
-        f"  (prev: {prev_noshows})"
+        f"  (prev: {prev_walkins})"
     )
 
     sources_block = _booking_sources_block(last_monday, last_sunday)
