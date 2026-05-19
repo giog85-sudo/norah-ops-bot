@@ -4046,8 +4046,7 @@ def run_pipeline():
             "line_items":        ds.line_items,
         })
     except Exception as e:
-        import traceback
-        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 @flask_app.route("/test-payment-methods")
