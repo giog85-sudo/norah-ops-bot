@@ -116,6 +116,8 @@ def _try_cm_covers(day_: date) -> dict:
         "dinner_pax":     0,
         "lunch_walkins":  0,
         "dinner_walkins": 0,
+        "lunch_noshows":  0,
+        "dinner_noshows": 0,
     }
     if not _CM_AVAILABLE:
         return zeros
@@ -136,7 +138,7 @@ def _try_cm_covers(day_: date) -> dict:
         _LUNCH  = {"comida", "almuerzo", "mediodía", "mediodia"}
         _DINNER = {"cena", "noche", "tarde"}
 
-        lunch_walkins = dinner_walkins = 0
+        lunch_walkins = dinner_walkins = lunch_noshows = dinner_noshows = 0
 
         raw = _cm_mod.get_raw_records(day_, day_)
         for r in raw:
@@ -153,8 +155,17 @@ def _try_cm_covers(day_: date) -> dict:
                 elif is_dinner:
                     dinner_walkins += pax
 
+            if status == -2:
+                last_upd = (r.get("last_update_status") or "")[:10]
+                if last_upd == date_str:
+                    if is_lunch:
+                        lunch_noshows += pax
+                    elif is_dinner:
+                        dinner_noshows += pax
+
         print(f"[cm] {day_} covers={total_covers} lunch={lunch_pax} dinner={dinner_pax} "
-              f"walkins_l={lunch_walkins} walkins_d={dinner_walkins}")
+              f"walkins_l={lunch_walkins} walkins_d={dinner_walkins} "
+              f"noshows_l={lunch_noshows} noshows_d={dinner_noshows}")
 
         return {
             "total_covers":   total_covers,
@@ -162,6 +173,8 @@ def _try_cm_covers(day_: date) -> dict:
             "dinner_pax":     dinner_pax,
             "lunch_walkins":  lunch_walkins,
             "dinner_walkins": dinner_walkins,
+            "lunch_noshows":  lunch_noshows,
+            "dinner_noshows": dinner_noshows,
         }
     except Exception as e:
         print(f"[cm] covers fetch failed for {day_}: {e}")
@@ -3154,8 +3167,8 @@ def build_owners_post_for_day(report_day: date) -> str:
     if full_row:
         (
             total_sales, visa, cash, tips,
-            lunch_sales, lunch_pax, lunch_walkins, _ln,
-            dinner_sales, dinner_pax, dinner_walkins, _dn
+            lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
+            dinner_sales, dinner_pax, dinner_walkins, dinner_noshows
         ) = full_row
 
         lunch_avg = (float(lunch_sales) / int(lunch_pax)) if lunch_pax else 0.0
@@ -3174,11 +3187,13 @@ def build_owners_post_for_day(report_day: date) -> str:
             f"Lunch: {euro_comma(lunch_sales)}\n"
             f"Pax: {int(lunch_pax)}\n"
             f"Avg Ticket: {euro_comma(lunch_avg)}\n"
-            f"Walk in: {int(lunch_walkins)}\n\n"
+            f"Walk in: {int(lunch_walkins)}\n"
+            f"No show: {int(lunch_noshows)}\n\n"
             f"Dinner: {euro_comma(dinner_sales)}\n"
             f"Pax: {int(dinner_pax)}\n"
             f"Avg Ticket: {euro_comma(dinner_avg)}\n"
-            f"Walk in: {int(dinner_walkins)}\n\n"
+            f"Walk in: {int(dinner_walkins)}\n"
+            f"No show: {int(dinner_noshows)}\n\n"
             f"📝 Notes:\n{notes_block}"
         )
     else:
@@ -3189,8 +3204,8 @@ def build_owners_post_for_day(report_day: date) -> str:
             upsert_full_day(
                 report_day,
                 agora.total_net, agora.visa, agora.cash, agora.tips,
-                agora.lunch_net, cm["lunch_pax"], cm["lunch_walkins"], 0,
-                agora.dinner_net, cm["dinner_pax"], cm["dinner_walkins"], 0,
+                agora.lunch_net, cm["lunch_pax"], cm["lunch_walkins"], cm["lunch_noshows"],
+                agora.dinner_net, cm["dinner_pax"], cm["dinner_walkins"], cm["dinner_noshows"],
             )
             upsert_daily(report_day, agora.total_net, cm["total_covers"])
             total_covers = cm["total_covers"]
@@ -3211,11 +3226,13 @@ def build_owners_post_for_day(report_day: date) -> str:
                 f"Lunch: {euro_comma(agora.lunch_net)}\n"
                 f"Pax: {cm['lunch_pax']}\n"
                 f"Avg Ticket: {euro_comma(lunch_avg)}\n"
-                f"Walk in: {cm['lunch_walkins']}\n\n"
+                f"Walk in: {cm['lunch_walkins']}\n"
+                f"No show: {cm['lunch_noshows']}\n\n"
                 f"Dinner: {euro_comma(agora.dinner_net)}\n"
                 f"Pax: {cm['dinner_pax']}\n"
                 f"Avg Ticket: {euro_comma(dinner_avg)}\n"
-                f"Walk in: {cm['dinner_walkins']}\n\n"
+                f"Walk in: {cm['dinner_walkins']}\n"
+                f"No show: {cm['dinner_noshows']}\n\n"
                 f"📝 Notes:\n{notes_block}"
             )
         else:
@@ -3230,11 +3247,13 @@ def build_owners_post_for_day(report_day: date) -> str:
                 f"Lunch: —\n"
                 f"Pax: —\n"
                 f"Avg Ticket: —\n"
-                f"Walk in: —\n\n"
+                f"Walk in: —\n"
+                f"No show: —\n\n"
                 f"Dinner: —\n"
                 f"Pax: —\n"
                 f"Avg Ticket: —\n"
-                f"Walk in: —\n\n"
+                f"Walk in: —\n"
+                f"No show: —\n\n"
                 f"📝 Notes:\n{notes_block}"
             )
     return msg
@@ -4017,6 +4036,8 @@ def run_pipeline():
             "dinner_pax":        cm["dinner_pax"],
             "lunch_walkins":     cm["lunch_walkins"],
             "dinner_walkins":    cm["dinner_walkins"],
+            "lunch_noshows":     cm["lunch_noshows"],
+            "dinner_noshows":    cm["dinner_noshows"],
             # ── Breakdowns ────────────────────────────────────────────────────
             "waiters":           ds.waiters,
             "families":          ds.families,

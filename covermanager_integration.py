@@ -81,6 +81,8 @@ class DailyReservations:
     lunch_covers: int                   # pax at lunch (Comida)
     dinner_covers: int                  # pax at dinner (Cena)
     confirmed_count: int                # reservations with status 1 or 2
+    lunch_noshows: int                  # no-show pax at lunch (status -2, updated same calendar day)
+    dinner_noshows: int                 # no-show pax at dinner (status -2, updated same calendar day)
     cancelled_count: int                # reservations with status -5
     total_reservations: int             # all records returned (any status)
     lunch_reservations: int             # reservation count at lunch
@@ -150,6 +152,8 @@ def _aggregate(date_str: str, records: list) -> DailyReservations:
     lunch_covers       = 0
     dinner_covers      = 0
     confirmed_count    = 0
+    lunch_noshows      = 0
+    dinner_noshows     = 0
     cancelled_count    = 0
     lunch_reservations = 0
     dinner_reservations = 0
@@ -173,6 +177,16 @@ def _aggregate(date_str: str, records: list) -> DailyReservations:
 
         if is_active:
             confirmed_count += 1
+        elif status == STATUS_NOSHOW:
+            # Only count as a true no-show when last_update_status fell on the
+            # same calendar day as the reservation (rules out stale -2 records
+            # that were never updated on the actual visit date).
+            last_upd = (r.get("last_update_status") or "")[:10]
+            if last_upd == date_str:
+                if any(w in shift for w in _LUNCH_SHIFTS):
+                    lunch_noshows += pax
+                elif any(w in shift for w in _DINNER_SHIFTS):
+                    dinner_noshows += pax
         elif status == STATUS_CANCELLED:
             cancelled_count += 1
 
@@ -182,6 +196,8 @@ def _aggregate(date_str: str, records: list) -> DailyReservations:
         lunch_covers=lunch_covers,
         dinner_covers=dinner_covers,
         confirmed_count=confirmed_count,
+        lunch_noshows=lunch_noshows,
+        dinner_noshows=dinner_noshows,
         cancelled_count=cancelled_count,
         total_reservations=len(records),
         lunch_reservations=lunch_reservations,
@@ -267,6 +283,8 @@ def get_reservations_range(from_date, to_date) -> list:
             "lunch_reservations": agg.lunch_reservations,
             "dinner_reservations":agg.dinner_reservations,
             "confirmed":          agg.confirmed_count,
+            "lunch_noshows":      agg.lunch_noshows,
+            "dinner_noshows":     agg.dinner_noshows,
             "cancelled":          agg.cancelled_count,
             "total_reservations": agg.total_reservations,
             "large_groups":       large_groups,
@@ -368,6 +386,7 @@ if __name__ == "__main__":
     print(f"Total covers:         {result.total_covers}  (lunch {result.lunch_covers}, dinner {result.dinner_covers})")
     print(f"Total reservations:   {result.total_reservations}")
     print(f"  Confirmed/seated:   {result.confirmed_count}")
+    print(f"  No-shows (same day): lunch {result.lunch_noshows}, dinner {result.dinner_noshows}")
     print(f"  Cancelled:          {result.cancelled_count}")
     print(f"Lunch reservations:   {result.lunch_reservations}  ({result.lunch_covers} pax)")
     print(f"Dinner reservations:  {result.dinner_reservations}  ({result.dinner_covers} pax)")
