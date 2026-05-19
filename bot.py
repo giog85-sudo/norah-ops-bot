@@ -4003,64 +4003,6 @@ def test_agora():
     return jsonify(result)
 
 
-@flask_app.route("/debug-login")
-def debug_login():
-    if not _api_check_auth():
-        return jsonify({"error": "Unauthorized"}), 401
-    import gzip as _gzip
-    url = _agora_mod.AGORA_URL + "/auth/"
-    msg = {
-        "CLRType": "IGT.POS.Bus.Security.Messages.LoginRequest",
-        "IsBlocking": False,
-        "OutOfBandMessages": [],
-        "Sender": {
-            "ApplicationName": "AgoraWebAdmin",
-            "ApplicationVersion": "8.5.6",
-            "LanguageCode": "es",
-            "MachineId": _agora_mod.AGORA_MACHINE_ID,
-            "MachineName": "Web Device",
-            "MachineType": 4,
-            "PosId": None, "PosName": "",
-            "UserId": None, "UserName": "",
-        },
-        "UserName": _agora_mod.AGORA_USER,
-        "UserPassword": "***",
-        "RememberMe": False,
-        "DefaultLanguageCode": "",
-        "RestorePreviousSession": False,
-        "NotificationToken": "",
-    }
-    try:
-        import urllib.request as _ur
-        payload_msg = dict(msg)
-        payload_msg["UserPassword"] = _agora_mod.AGORA_PASSWORD
-        body = json.dumps({"CLRType": msg["CLRType"], "Message": payload_msg}).encode()
-        req = _ur.Request(url, data=body, method="POST")
-        req.add_header("Content-Type", "application/json; charset=utf-8")
-        with _ur.urlopen(req, timeout=15) as r:
-            raw = r.read()
-            http_status = r.status
-            set_cookie = r.getheader("Set-Cookie") or ""
-        if raw[:2] == b'\x1f\x8b':
-            raw = _gzip.decompress(raw)
-        text = raw.decode("utf-8", errors="replace")
-        try:
-            parsed = json.loads(text)
-        except Exception:
-            parsed = text
-        return jsonify({
-            "http_status": http_status,
-            "set_cookie_present": bool(set_cookie),
-            "auth_token_found": "auth-token=" in set_cookie,
-            "request_url": url,
-            "request_user": _agora_mod.AGORA_USER,
-            "raw_response": parsed,
-        })
-    except Exception as e:
-        import traceback
-        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
-
-
 @flask_app.route("/run-pipeline")
 def run_pipeline():
     if not _api_check_auth():
