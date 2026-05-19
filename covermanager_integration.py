@@ -43,29 +43,57 @@ _OVERNIGHT_CUTOFF = "06:00:00"
 
 def _remap_overnight_walkins(records: list) -> list:
     """
-    Walk-in entries (status 9) created after midnight but before 06:00 belong
-    to the previous day's service. Remap their date to the previous calendar day
-    so they are counted in the correct business day's covers and walk-in totals.
+    Walk-in entries created after midnight but before 06:00 belong to the
+    previous day's dinner service. Two patterns are handled:
 
-    Requirements for remapping:
-    - status == 9 (walk-in)
-    - date_add == date  (added on the same calendar day as the visit — rules out
-                         pre-booked reservations that happen to have status 9 and
-                         an early time_add from a different booking date)
-    - time_add < 06:00  (entered after midnight, before the business day cutoff)
+    Case 1 — status=9, date_add == date, time_add < 06:00:
+        CoverManager dated the record on the calendar day it was entered (e.g.
+        May 16), but the visit belongs to May 15 dinner. Remap date to
+        date - 1 day and force meal_shift=Cena.
+
+    Case 2 — status=5, provenance="walk in", date_add == date, time_add < 06:00:
+        Staff entered the guest as arrived (status 5) after midnight on the same
+        calendar day as the visit. CoverManager dated the record on the day it was
+        entered (e.g. May 16) even though the service was the previous night
+        (May 15 dinner). Remap date to date - 1 and force meal_shift=Cena.
     """
     out = []
     for r in records:
-        if (int(r.get("status") or 0) == STATUS_WALKIN
-                and r.get("date_add", "") == r.get("date", "X")
-                and (r.get("time_add") or "99:99:99") < _OVERNIGHT_CUTOFF
-                and r.get("date")):
+        status   = int(r.get("status") or 0)
+        time_add = r.get("time_add") or "99:99:99"
+        date_add = r.get("date_add", "")
+        rec_date = r.get("date", "")
+        prov     = (r.get("provenance") or "").strip().lower()
+
+        if not rec_date:
+            out.append(r)
+            continue
+
+        # Case 1: status=9 walk-in entered after midnight on the same calendar
+        # day as the visit date — remap date to previous day, force Cena.
+        if (status == STATUS_WALKIN
+                and date_add == rec_date
+                and time_add < _OVERNIGHT_CUTOFF):
             r = dict(r)
             try:
-                r["date"] = (date.fromisoformat(r["date"]) - timedelta(days=1)).isoformat()
+                r["date"] = (date.fromisoformat(rec_date) - timedelta(days=1)).isoformat()
             except ValueError:
                 pass
-            r["meal_shift"] = "Cena"  # after midnight always means dinner service
+            r["meal_shift"] = "Cena"
+
+        # Case 2: status=5 provenance="walk in" entered after midnight on the
+        # same calendar day — same pattern as Case 1, remap date and force Cena.
+        elif (status == STATUS_ARRIVED
+                and prov == "walk in"
+                and date_add == rec_date
+                and time_add < _OVERNIGHT_CUTOFF):
+            r = dict(r)
+            try:
+                r["date"] = (date.fromisoformat(rec_date) - timedelta(days=1)).isoformat()
+            except ValueError:
+                pass
+            r["meal_shift"] = "Cena"
+
         out.append(r)
     return out
 
