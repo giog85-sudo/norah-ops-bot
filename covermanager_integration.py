@@ -206,11 +206,16 @@ def _aggregate(date_str: str, records: list) -> DailyReservations:
         if is_active:
             confirmed_count += 1
         elif status == STATUS_NOSHOW:
-            # Only count as a true no-show when last_update_status fell on the
-            # same calendar day as the reservation (rules out stale -2 records
-            # that were never updated on the actual visit date).
-            last_upd = (r.get("last_update_status") or "")[:10]
-            if last_upd == date_str:
+            # Count as a true no-show only when last_update_status is on the
+            # same calendar day AND after the reservation time. This excludes
+            # records pre-emptively marked -2 before the guest was due to arrive
+            # (staff clearing tables in advance, or early cancellations logged
+            # as no-shows).
+            last_upd_raw = (r.get("last_update_status") or "")
+            last_upd_date = last_upd_raw[:10]
+            last_upd_time = last_upd_raw[11:16]   # HH:MM
+            res_time      = (r.get("time") or "")[:5]  # HH:MM
+            if last_upd_date == date_str and last_upd_time > res_time:
                 if any(w in shift for w in _LUNCH_SHIFTS):
                     lunch_noshows += pax
                 elif any(w in shift for w in _DINNER_SHIFTS):
