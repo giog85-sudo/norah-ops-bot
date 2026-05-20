@@ -26,12 +26,13 @@ COVERMANAGER_API_KEY    = os.getenv("COVERMANAGER_API_KEY",    "jByeKYdu3p6DfHYe
 COVERMANAGER_RESTAURANT = os.getenv("COVERMANAGER_RESTAURANT", "Restaurante-Norah").strip()
 
 # Reservation status codes returned by CoverManager
-STATUS_CONFIRMED  =  1   # booked / confirmed
-STATUS_SEATED     =  2   # arrived / seated
-STATUS_ARRIVED    =  5   # arrived/active — used by this CoverManager installation
-STATUS_WALKIN     =  9   # walk-in entered directly by staff into CoverManager
-STATUS_NOSHOW     = -2   # no-show
-STATUS_CANCELLED  = -5   # cancelled by guest or restaurant
+STATUS_CONFIRMED      =  1   # booked / confirmed
+STATUS_SEATED         =  2   # arrived / seated
+STATUS_PRECONFIRMED   =  3   # pre-confirmed via third-party platform (terceros, moduloweb, app-movil)
+STATUS_ARRIVED        =  5   # arrived/active — used by this CoverManager installation
+STATUS_WALKIN         =  9   # walk-in entered directly by staff into CoverManager
+STATUS_NOSHOW         = -2   # no-show
+STATUS_CANCELLED      = -5   # cancelled by guest or restaurant
 
 # Shift labels (Spanish)
 _LUNCH_SHIFTS  = {"comida", "almuerzo", "mediodía", "mediodia"}
@@ -191,8 +192,8 @@ def _aggregate(date_str: str, records: list) -> DailyReservations:
         pax    = int(r.get("for", 0) or 0)
         shift  = (r.get("meal_shift") or "").strip().lower()
 
-        # Count covers for confirmed, seated, arrived (5), or walk-in (9)
-        is_active = status in (STATUS_CONFIRMED, STATUS_SEATED, STATUS_ARRIVED, STATUS_WALKIN)
+        # Count covers for confirmed, pre-confirmed (3), seated, arrived (5), or walk-in (9)
+        is_active = status in (STATUS_CONFIRMED, STATUS_PRECONFIRMED, STATUS_SEATED, STATUS_ARRIVED, STATUS_WALKIN)
 
         if is_active:
             total_covers += pax
