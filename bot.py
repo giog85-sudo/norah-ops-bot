@@ -159,8 +159,7 @@ def _try_cm_covers(day_: date) -> dict:
                 last_upd_raw  = (r.get("last_update_status") or "")
                 last_upd_date = last_upd_raw[:10]
                 last_upd_time = last_upd_raw[11:16]   # HH:MM
-                res_time      = (r.get("time") or "")[:5]  # HH:MM
-                if last_upd_date == date_str and last_upd_time > res_time:
+                if last_upd_date == date_str and last_upd_time >= "12:00":
                     if is_lunch:
                         lunch_noshows += pax
                     elif is_dinner:
