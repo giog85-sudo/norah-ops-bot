@@ -155,7 +155,7 @@ def _try_cm_covers(day_: date) -> dict:
                 elif is_dinner:
                     dinner_walkins += pax
 
-            if status == -2:
+            if status == -3:
                 last_upd_raw  = (r.get("last_update_status") or "")
                 last_upd_date = last_upd_raw[:10]
                 last_upd_time = last_upd_raw[11:16]   # HH:MM

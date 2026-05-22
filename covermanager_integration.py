@@ -31,8 +31,9 @@ STATUS_SEATED         =  2   # arrived / seated
 STATUS_PRECONFIRMED   =  3   # pre-confirmed via third-party platform (terceros, moduloweb, app-movil)
 STATUS_ARRIVED        =  5   # arrived/active — used by this CoverManager installation
 STATUS_WALKIN         =  9   # walk-in entered directly by staff into CoverManager
-STATUS_NOSHOW         = -2   # no-show
-STATUS_CANCELLED      = -5   # cancelled by guest or restaurant
+STATUS_CANCELLED      = -2   # cancelled by client
+STATUS_NOSHOW         = -3   # no-show (guest did not appear)
+STATUS_HARD_CANCELLED = -5   # cancelled by guest or restaurant
 
 # Shift labels (Spanish)
 _LUNCH_SHIFTS  = {"comida", "almuerzo", "mediodía", "mediodia"}
@@ -110,8 +111,8 @@ class DailyReservations:
     lunch_covers: int                   # pax at lunch (Comida)
     dinner_covers: int                  # pax at dinner (Cena)
     confirmed_count: int                # reservations with status 1 or 2
-    lunch_noshows: int                  # no-show pax at lunch (status -2, updated same calendar day)
-    dinner_noshows: int                 # no-show pax at dinner (status -2, updated same calendar day)
+    lunch_noshows: int                  # no-show pax at lunch (status -3, updated same calendar day)
+    dinner_noshows: int                 # no-show pax at dinner (status -3, updated same calendar day)
     cancelled_count: int                # reservations with status -5
     total_reservations: int             # all records returned (any status)
     lunch_reservations: int             # reservation count at lunch
