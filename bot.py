@@ -4028,10 +4028,11 @@ def run_pipeline():
             "cash":              ds.cash,
             "tips":              ds.tips,
             "lunch_sales":       ds.lunch_net,
-            "lunch_avg_ticket":  ds.lunch_avg_ticket,
             "dinner_sales":      ds.dinner_net,
-            "dinner_avg_ticket": ds.dinner_avg_ticket,
-            "avg_ticket":        ds.avg_ticket,
+            # ── Avg ticket per person (Agora revenue / CM pax) ───────────────
+            "avg_ticket":        round(ds.total_net / cm["total_covers"], 2) if cm["total_covers"] else 0.0,
+            "lunch_avg_ticket":  round(ds.lunch_net  / cm["lunch_pax"],    2) if cm["lunch_pax"]    else 0.0,
+            "dinner_avg_ticket": round(ds.dinner_net / cm["dinner_pax"],   2) if cm["dinner_pax"]   else 0.0,
             # ── Covers (CoverManager) ─────────────────────────────────────────
             "total_covers":      cm["total_covers"],
             "lunch_pax":         cm["lunch_pax"],
