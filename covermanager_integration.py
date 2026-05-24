@@ -43,21 +43,31 @@ _DINNER_SHIFTS = {"cena", "noche", "tarde"}
 _OVERNIGHT_CUTOFF = "06:00:00"
 
 
+# Provenances that represent staff-entered records (walk-ins entered at the
+# terminal during or after service). Only these are eligible for overnight
+# remapping. Customer-initiated channels (moduloweb, app-movil, Google, etc.)
+# are never remapped — a booking made at 00:22 via an app belongs to that
+# calendar day's service, not the previous night's dinner.
+_STAFF_PROVENANCES = {"walk in", "walk-in", "walkin", "terceros", "software"}
+
+
 def _remap_overnight_walkins(records: list) -> list:
     """
-    Walk-in entries created after midnight but before 06:00 belong to the
-    previous day's dinner service. Two patterns are handled:
+    Staff-entered walk-ins created after midnight but before 06:00 belong to
+    the previous day's dinner service. Only records whose provenance is in
+    _STAFF_PROVENANCES are eligible — customer-initiated bookings (moduloweb,
+    app-movil, Google, waitinglist, etc.) are never remapped regardless of
+    time_add, since a guest booking at 00:22 intends the upcoming calendar day.
 
-    Case 1 — status=9, date_add == date, time_add < 06:00:
-        CoverManager dated the record on the calendar day it was entered (e.g.
-        May 16), but the visit belongs to May 15 dinner. Remap date to
-        date - 1 day and force meal_shift=Cena.
+    Case 1 — status=9, provenance in STAFF_PROVENANCES, date_add == date,
+              time_add < 06:00:
+        Staff entered the walk-in after midnight; CoverManager dated it on the
+        calendar day it was entered. Remap date to date - 1 and force Cena.
 
-    Case 2 — status=5, provenance="walk in", date_add == date, time_add < 06:00:
-        Staff entered the guest as arrived (status 5) after midnight on the same
-        calendar day as the visit. CoverManager dated the record on the day it was
-        entered (e.g. May 16) even though the service was the previous night
-        (May 15 dinner). Remap date to date - 1 and force meal_shift=Cena.
+    Case 2 — status=5, provenance in STAFF_PROVENANCES, date_add == date,
+              time_add < 06:00:
+        Staff marked the guest as arrived (status 5) after midnight on the same
+        calendar day. Same remap: date - 1 and force Cena.
     """
     out = []
     for r in records:
@@ -71,9 +81,11 @@ def _remap_overnight_walkins(records: list) -> list:
             out.append(r)
             continue
 
-        # Case 1: status=9 walk-in entered after midnight on the same calendar
-        # day as the visit date — remap date to previous day, force Cena.
+        is_staff = prov in _STAFF_PROVENANCES
+
+        # Case 1: status=9, staff provenance, entered after midnight same day.
         if (status == STATUS_WALKIN
+                and is_staff
                 and date_add == rec_date
                 and time_add < _OVERNIGHT_CUTOFF):
             r = dict(r)
@@ -83,10 +95,9 @@ def _remap_overnight_walkins(records: list) -> list:
                 pass
             r["meal_shift"] = "Cena"
 
-        # Case 2: status=5 provenance="walk in" entered after midnight on the
-        # same calendar day — same pattern as Case 1, remap date and force Cena.
+        # Case 2: status=5, staff provenance, entered after midnight same day.
         elif (status == STATUS_ARRIVED
-                and prov == "walk in"
+                and is_staff
                 and date_add == rec_date
                 and time_add < _OVERNIGHT_CUTOFF):
             r = dict(r)
