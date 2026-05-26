@@ -204,10 +204,10 @@ def _aggregate(date_str: str, records: list) -> DailyReservations:
         pax    = int(r.get("for", 0) or 0)
         shift  = (r.get("meal_shift") or "").strip().lower()
 
-        # Count covers only for physically arrived/seated guests (5) and walk-ins (9).
-        # Status 1 (pending), 2 (confirmed), 3 (pre-confirmed via platform) are
-        # pre-arrival states and must not inflate cover counts.
-        is_active = status in (STATUS_ARRIVED, STATUS_WALKIN)
+        # Count covers for all active reservation states: confirmed (1), seated (2),
+        # pre-confirmed via platform (3), arrived (5), and walk-in (9).
+        # This matches the CM UI which includes pre-arrival confirmed reservations.
+        is_active = status in (STATUS_CONFIRMED, STATUS_PRECONFIRMED, STATUS_SEATED, STATUS_ARRIVED, STATUS_WALKIN)
 
         if is_active:
             total_covers += pax
