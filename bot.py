@@ -4052,6 +4052,51 @@ def run_pipeline():
         return jsonify({"error": str(e)}), 500
 
 
+@flask_app.route("/send-corrected-post")
+def send_corrected_post():
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    date_str = request.args.get("date", "2026-05-25")
+    try:
+        from datetime import date as _date
+        import urllib.request as _urlreq, urllib.parse as _urlparse
+        day_ = _date.fromisoformat(date_str)
+
+        # Delete stale DB record so build_owners_post_for_day re-fetches live
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM full_daily_stats WHERE day = %s;", (day_,))
+                cur.execute("DELETE FROM daily_stats WHERE day = %s;", (day_,))
+            conn.commit()
+
+        # Build fresh post (will call _try_agora + _try_cm_covers and re-save to DB)
+        body = build_owners_post_for_day(day_)
+        header = (
+            f"🔄 Corrected post — Day {day_.strftime('%d/%m/%Y')}\n"
+            f"(Replaces the earlier version with incorrect walk-in / cover figures)\n\n"
+        )
+        msg = header + body
+
+        chats = owners_silent_chat_ids()
+        results = []
+        for chat_id in chats:
+            payload = _urlparse.urlencode({
+                "chat_id": chat_id,
+                "text": msg,
+            }).encode()
+            tg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+            req = _urlreq.Request(tg_url, data=payload, method="POST")
+            try:
+                with _urlreq.urlopen(req, timeout=15) as r:
+                    results.append({"chat_id": chat_id, "status": r.status})
+            except Exception as e:
+                results.append({"chat_id": chat_id, "error": str(e)})
+
+        return jsonify({"date": date_str, "chats": results, "message_preview": msg[:300]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @flask_app.route("/test-payment-methods")
 def test_payment_methods():
     if not _api_check_auth():
