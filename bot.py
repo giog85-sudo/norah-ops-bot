@@ -4097,6 +4097,108 @@ def send_corrected_post():
         return jsonify({"error": str(e)}), 500
 
 
+@flask_app.route("/raw-z-report")
+def raw_z_report():
+    """
+    Return the full unfiltered GetPosCloseOutsRequest response for a date,
+    plus the aggregated production result and SaleCenter breakdown.
+    Read-only diagnostic endpoint.
+    """
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    date_str = request.args.get("date", "2026-05-25")
+    try:
+        import datetime as _dt
+        d0   = _dt.date.fromisoformat(date_str)
+        d_to = (d0 + _dt.timedelta(days=2)).isoformat()
+
+        auth_token, session = _agora_mod._login()
+
+        # ── Raw PosCloseOuts (wide window, unfiltered) ──────────────────────
+        CLR = "IGT.POS.Bus.Reporting.Messages.GetPosCloseOutsRequest"
+        raw_msg = {
+            "CLRType": CLR,
+            "IsBlocking": False,
+            "OutOfBandMessages": [],
+            "Sender": {
+                "ApplicationName": "AgoraWebAdmin",
+                "ApplicationVersion": "8.5.6",
+                "LanguageCode": "es",
+                "MachineId": _agora_mod.AGORA_CLOUD_MACHINE_ID,
+                "MachineName": "Web Device",
+                "MachineType": 4,
+                "PosId": 0,
+                "PosName": "",
+                "UserId": session["UserId"],
+                "UserName": session["UserName"],
+            },
+            "PosGroupIds": [1],
+            "FromCloseDate": f"{date_str}T00:00:00.000",
+            "ToCloseDate":   f"{d_to}T23:59:59.000",
+        }
+        status_co, _, text_co = _agora_mod._post(
+            "/bus/",
+            {"CLRType": CLR, "Message": raw_msg},
+            cookie=f"auth-token={auth_token}",
+        )
+        import json as _json
+        try:
+            raw_parsed = _json.loads(text_co)
+        except Exception:
+            raw_parsed = {"raw_text": text_co[:5000]}
+
+        all_closeouts = raw_parsed.get("Message", {}).get("PosCloseOuts", [])
+        matching = [c for c in all_closeouts if (c.get("BusinessDay") or "")[:10] == date_str]
+
+        # ── Production aggregate ────────────────────────────────────────────
+        prod_result = _agora_mod._fetch_closeouts(auth_token, session, date_str)
+
+        # ── SaleCenter breakdown ────────────────────────────────────────────
+        CLR_SC = "IGT.POS.Bus.Reporting.Messages.GetSaleCenterSalesFileReportRequest"
+        sc_msg = {
+            "CLRType": CLR_SC,
+            "IsBlocking": True,
+            "OutOfBandMessages": [],
+            "Sender": {
+                "ApplicationName": "AgoraWebAdmin",
+                "ApplicationVersion": "8.5.6",
+                "LanguageCode": "es",
+                "MachineId": _agora_mod.AGORA_SALECENTER_MACHINE_ID,
+                "MachineName": "Web Device",
+                "MachineType": 4,
+                "PosId": 0,
+                "PosName": "",
+                "UserId": session["UserId"],
+                "UserName": session["UserName"],
+            },
+            "PosGroupsIds": [1],
+            "From": f"{date_str}T00:00:00.000",
+            "To":   f"{date_str}T23:59:59.000",
+        }
+        status_sc, _, text_sc = _agora_mod._post(
+            "/bus/",
+            {"CLRType": CLR_SC, "Message": sc_msg},
+            cookie=f"auth-token={auth_token}",
+        )
+        try:
+            sc_parsed = _json.loads(text_sc)
+        except Exception:
+            sc_parsed = {"raw_text": text_sc[:5000]}
+
+        return jsonify({
+            "date":            date_str,
+            "closeouts_http":  status_co,
+            "all_closeouts":   all_closeouts,        # full, unfiltered
+            "matching_day":    matching,              # filtered to BusinessDay == date_str
+            "production_agg":  prod_result,          # what the bot uses
+            "salecenter_http": status_sc,
+            "salecenter_raw":  sc_parsed,            # full SaleCenter breakdown
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
+
+
 @flask_app.route("/test-payment-methods")
 def test_payment_methods():
     if not _api_check_auth():
