@@ -93,6 +93,14 @@ class DailySales:
     discounts_total: float = 0.0    # sum of all discount amounts
     discounts_count: int   = 0      # number of line items with a discount
 
+    # ── Event (Menú line items + Z report venue fee) ──────────────────────────
+    z_total_sales:    float = 0.0  # Z report TotalSales (line items + venue fee)
+    transferencia:    float = 0.0  # Transferencia payment from Z closeout
+    event_pax:        int   = 0    # guests from LineType="Menú" items
+    event_menu_total: float = 0.0  # net revenue from LineType="Menú" items
+    event_timeframe:  str   = ""   # TimeFrame of event ("Mediodía"/"Noche"/etc.)
+    venue_fee:        float = 0.0  # z_total_sales minus all line-item net
+
     # ── Raw data ──────────────────────────────────────────────────────────────
     line_items: list = field(default_factory=list)
     raw_items: int   = 0
@@ -270,9 +278,10 @@ def _fetch_closeouts(auth_token: str, session: dict, date_str: str) -> Optional[
     if not matching:
         return None
 
-    total_sales = 0.0
-    cash        = 0.0
-    visa        = 0.0
+    total_sales   = 0.0
+    cash          = 0.0
+    visa          = 0.0
+    transferencia = 0.0
 
     for c in matching:
         total_sales += float(c.get("TotalSales", 0) or 0)
@@ -283,11 +292,14 @@ def _fetch_closeouts(auth_token: str, session: dict, date_str: str) -> Optional[
                 cash += amount
             elif "tarjeta" in method:
                 visa += amount
+            elif "tranferencia" in method or "transferencia" in method:
+                transferencia += amount
 
     return {
-        "total_sales": round(total_sales, 2),
-        "cash":        round(cash, 2),
-        "visa":        round(visa, 2),
+        "total_sales":   round(total_sales, 2),
+        "cash":          round(cash, 2),
+        "visa":          round(visa, 2),
+        "transferencia": round(transferencia, 2),
     }
 
 
@@ -624,12 +636,23 @@ def get_daily_sales(query_date, save_to_db: bool = True) -> Optional[DailySales]
 
     ds = _aggregate(date_str, rows)
 
-    # Enrich with payment method split from Z report
+    # Enrich with payment method split from Z report + event detection
     try:
         closeout = _fetch_closeouts(auth_token, session, date_str)
         if closeout:
-            ds.visa = closeout["visa"]
-            ds.cash = closeout["cash"]
+            ds.visa          = closeout["visa"]
+            ds.cash          = closeout["cash"]
+            ds.z_total_sales = closeout["total_sales"]
+            ds.transferencia = closeout["transferencia"]
+
+            # Detect event: line items with LineType="Menú" are event menus
+            event_lines = [l for l in ds.line_items if (l.get("LineType") or "") == "Menú"]
+            if event_lines:
+                ds.event_pax        = int(sum(float(l.get("Quantity") or 0) for l in event_lines))
+                ds.event_menu_total = round(sum(float(l.get("Net") or 0) for l in event_lines), 2)
+                ds.event_timeframe  = (event_lines[0].get("TimeFrame") or "").strip()
+                raw_fee             = ds.z_total_sales - ds.total_net
+                ds.venue_fee        = round(raw_fee, 2) if abs(raw_fee) >= 1.0 else 0.0
     except Exception as e:
         print(f"[agora] closeout fetch failed for {date_str}: {e}")
 

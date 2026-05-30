@@ -3203,38 +3203,98 @@ def build_owners_post_for_day(report_day: date) -> str:
         agora = _try_agora(report_day)
         if agora:
             cm = _try_cm_covers(report_day)
-            upsert_full_day(
-                report_day,
-                agora.total_net, agora.visa, agora.cash, agora.tips,
-                agora.lunch_net, cm["lunch_pax"], cm["lunch_walkins"], cm["lunch_noshows"],
-                agora.dinner_net, cm["dinner_pax"], cm["dinner_walkins"], cm["dinner_noshows"],
-            )
-            upsert_daily(report_day, agora.total_net, cm["total_covers"])
+
+            # ── Event detection ───────────────────────────────────────────────
+            has_event  = agora.event_menu_total > 0
+            etf_lower  = agora.event_timeframe.lower()
+            is_lunch_event  = has_event and any(w in etf_lower for w in ("mediodía", "mediodia", "tarde"))
+            is_dinner_event = has_event and ("noche" in etf_lower or "cena" in etf_lower)
+
+            # Display sales: subtract event menu from the relevant shift
+            display_lunch  = agora.lunch_net - agora.event_menu_total if is_lunch_event  else agora.lunch_net
+            display_dinner = agora.dinner_net - agora.event_menu_total if is_dinner_event else agora.dinner_net
+
+            # Total Sales Day: use Z report total (includes venue fee) when available
+            display_total = agora.z_total_sales if agora.z_total_sales > 0 else agora.total_net
+
+            # Avg tickets use event-adjusted shift sales divided by CM pax
+            # On non-event days use total_net to stay byte-for-byte identical
             total_covers = cm["total_covers"]
-            total_avg = round(agora.total_net / total_covers, 2) if total_covers else 0.0
-            lunch_avg = round(agora.lunch_net / cm["lunch_pax"], 2) if cm["lunch_pax"] else 0.0
-            dinner_avg = round(agora.dinner_net / cm["dinner_pax"], 2) if cm["dinner_pax"] else 0.0
+            regular_consumption = (display_lunch + display_dinner) if has_event else agora.total_net
+            total_avg  = round(regular_consumption / total_covers, 2) if total_covers else 0.0
+            lunch_avg  = round(display_lunch  / cm["lunch_pax"],   2) if cm["lunch_pax"]  else 0.0
+            dinner_avg = round(display_dinner / cm["dinner_pax"],  2) if cm["dinner_pax"] else 0.0
+
+            # Safety check: flag unexpected revenue discrepancy
+            if abs(display_total - (agora.lunch_net + agora.dinner_net) - agora.venue_fee) > 5.0:
+                print(
+                    f"[WARNING] Revenue discrepancy for {report_day}: "
+                    f"z_total={display_total}, lunch={agora.lunch_net}, "
+                    f"dinner={agora.dinner_net}, venue_fee={agora.venue_fee}"
+                )
+
             visa_str = euro_comma(agora.visa) if agora.visa else "—"
             cash_str = euro_comma(agora.cash) if agora.cash else "—"
             tips_str = euro_comma(agora.tips) if agora.tips else "—"
+
+            # ── Conditional fragments ─────────────────────────────────────────
+            # (A) "Of which Transferencia" subtitle under Total Sales Day
+            transferencia_subtitle = (
+                f"Of which Transferencia: {euro_comma(agora.transferencia)} (event)\n"
+                if agora.transferencia > 0 else ""
+            )
+            # (B) Transferencia payment line between Cash and Tips
+            transferencia_payment = (
+                f"Transferencia: {euro_comma(agora.transferencia)}\n"
+                if agora.transferencia > 0 else ""
+            )
+            # (C) Event block between Dinner and Notes
+            if has_event:
+                venue_line = (
+                    f"Venue fee: {euro_comma(agora.venue_fee)}\n"
+                    if agora.venue_fee > 0 else ""
+                )
+                event_total = agora.event_menu_total + agora.venue_fee
+                event_block = (
+                    f"🎉 Event ({agora.event_timeframe}):\n"
+                    f"Menu ({agora.event_pax} pax): {euro_comma(agora.event_menu_total)}\n"
+                    f"{venue_line}"
+                    f"Total: {euro_comma(event_total)}\n\n"
+                )
+            else:
+                event_block = ""
+
+            # Save to DB: use z_total_sales so monthly aggregates include venue fee
+            db_total = agora.z_total_sales if agora.z_total_sales > 0 else agora.total_net
+            upsert_full_day(
+                report_day,
+                db_total, agora.visa, agora.cash, agora.tips,
+                agora.lunch_net, cm["lunch_pax"], cm["lunch_walkins"], cm["lunch_noshows"],
+                agora.dinner_net, cm["dinner_pax"], cm["dinner_walkins"], cm["dinner_noshows"],
+            )
+            upsert_daily(report_day, db_total, cm["total_covers"])
+
             msg = (
                 f"📌 Norah Daily Post\n"
                 f"Day: {fmt_day_ddmmyyyy(report_day)}\n"
-                f"Total Sales Day: {euro_comma(agora.total_net)} *(Agora POS)*\n"
+                f"Total Sales Day: {euro_comma(display_total)} *(Agora POS)*\n"
+                f"{transferencia_subtitle}"
                 f"Total Covers: {total_covers}  |  Avg Ticket: {euro_comma(total_avg)}\n\n"
                 f"Visa: {visa_str}\n"
                 f"Cash: {cash_str}\n"
+                f"{transferencia_payment}"
                 f"Tips: {tips_str}\n\n"
-                f"Lunch: {euro_comma(agora.lunch_net)}\n"
+                f"Lunch: {euro_comma(display_lunch)}\n"
                 f"Pax: {cm['lunch_pax']}\n"
                 f"Avg Ticket: {euro_comma(lunch_avg)}\n"
                 f"Walk in: {cm['lunch_walkins']}\n"
                 f"No show: {cm['lunch_noshows']}\n\n"
-                f"Dinner: {euro_comma(agora.dinner_net)}\n"
+                f"Dinner: {euro_comma(display_dinner)}\n"
                 f"Pax: {cm['dinner_pax']}\n"
                 f"Avg Ticket: {euro_comma(dinner_avg)}\n"
                 f"Walk in: {cm['dinner_walkins']}\n"
                 f"No show: {cm['dinner_noshows']}\n\n"
+                f"{event_block}"
                 f"📝 Notes:\n{notes_block}"
             )
         else:
@@ -4041,6 +4101,13 @@ def run_pipeline():
             "dinner_walkins":    cm["dinner_walkins"],
             "lunch_noshows":     cm["lunch_noshows"],
             "dinner_noshows":    cm["dinner_noshows"],
+            # ── Event (Agora-sourced, 0/"" on non-event days) ─────────────────
+            "z_total_sales":    ds.z_total_sales,
+            "transferencia":    ds.transferencia,
+            "event_pax":        ds.event_pax,
+            "event_menu_total": ds.event_menu_total,
+            "event_timeframe":  ds.event_timeframe,
+            "venue_fee":        ds.venue_fee,
             # ── Breakdowns ────────────────────────────────────────────────────
             "waiters":           ds.waiters,
             "families":          ds.families,
