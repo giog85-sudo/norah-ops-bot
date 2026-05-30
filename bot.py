@@ -4254,42 +4254,6 @@ def preview_post():
         return str(e), 500
 
 
-@flask_app.route("/raw-menu-lines")
-def raw_menu_lines():
-    """
-    DIAGNOSTIC — read-only. Returns all Agora line items where LineType == 'Menú'
-    for a given date. Fields: Product, Categories, Quantity, Net, User, UserProfile,
-    TimeFrame, DocumentNumber, LineType.
-    Auth: Bearer token (same as other endpoints).
-    """
-    if not _api_check_auth():
-        return jsonify({"error": "Unauthorized"}), 401
-    date_str = request.args.get("date")
-    if not date_str:
-        return jsonify({"error": "date param required (YYYY-MM-DD)"}), 400
-    try:
-        from agora_integration import _login, _fetch_sales_rows
-        auth_token, session = _login()
-        rows = _fetch_sales_rows(auth_token, session, date_str, date_str)
-        menu_rows = [
-            {
-                "Product":        r.get("Product"),
-                "Categories":     r.get("Categories"),
-                "Quantity":       r.get("Quantity"),
-                "Net":            r.get("Net"),
-                "User":           r.get("User"),
-                "UserProfile":    r.get("UserProfile"),
-                "TimeFrame":      r.get("TimeFrame"),
-                "DocumentNumber": r.get("DocumentNumber"),
-                "LineType":       r.get("LineType"),
-            }
-            for r in rows if r.get("LineType") == "Menú"
-        ]
-        return jsonify({"date": date_str, "menu_lines": menu_rows, "count": len(menu_rows)})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
 @flask_app.route("/raw-z-report")
 def raw_z_report():
     """
