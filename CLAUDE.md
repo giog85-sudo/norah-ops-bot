@@ -52,6 +52,7 @@ Rich daily breakdown with lunch/dinner split. Primary data table.
 - `lunch_sales` FLOAT, `lunch_pax` INT, `lunch_walkins` INT, `lunch_noshows` INT
 - `dinner_sales` FLOAT, `dinner_pax` INT, `dinner_walkins` INT, `dinner_noshows` INT
 - `created_at` TIMESTAMPTZ
+- **Event columns not yet in schema**: `z_total_sales`, `transferencia`, `event_pax`, `event_menu_total`, `event_timeframe`, `venue_fee` exist only on the `DailySales` dataclass; `upsert_full_day()` silently drops them. See Deferred section.
 
 ### `notes_entries`
 Operational notes/incidents tagged by day.
@@ -119,6 +120,89 @@ All run via `JobQueue` respecting `TZ_NAME`. Three jobs:
 | `daily_post_to_owners` | Daily @ `DAILY_POST_HOUR:DAILY_POST_MINUTE` | `ROLE_OWNERS_SILENT` chats | Full daily report (sales, tips, notes, payment split) |
 | `weekly_digest_monday` | Monday @ `WEEKLY_DIGEST_HOUR:00` | `ROLE_OWNERS_SILENT` chats | Week's sales/covers summary |
 | `evening_alerts` | Daily @ `ALERT_EVENING_HOUR:00` | `ROLE_OWNERS_SILENT` chats | Anomaly alerts for previous business day |
+
+---
+
+## Agora POS Integration
+
+### Event Detection
+
+Norah occasionally hosts private events. Detection rule: any line item with `LineType == "Menú"` in the `GetSalesAnalyticsReportRequest` response.
+
+- Norah has **no menú del día**, so this rule cannot false-positive on regular service.
+- From the Menú line item: `Quantity` → `event_pax`, `Net` → `event_menu_total`, `TimeFrame` → `event_timeframe` (`"Mediodía"` / `"Noche"` / `"Tarde"`).
+- `Categories` field for event lines is `"MENUS EVENTOS"` — useful secondary debug signal, not used in the detector.
+- Detection runs inside `get_daily_sales()` in `agora_integration.py`, after the closeout enrichment block. Results are stored on the `DailySales` dataclass.
+
+### Revenue Source: Z Report (`GetPosCloseOutsRequest`)
+
+- `z_total_sales` = `TotalSales` summed across `PosCloseOuts` records matching `BusinessDay == date`. Query window is `date → date+2` to catch records closed after midnight.
+- Regular days: `z_total_sales == lunch_sales + dinner_sales` (verified against Angie's manual reports).
+- Event days: `z_total_sales > lunch + dinner` by the **venue fee** amount, because venue fees are billed at POS-ticket level and do not appear as Agora line items.
+- `venue_fee = z_total_sales − total_net` with €1 rounding tolerance (`abs(raw) < 1.0 → treat as 0`).
+- `transferencia`: summed from each closeout's `Payments` array where `MethodName` contains `"tranferencia"` or `"transferencia"`. **Agora's API misspells it without the 's'** — always match both defensively; always display the correct spelling `"Transferencia"` to owners.
+
+### Daily Post — Event-Aware Template
+
+On event days three conditional fragments are injected. On non-event days the post is **byte-for-byte identical** to the standard template.
+
+**(A)** `"Of which Transferencia: X (event)"` — one line directly under `Total Sales Day`. Only when `transferencia > 0`.
+
+**(B)** `"Transferencia: X"` — payment line between `Cash` and `Tips`. Only when `transferencia > 0`.
+
+**(C)** Event block between the Dinner block and `📝 Notes:`. Only when `event_menu_total > 0`:
+```
+🎉 Event (Noche):
+Menu (36 pax): 2448,00
+Venue fee: 1500,00    ← omit if venue_fee == 0
+Total: 3948,00
+```
+
+Silent value adjustments on event days (transparent to readers):
+- `Total Sales Day` uses `z_total_sales` (not `lunch + dinner`); equal on non-event days → no-op.
+- The shift matching `event_timeframe` subtracts `event_menu_total` from its displayed sales figure.
+- Headline `Avg Ticket` = `(lunch_sales + dinner_sales − event_menu_total) / total_covers` (regular consumption per CM cover).
+- Shift avg tickets use the same event-adjusted sales divided by CM pax.
+
+### Data Source Separation
+
+| Metric | Source | Notes |
+|---|---|---|
+| `lunch_pax`, `dinner_pax`, `total_covers` | CoverManager | Authoritative cover count |
+| `lunch_walkins`, `dinner_walkins` | CoverManager | Walk-in scan (`prov ∈ {"walk in","walk-in","walkin"}`, `status ∈ {5,9}`) |
+| `lunch_noshows`, `dinner_noshows` | CoverManager | No-show scan (`status=-3`, same-day, `last_update_status ≥ 12:00`) |
+| `event_pax` | Agora POS — Menú line `Quantity` | **Never** added to CM counts |
+| `event_menu_total`, `event_timeframe` | Agora POS — Menú line `Net`, `TimeFrame` | — |
+| `venue_fee`, `transferencia`, `z_total_sales` | Agora Z report (`GetPosCloseOutsRequest`) | Derived from closeout |
+| Shift sales (`lunch_net`, `dinner_net`) | Agora POS — line items grouped by `TimeFrame` | Includes event menu revenue before adjustment |
+
+Event guests are a separate population that does not exist in CoverManager. `event_pax` is **never** added to `total_covers` or any CM count.
+
+### `/preview-post` Endpoint
+
+`GET /preview-post?date=YYYY-MM-DD` — auth-protected (same Bearer token as other Flask endpoints). Returns the rendered daily post as `text/plain`. **Does not send to Telegram. Does not write to DB.**
+
+Implementation: calls `build_owners_post_for_day(report_day, dry_run=True)`. When `dry_run=True`:
+- `get_full_day()` is skipped (`full_row = None`) — any cached DB row is ignored.
+- The function always goes through the live Agora + CM fetch, which has full event detection and the `*(Agora POS)*` annotation.
+
+Use this any time you need to inspect a day's post before resending a corrected version to owners.
+
+### Verified Reference — 2026-05-25 (First Event Day)
+
+| Field | Value |
+|---|---|
+| `z_total_sales` | 5784.60 |
+| `transferencia` | 3948.00 |
+| `event_pax` | 36 |
+| `event_menu_total` | 2448.00 |
+| `event_timeframe` | `"Noche"` |
+| `venue_fee` | 1500.00 |
+| Regular consumption | 794.60 + (3490.00 − 2448.00) = 1836.60 |
+| Total covers (CM) | 40 |
+| Headline avg ticket | 1836.60 / 40 = 45.92 |
+
+Reconciles exactly with Angie's manual report.
 
 ---
 
@@ -265,3 +349,6 @@ Multiple tags per note are supported. Tag analytics: `/tagstats`, `/soldout`, `/
 - **Agent tool extensibility.** `AGENT_TOOLS` list is structured for easy addition of new query tools beyond the current 9.
 - **Legacy role config.** `OWNERS_CHAT_IDS` in `settings` table still supported alongside `chat_roles` table; both code paths are live.
 - **No opening/shift-start alerts.** All scheduled alerts are end-of-day. Real-time shift alerts would require a second scheduled job or webhook triggers.
+- **Event data not persisted to DB.** `full_daily_stats` lacks six event columns (`z_total_sales`, `transferencia`, `event_pax`, `event_menu_total`, `event_timeframe`, `venue_fee`). `upsert_full_day()` silently drops them at the DB boundary. Until a schema migration adds these columns, event-aware rendering requires the live Agora path (no cached DB row for the day, or `dry_run=True` via `/preview-post`).
+- **Two diverging daily post templates.** `build_owners_post_for_day` has a DB-path branch (when `full_row` exists) with a legacy template — no event logic, no `*(Agora POS)*` annotation — and a live-path branch with full event support. Currently safe because: the scheduled job always hits the live path (no row yet at 11:05), `/preview-post` forces live path via `dry_run=True`, and `/send-corrected-post` deletes the row before rebuilding. Future fix: unify the two templates (requires schema migration first).
+- **Float rounding on avg ticket.** Headline avg ticket may show 1¢ low (e.g., 45.915 → 45.91 instead of 45.92) due to Python float arithmetic.
