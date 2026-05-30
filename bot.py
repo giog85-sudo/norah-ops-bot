@@ -3158,7 +3158,7 @@ async def confirmfull(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 # Owners post builder + scheduled post
 # =========================
-def build_owners_post_for_day(report_day: date) -> str:
+def build_owners_post_for_day(report_day: date, dry_run: bool = False) -> str:
     full_row = get_full_day(report_day)
     notes_texts = notes_for_day(report_day)
 
@@ -3266,13 +3266,14 @@ def build_owners_post_for_day(report_day: date) -> str:
 
             # Save to DB: use z_total_sales so monthly aggregates include venue fee
             db_total = agora.z_total_sales if agora.z_total_sales > 0 else agora.total_net
-            upsert_full_day(
-                report_day,
-                db_total, agora.visa, agora.cash, agora.tips,
-                agora.lunch_net, cm["lunch_pax"], cm["lunch_walkins"], cm["lunch_noshows"],
-                agora.dinner_net, cm["dinner_pax"], cm["dinner_walkins"], cm["dinner_noshows"],
-            )
-            upsert_daily(report_day, db_total, cm["total_covers"])
+            if not dry_run:
+                upsert_full_day(
+                    report_day,
+                    db_total, agora.visa, agora.cash, agora.tips,
+                    agora.lunch_net, cm["lunch_pax"], cm["lunch_walkins"], cm["lunch_noshows"],
+                    agora.dinner_net, cm["dinner_pax"], cm["dinner_walkins"], cm["dinner_noshows"],
+                )
+                upsert_daily(report_day, db_total, cm["total_covers"])
 
             msg = (
                 f"📌 Norah Daily Post\n"
@@ -4162,6 +4163,29 @@ def send_corrected_post():
         return jsonify({"date": date_str, "chats": results, "message_preview": msg[:300]})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@flask_app.route("/preview-post")
+def preview_post():
+    """
+    Render the daily post for any date and return it as plain text — no DB writes,
+    no Telegram sends. Useful for dry-run inspection before resending a corrected post.
+    """
+    if not _api_check_auth():
+        return "Unauthorized", 401
+    date_str = request.args.get("date", "")
+    try:
+        from datetime import date as _date
+        day_ = _date.fromisoformat(date_str)
+    except (ValueError, TypeError):
+        return f"Invalid date '{date_str}'. Use YYYY-MM-DD.", 400
+    try:
+        text = build_owners_post_for_day(day_, dry_run=True)
+        resp = make_response(text)
+        resp.content_type = "text/plain; charset=utf-8"
+        return resp
+    except Exception as e:
+        return str(e), 500
 
 
 @flask_app.route("/raw-z-report")
