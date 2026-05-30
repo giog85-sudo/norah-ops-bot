@@ -661,6 +661,12 @@ def upsert_full_day(
     dinner_pax: int,
     dinner_walkins: int,
     dinner_noshows: int,
+    z_total_sales:    float = 0.0,
+    transferencia:    float = 0.0,
+    event_pax:        int   = 0,
+    event_menu_total: float = 0.0,
+    event_timeframe:  str   = "",
+    venue_fee:        float = 0.0,
 ):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -669,9 +675,11 @@ def upsert_full_day(
                 INSERT INTO full_daily_stats (
                     day, total_sales, visa, cash, tips,
                     lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
-                    dinner_sales, dinner_pax, dinner_walkins, dinner_noshows
+                    dinner_sales, dinner_pax, dinner_walkins, dinner_noshows,
+                    z_total_sales, transferencia, event_pax,
+                    event_menu_total, event_timeframe, venue_fee
                 )
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (day) DO UPDATE SET
                     total_sales=EXCLUDED.total_sales,
                     visa=EXCLUDED.visa,
@@ -684,12 +692,20 @@ def upsert_full_day(
                     dinner_sales=EXCLUDED.dinner_sales,
                     dinner_pax=EXCLUDED.dinner_pax,
                     dinner_walkins=EXCLUDED.dinner_walkins,
-                    dinner_noshows=EXCLUDED.dinner_noshows;
+                    dinner_noshows=EXCLUDED.dinner_noshows,
+                    z_total_sales=EXCLUDED.z_total_sales,
+                    transferencia=EXCLUDED.transferencia,
+                    event_pax=EXCLUDED.event_pax,
+                    event_menu_total=EXCLUDED.event_menu_total,
+                    event_timeframe=EXCLUDED.event_timeframe,
+                    venue_fee=EXCLUDED.venue_fee;
                 """,
                 (
                     day_, total_sales, visa, cash, tips,
                     lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
-                    dinner_sales, dinner_pax, dinner_walkins, dinner_noshows
+                    dinner_sales, dinner_pax, dinner_walkins, dinner_noshows,
+                    z_total_sales, transferencia, event_pax,
+                    event_menu_total, event_timeframe, venue_fee,
                 ),
             )
         conn.commit()
@@ -701,7 +717,13 @@ def get_full_day(day_: date):
                 """
                 SELECT total_sales, visa, cash, tips,
                        lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
-                       dinner_sales, dinner_pax, dinner_walkins, dinner_noshows
+                       dinner_sales, dinner_pax, dinner_walkins, dinner_noshows,
+                       COALESCE(z_total_sales, 0),
+                       COALESCE(transferencia, 0),
+                       COALESCE(event_pax, 0),
+                       COALESCE(event_menu_total, 0),
+                       COALESCE(event_timeframe, ''),
+                       COALESCE(venue_fee, 0)
                 FROM full_daily_stats
                 WHERE day=%s;
                 """,
@@ -726,7 +748,8 @@ def sum_full_in_period(p: Period):
                     COALESCE(SUM(dinner_sales),0),
                     COALESCE(SUM(dinner_pax),0),
                     COALESCE(SUM(dinner_walkins),0),
-                    COALESCE(SUM(dinner_noshows),0)
+                    COALESCE(SUM(dinner_noshows),0),
+                    COALESCE(SUM(z_total_sales),0)
                 FROM full_daily_stats
                 WHERE day BETWEEN %s AND %s;
                 """,
@@ -738,10 +761,12 @@ def sum_full_in_period(p: Period):
         total_sales, tips,
         lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
         dinner_sales, dinner_pax, dinner_walkins, dinner_noshows,
+        z_total_sales,
     ) = row
     return {
         "full_days": int(full_days),
         "total_sales": float(total_sales),
+        "z_total_sales": float(z_total_sales),
         "tips": float(tips),
         "lunch_sales": float(lunch_sales),
         "lunch_pax": int(lunch_pax),
@@ -766,7 +791,9 @@ def get_full_days_for_weekday(weekday: int, before_or_on: date, limit: int) -> l
                        lunch_sales, lunch_pax, lunch_noshows,
                        dinner_sales, dinner_pax, dinner_noshows,
                        tips,
-                       (COALESCE(lunch_pax,0) + COALESCE(dinner_pax,0)) AS covers
+                       (COALESCE(lunch_pax,0) + COALESCE(dinner_pax,0)) AS covers,
+                       COALESCE(z_total_sales, 0),
+                       COALESCE(event_menu_total, 0)
                 FROM full_daily_stats
                 WHERE EXTRACT(ISODOW FROM day) = %s AND day <= %s
                 ORDER BY day DESC
@@ -779,6 +806,7 @@ def get_full_days_for_weekday(weekday: int, before_or_on: date, limit: int) -> l
     for r in rows:
         covers = int(r[9] or 0)
         sales = float(r[1] or 0)
+        z_sales = float(r[10] or 0) or sales
         lunch_pax = int(r[3] or 0)
         dinner_pax = int(r[6] or 0)
         lunch_sales = float(r[2] or 0)
@@ -786,6 +814,8 @@ def get_full_days_for_weekday(weekday: int, before_or_on: date, limit: int) -> l
         result.append({
             "day": r[0],
             "total_sales": sales,
+            "z_total_sales": z_sales,
+            "event_menu_total": float(r[11] or 0),
             "lunch_sales": lunch_sales,
             "lunch_pax": lunch_pax,
             "lunch_noshows": int(r[4] or 0),
@@ -794,7 +824,7 @@ def get_full_days_for_weekday(weekday: int, before_or_on: date, limit: int) -> l
             "dinner_noshows": int(r[7] or 0),
             "tips": float(r[8] or 0),
             "covers": covers,
-            "avg_ticket": (sales / covers) if covers else 0.0,
+            "avg_ticket": (z_sales / covers) if covers else 0.0,
             "lunch_avg": (lunch_sales / lunch_pax) if lunch_pax else 0.0,
             "dinner_avg": (dinner_sales / dinner_pax) if dinner_pax else 0.0,
         })
@@ -809,7 +839,9 @@ def get_full_days_in_period(p: Period) -> list[dict]:
                        lunch_sales, lunch_pax, lunch_noshows,
                        dinner_sales, dinner_pax, dinner_noshows,
                        tips,
-                       (COALESCE(lunch_pax,0) + COALESCE(dinner_pax,0)) AS covers
+                       (COALESCE(lunch_pax,0) + COALESCE(dinner_pax,0)) AS covers,
+                       COALESCE(z_total_sales, 0),
+                       COALESCE(event_menu_total, 0)
                 FROM full_daily_stats
                 WHERE day BETWEEN %s AND %s
                 ORDER BY day ASC;
@@ -821,6 +853,7 @@ def get_full_days_in_period(p: Period) -> list[dict]:
     for r in rows:
         covers = int(r[9] or 0)
         sales = float(r[1] or 0)
+        z_sales = float(r[10] or 0) or sales
         lunch_pax = int(r[3] or 0)
         dinner_pax = int(r[6] or 0)
         lunch_sales = float(r[2] or 0)
@@ -828,6 +861,8 @@ def get_full_days_in_period(p: Period) -> list[dict]:
         result.append({
             "day": r[0],
             "total_sales": sales,
+            "z_total_sales": z_sales,
+            "event_menu_total": float(r[11] or 0),
             "lunch_sales": lunch_sales,
             "lunch_pax": lunch_pax,
             "lunch_noshows": int(r[4] or 0),
@@ -836,7 +871,7 @@ def get_full_days_in_period(p: Period) -> list[dict]:
             "dinner_noshows": int(r[7] or 0),
             "tips": float(r[8] or 0),
             "covers": covers,
-            "avg_ticket": (sales / covers) if covers else 0.0,
+            "avg_ticket": (z_sales / covers) if covers else 0.0,
             "lunch_avg": (lunch_sales / lunch_pax) if lunch_pax else 0.0,
             "dinner_avg": (dinner_sales / dinner_pax) if dinner_pax else 0.0,
         })
@@ -853,7 +888,9 @@ def get_full_days_for_dates(dates: list[date]) -> dict:
                        lunch_sales, lunch_pax, lunch_noshows,
                        dinner_sales, dinner_pax, dinner_noshows,
                        tips,
-                       (COALESCE(lunch_pax,0) + COALESCE(dinner_pax,0)) AS covers
+                       (COALESCE(lunch_pax,0) + COALESCE(dinner_pax,0)) AS covers,
+                       COALESCE(z_total_sales, 0),
+                       COALESCE(event_menu_total, 0)
                 FROM full_daily_stats
                 WHERE day = ANY(%s);
                 """,
@@ -864,6 +901,7 @@ def get_full_days_for_dates(dates: list[date]) -> dict:
     for r in rows:
         covers = int(r[9] or 0)
         sales = float(r[1] or 0)
+        z_sales = float(r[10] or 0) or sales
         lunch_pax = int(r[3] or 0)
         dinner_pax = int(r[6] or 0)
         lunch_sales = float(r[2] or 0)
@@ -871,6 +909,8 @@ def get_full_days_for_dates(dates: list[date]) -> dict:
         result[r[0]] = {
             "day": r[0],
             "total_sales": sales,
+            "z_total_sales": z_sales,
+            "event_menu_total": float(r[11] or 0),
             "lunch_sales": lunch_sales,
             "lunch_pax": lunch_pax,
             "lunch_noshows": int(r[4] or 0),
@@ -879,7 +919,7 @@ def get_full_days_for_dates(dates: list[date]) -> dict:
             "dinner_noshows": int(r[7] or 0),
             "tips": float(r[8] or 0),
             "covers": covers,
-            "avg_ticket": (sales / covers) if covers else 0.0,
+            "avg_ticket": (z_sales / covers) if covers else 0.0,
             "lunch_avg": (lunch_sales / lunch_pax) if lunch_pax else 0.0,
             "dinner_avg": (dinner_sales / dinner_pax) if dinner_pax else 0.0,
         }
@@ -1273,19 +1313,24 @@ AGENT_TOOLS = [
 def _agent_row_to_dict(row, day_: date, label: str = "") -> dict:
     (total_sales, visa, cash, tips,
      lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
-     dinner_sales, dinner_pax, dinner_walkins, dinner_noshows) = row
+     dinner_sales, dinner_pax, dinner_walkins, dinner_noshows,
+     z_total_sales, transferencia, event_pax, event_menu_total,
+     event_timeframe, venue_fee) = row
     covers = int((lunch_pax or 0) + (dinner_pax or 0))
     lunch_pax = int(lunch_pax or 0)
     dinner_pax = int(dinner_pax or 0)
+    z_sales = float(z_total_sales or 0) or float(total_sales or 0)
     return {
         "date": day_.isoformat(),
         **({"label": label} if label else {}),
         "total_sales": float(total_sales or 0),
+        "z_total_sales": z_sales,
         "visa": float(visa or 0),
         "cash": float(cash or 0),
+        "transferencia": float(transferencia or 0),
         "tips": float(tips or 0),
         "covers": covers,
-        "avg_ticket": (float(total_sales or 0) / covers) if covers else 0.0,
+        "avg_ticket": (z_sales / covers) if covers else 0.0,
         "lunch_sales": float(lunch_sales or 0),
         "lunch_pax": lunch_pax,
         "lunch_walkins": int(lunch_walkins or 0),
@@ -1296,6 +1341,10 @@ def _agent_row_to_dict(row, day_: date, label: str = "") -> dict:
         "dinner_walkins": int(dinner_walkins or 0),
         "dinner_noshows": int(dinner_noshows or 0),
         "dinner_avg": (float(dinner_sales or 0) / dinner_pax) if dinner_pax else 0.0,
+        "event_pax": int(event_pax or 0),
+        "event_menu_total": float(event_menu_total or 0),
+        "event_timeframe": event_timeframe or "",
+        "venue_fee": float(venue_fee or 0),
     }
 
 
@@ -3283,6 +3332,12 @@ def build_owners_post_for_day(report_day: date, dry_run: bool = False) -> str:
                     db_total, agora.visa, agora.cash, agora.tips,
                     agora.lunch_net, cm["lunch_pax"], cm["lunch_walkins"], cm["lunch_noshows"],
                     agora.dinner_net, cm["dinner_pax"], cm["dinner_walkins"], cm["dinner_noshows"],
+                    z_total_sales=agora.z_total_sales,
+                    transferencia=agora.transferencia,
+                    event_pax=agora.event_pax,
+                    event_menu_total=agora.event_menu_total,
+                    event_timeframe=agora.event_timeframe,
+                    venue_fee=agora.venue_fee,
                 )
                 upsert_daily(report_day, db_total, cm["total_covers"])
 
