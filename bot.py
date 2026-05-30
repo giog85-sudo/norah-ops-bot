@@ -272,6 +272,17 @@ def init_db():
             )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_full_daily_stats_day ON full_daily_stats(day);")
 
+            # Add event columns — idempotent, safe on existing DBs
+            for col_ddl in [
+                "ALTER TABLE full_daily_stats ADD COLUMN IF NOT EXISTS z_total_sales    DOUBLE PRECISION DEFAULT 0",
+                "ALTER TABLE full_daily_stats ADD COLUMN IF NOT EXISTS transferencia    DOUBLE PRECISION DEFAULT 0",
+                "ALTER TABLE full_daily_stats ADD COLUMN IF NOT EXISTS event_pax        INTEGER          DEFAULT 0",
+                "ALTER TABLE full_daily_stats ADD COLUMN IF NOT EXISTS event_menu_total DOUBLE PRECISION DEFAULT 0",
+                "ALTER TABLE full_daily_stats ADD COLUMN IF NOT EXISTS event_timeframe  TEXT             DEFAULT ''",
+                "ALTER TABLE full_daily_stats ADD COLUMN IF NOT EXISTS venue_fee        DOUBLE PRECISION DEFAULT 0",
+            ]:
+                cur.execute(col_ddl)
+
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS notes_entries (
