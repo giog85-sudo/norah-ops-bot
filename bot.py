@@ -3159,7 +3159,7 @@ async def confirmfull(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Owners post builder + scheduled post
 # =========================
 def build_owners_post_for_day(report_day: date, dry_run: bool = False) -> str:
-    full_row = get_full_day(report_day)
+    full_row = None if dry_run else get_full_day(report_day)
     notes_texts = notes_for_day(report_day)
 
     notes_block = "No notes submitted."
