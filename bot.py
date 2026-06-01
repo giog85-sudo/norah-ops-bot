@@ -4243,18 +4243,54 @@ def run_pipeline():
 
         if save:
             db_total = ds.z_total_sales if ds.z_total_sales > 0 else ds.total_net
-            upsert_full_day(
-                day_,
-                db_total, ds.visa, ds.cash, ds.tips,
-                ds.lunch_net, cm["lunch_pax"], cm["lunch_walkins"], cm["lunch_noshows"],
-                ds.dinner_net, cm["dinner_pax"], cm["dinner_walkins"], cm["dinner_noshows"],
-                z_total_sales=ds.z_total_sales,
-                transferencia=ds.transferencia,
-                event_pax=ds.event_pax,
-                event_menu_total=ds.event_menu_total,
-                event_timeframe=ds.event_timeframe,
-                venue_fee=ds.venue_fee,
-            )
+            existing = get_full_day(day_)
+            if existing:
+                # Row exists — only update Agora-sourced event fields;
+                # preserve existing CM data (lunch_pax/dinner_pax/walkins/noshows)
+                # which may not be available from CM API for historical dates.
+                with get_conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            UPDATE full_daily_stats SET
+                                total_sales      = %s,
+                                visa             = %s,
+                                cash             = %s,
+                                tips             = %s,
+                                lunch_sales      = %s,
+                                dinner_sales     = %s,
+                                z_total_sales    = %s,
+                                transferencia    = %s,
+                                event_pax        = %s,
+                                event_menu_total = %s,
+                                event_timeframe  = %s,
+                                venue_fee        = %s
+                            WHERE day = %s
+                            """,
+                            (
+                                db_total, ds.visa, ds.cash, ds.tips,
+                                ds.lunch_net, ds.dinner_net,
+                                ds.z_total_sales, ds.transferencia,
+                                ds.event_pax, ds.event_menu_total,
+                                ds.event_timeframe, ds.venue_fee,
+                                day_,
+                            ),
+                        )
+                    conn.commit()
+            else:
+                # New row — full insert with CM data
+                upsert_full_day(
+                    day_,
+                    db_total, ds.visa, ds.cash, ds.tips,
+                    ds.lunch_net, cm["lunch_pax"], cm["lunch_walkins"], cm["lunch_noshows"],
+                    ds.dinner_net, cm["dinner_pax"], cm["dinner_walkins"], cm["dinner_noshows"],
+                    z_total_sales=ds.z_total_sales,
+                    transferencia=ds.transferencia,
+                    event_pax=ds.event_pax,
+                    event_menu_total=ds.event_menu_total,
+                    event_timeframe=ds.event_timeframe,
+                    venue_fee=ds.venue_fee,
+                )
             upsert_daily(day_, db_total, cm["total_covers"])
 
         return jsonify({
