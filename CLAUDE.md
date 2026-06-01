@@ -143,12 +143,13 @@ All run via `JobQueue` respecting `TZ_NAME`. Three jobs:
 
 ### Event Detection
 
-Norah occasionally hosts private events. Detection rule: any line item with `LineType == "Menú"` in the `GetSalesAnalyticsReportRequest` response.
+Norah occasionally hosts private events or large group bookings with a pre-agreed menu. Detection rule: any line item with `LineType == "Menú"` in the `GetSalesAnalyticsReportRequest` response (vs `LineType == "Línea"` for regular à la carte items).
 
-- Norah has **no menú del día**, so this rule cannot false-positive on regular service.
-- From the Menú line item: `Quantity` → `event_pax`, `Net` → `event_menu_total`, `TimeFrame` → `event_timeframe` (`"Mediodía"` / `"Noche"` / `"Tarde"`).
-- `Categories` field for event lines is `"MENUS EVENTOS"` — useful secondary debug signal, not used in the detector.
+- **Confirmed by Angie (2026-06-01):** `LineType == "Menú"` fires whenever there is a pre-agreed set menu with a client — this covers both private venue buyouts and group bookings. Norah has **no menú del día**, so the rule cannot false-positive on regular service.
+- Product name on all known event lines: `MENU NORAH`. Categories: `MENUS EVENTOS`.
+- From the Menú line item: `Quantity` → `event_pax`, `Net` → `event_menu_total`, `TimeFrame` → `event_timeframe` (`"Noche"` / `"Mediodía"` / `"Tarde"`).
 - Detection runs inside `get_daily_sales()` in `agora_integration.py`, after the closeout enrichment block. Results are stored on the `DailySales` dataclass.
+- Verified zero false positives across all 8 historical event days (2026-02-01 → 2026-05-25).
 
 ### Revenue Source: Z Report (`GetPosCloseOutsRequest`)
 
@@ -192,7 +193,7 @@ Silent value adjustments on event days (transparent to readers):
 | `venue_fee`, `transferencia`, `z_total_sales` | Agora Z report (`GetPosCloseOutsRequest`) | Derived from closeout |
 | Shift sales (`lunch_net`, `dinner_net`) | Agora POS — line items grouped by `TimeFrame` | Includes event menu revenue before adjustment |
 
-Event guests are a separate population that does not exist in CoverManager. `event_pax` is **never** added to `total_covers` or any CM count.
+`event_pax` is tracked separately and added to `total_covers` only when `event_in_cm = FALSE` (i.e., external guests not booked through CM). For the standard case (`event_in_cm = TRUE`) event guests are already counted inside `lunch_pax`/`dinner_pax` and must not be double-counted.
 
 ### `/preview-post` Endpoint
 
@@ -249,7 +250,8 @@ Only provided fields are updated; unspecified fields are untouched. `event_in_cm
 
 **Dashboard / AI agent context** (analytics):
 - `total_covers` = 16 + 24 + 36 = **76** (event_pax added because `event_in_cm = FALSE`)
-- Avg ticket = 5784.60 / 76 = **76.11**
+- `total_sales` = **5784.60** (full revenue including event menu + venue fee)
+- `avg_ticket` = **45.91** — event-excluded: regular consumption (1836.60) / regular covers (40). Note: `avg_ticket ≠ total_sales / total_covers` (5784.60 / 76 = 76.11) — this identity is intentionally broken; see Avg Ticket Metric Definition section.
 
 Reconciles exactly with Angie's manual report.
 
@@ -288,34 +290,69 @@ If no alerts fire, a "no anomalies" message is sent. Alerts only send if data ex
 
 ---
 
+## Avg Ticket Metric Definition
+
+`avg_ticket`, `lunch_avg_ticket`, and `dinner_avg_ticket` are **event-excluded** metrics. They represent regular F&B spend per regular cover — not distorted by fixed event pricing.
+
+```
+regular_lunch_sales   = lunch_sales  − event_menu_total  (if lunch event, else 0)
+regular_dinner_sales  = dinner_sales − event_menu_total  (if dinner/Noche event, else 0)
+regular_lunch_covers  = lunch_pax   − event_pax  (if event_in_cm AND lunch event, else 0)
+regular_dinner_covers = dinner_pax  − event_pax  (if event_in_cm AND Noche event, else 0)
+
+lunch_avg_ticket  = regular_lunch_sales  / regular_lunch_covers
+dinner_avg_ticket = regular_dinner_sales / regular_dinner_covers
+avg_ticket        = (regular_lunch_sales + regular_dinner_sales)
+                  / (regular_lunch_covers + regular_dinner_covers)
+```
+
+For non-event days (`event_timeframe` empty) all terms are zero and the formula collapses to the original `sales / pax` calculation.
+
+The shared implementation is `_regular_shift_metrics(lunch_sales, lunch_pax, dinner_sales, dinner_pax, event_pax, event_menu_total, event_timeframe, event_in_cm)` in `bot.py`. It is called from `_agent_row_to_dict`, `_sum_period_rows`, `_fmt_snapshot`, and both dashboard endpoints.
+
+**`total_covers` and `total_sales` are unchanged** — they always show the full picture (all people in seats, full revenue including venue fees). This intentionally breaks the `avg_ticket = total_sales / total_covers` identity. Events get their own block in the daily Telegram post with explicit per-pax pricing; the avg_ticket metric is reserved for the regular dining business.
+
+---
+
 ## Dashboard HTTP API
 
 Flask endpoints served alongside the bot. All require `Authorization: Bearer <token>`.
 
 ### `/api/stats/daily?from=YYYY-MM-DD&to=YYYY-MM-DD`
 
-Returns per-day rows with event-aware math:
-- **Revenue**: `COALESCE(NULLIF(z_total_sales, 0), total_sales)` — uses Z-report total when available, falls back to legacy `total_sales`
-- **Total covers**: `lunch_pax + dinner_pax + CASE WHEN NOT event_in_cm THEN event_pax ELSE 0 END`
-- **dinner_covers**: `dinner_pax + (event_pax IF NOT event_in_cm AND event_timeframe = 'Noche' ELSE 0)`
-- **lunch_covers**: `lunch_pax + (event_pax IF NOT event_in_cm AND event_timeframe != 'Noche' AND event_timeframe != '' ELSE 0)`
+Returns per-day rows. All event-aware:
+- **`total_sales`**: `COALESCE(NULLIF(z_total_sales, 0), total_sales)` — full revenue including event menu and venue fee
+- **`total_covers`**: `lunch_pax + dinner_pax + (event_pax IF NOT event_in_cm ELSE 0)` — all people in seats
+- **`dinner_covers`**: `dinner_pax + (event_pax IF NOT event_in_cm AND event_timeframe='Noche' ELSE 0)` — seats in that shift
+- **`lunch_covers`**: `lunch_pax + (event_pax IF NOT event_in_cm AND timeframe is non-Noche AND non-empty ELSE 0)`
+- **`avg_ticket`**, **`lunch_avg_ticket`**, **`dinner_avg_ticket`**: event-excluded (see Avg Ticket Metric Definition)
 
-Per-shift avg tickets divide shift sales by these event-aware cover counts, eliminating the spike that appeared on event days when event guests were counted in revenue but not in covers.
+### `/api/stats/weekly`
 
-### `/api/stats/weekly` and `/api/stats/monthly`
-
-Use the same revenue and cover formulas aggregated by week/month. The AI agent's `_exec_get_period_summary` function calls `get_full_days_in_period()` + `_sum_period_rows()` which apply the same event_in_cm-aware cover math and z_total_sales fallback.
+Fetches the same raw fields per day, accumulates `regular_lunch_sales`, `regular_lunch_covers`, `regular_dinner_sales`, `regular_dinner_covers` per week bucket, then computes `avg_ticket` from the period sums — never by averaging daily averages.
 
 ---
 
 ## AI Agent Event Awareness
 
-(Updated 2026-06-01) All agent query paths use event-aware aggregation:
+All agent query paths use event-aware aggregation via `_regular_shift_metrics()`:
 
-- **`_exec_get_period_summary`**: calls `get_full_days_in_period()` → `_sum_period_rows()` instead of the old `sum_full_in_period()`. Covers include `event_pax` only when `event_in_cm = FALSE`.
-- **`_sum_period_rows`**: `sales = sum(r.get("z_total_sales") or r["total_sales"] for r in rows)`
-- **`_fmt_snapshot`**: unpacks all 19 fields from `get_full_day()`; uses `z_total_sales` for revenue, event_in_cm-aware cover formula.
-- **`send_evening_alerts`**: same 19-field unpack; revenue and covers computed event-aware before all alert comparisons.
+- **`_agent_row_to_dict`**: exposes `reg_lunch_sales`, `reg_lunch_covers`, `reg_dinner_sales`, `reg_dinner_covers` in every row dict; `avg_ticket`, `lunch_avg`, `dinner_avg` are event-excluded.
+- **`_sum_period_rows`**: sums reg fields across rows, computes `avg_ticket` from period sums (not daily avg averages). `sales` = sum of `z_total_sales` (full revenue). `covers` = sum of event_in_cm-aware total covers.
+- **`_exec_get_period_summary`**: calls `get_full_days_in_period()` → `_sum_period_rows()`.
+- **`_fmt_snapshot`**: uses `_regular_shift_metrics()` for `lunch_avg`, `dinner_avg`, `avg_ticket`. Displays raw `lunch_sales`/`dinner_sales` (full shift revenue) alongside event-excluded avg tickets.
+- **`send_evening_alerts`**: 19-field unpack from `get_full_day()`; revenue = `z_total_sales` if > 0, covers = event_in_cm-aware formula. Alert comparisons use these values.
+
+---
+
+## Data Freshness Model
+
+**Dashboard = latest truth. Telegram posts = immutable snapshots.**
+
+- `/run-pipeline?save=true` always overwrites the DB row with current live data from Agora + CoverManager. Safe to re-run any time.
+- The scheduled daily Telegram post is sent once at 11:05 and is never edited. If CM data or Agora data is corrected after the post, the DB will reflect the correction but the chat message will not.
+- Discrepancies between dashboard figures and old Telegram reports are **expected** when the underlying data was edited after the report was generated — this is not a bug.
+- `event_in_cm` is the single exception to "latest truth": it is set on INSERT and can only be changed via `/admin/event-flag POST`. Pipeline re-runs never overwrite it.
 
 ---
 
@@ -433,32 +470,47 @@ Multiple tags per note are supported. Tag analytics: `/tagstats`, `/soldout`, `/
 - **Agent tool extensibility.** `AGENT_TOOLS` list is structured for easy addition of new query tools beyond the current 9.
 - **Legacy role config.** `OWNERS_CHAT_IDS` in `settings` table still supported alongside `chat_roles` table; both code paths are live.
 - **No opening/shift-start alerts.** All scheduled alerts are end-of-day. Real-time shift alerts would require a second scheduled job or webhook triggers.
-- **Float rounding on avg ticket.** Headline avg ticket may show 1¢ low (e.g., 45.915 → 45.91 instead of 45.92) due to Python float arithmetic.
+- **Float rounding on avg ticket.** Headline avg ticket may show 1¢ low (e.g., 45.915 → 45.91 instead of 45.92) due to Python float arithmetic. Accepted.
+- **JS-level period avg ticket.** If the dashboard JS computes a period avg by averaging daily avg_ticket values, event days will slightly distort the result (because the denominator varies per day). The correct approach is to sum regular_sales and regular_covers across days then divide — which the backend already does via `_sum_period_rows`. If JS does its own averaging, small distortion may appear on weeks/months containing events.
 
 ---
 
 ## Changelog
 
-### 2026-06-01 — Event field migration
+### 2026-05-31 – 2026-06-01 — Full Event-Aware Migration
 
-- Added 7 columns to `full_daily_stats`: `z_total_sales`, `transferencia`, `event_pax`, `event_menu_total`, `event_timeframe`, `venue_fee`, `event_in_cm`. All added via idempotent `ALTER TABLE IF NOT EXISTS` in `init_db()`.
-- `event_in_cm BOOLEAN NOT NULL DEFAULT TRUE`: tracks whether event guests are already in CoverManager. `FALSE` only for 2026-05-25 (36 external guests). Set by `init_db()` on first deploy; preserved across pipeline re-runs (excluded from `ON CONFLICT DO UPDATE`).
-- Cover math unified everywhere: `total_covers = lunch_pax + dinner_pax + (event_pax IF NOT event_in_cm ELSE 0)`.
-- Revenue unified everywhere: `COALESCE(NULLIF(z_total_sales, 0), total_sales)`.
-- `build_owners_post_for_day` DB-path branch now uses the same event-aware template as the live-path branch (commit 4 unification).
-- `get_full_day()` extended from 12 to 19 fields; all callers updated.
-- New endpoints: `/run-pipeline?save=true` (backfill), `/admin/event-flag` (read/patch event metadata).
-- Dashboard SQL and AI agent tools (`_exec_get_period_summary`, `_sum_period_rows`, `_fmt_snapshot`, `send_evening_alerts`) updated to use event-aware math.
-- Backfilled all 72 existing `full_daily_stats` rows with correct Agora event fields. 8 event days confirmed (no false positives on detector). 2026-05-25 verified: total_covers=76, dashboard avg_ticket=76.11.
+**Schema** (`full_daily_stats`): Added 7 columns via idempotent `ALTER TABLE IF NOT EXISTS` in `init_db()`:
+- `z_total_sales` — canonical revenue from Agora Z-report (includes venue fee)
+- `transferencia` — bank-transfer payment from Z-report closeout
+- `event_pax` — servings sold under `LineType=="Menú"` (MENU NORAH / MENUS EVENTOS)
+- `event_menu_total` — event menu revenue
+- `event_timeframe` — `'Noche'` | `'Mediodía'` | `'Tarde'`
+- `venue_fee` — `z_total_sales − sum(line_items.Net)`, €1 tolerance
+- `event_in_cm` — `BOOLEAN NOT NULL DEFAULT TRUE`; excluded from `ON CONFLICT DO UPDATE`
 
-### 2026-06-01 — /run-pipeline save=true regression fix
+**Event detection:** `LineType == "Menú"` in `GetSalesAnalyticsReportRequest`. Confirmed zero false positives across 8 historical event days. Angie confirmed this fires for all pre-agreed menus (private events and group bookings).
 
-- `/run-pipeline?save=true` was only updating Agora-sourced fields on existing rows, leaving CM fields (`lunch_pax`, `dinner_pax`, `walkins`, `noshows`) as stale zeros from the initial buggy backfill.
-- Fixed: the existing-row UPDATE now writes all 18 live fields (Agora + CM). `event_in_cm` remains the sole exclusion.
-- Verified: 2026-05-08 after fix shows lunch_covers=29, dinner_covers=95, total_covers=124, avg_ticket=48.18.
+**`event_in_cm` flag:** `TRUE` = event guests already in CM pax (standard). `FALSE` = external guests not booked through CM (only 2026-05-25). Per Angie's policy, all future events are registered in CM — `TRUE` is the permanent default.
 
-### 2026-06-01 — Event-aware per-shift covers in /api/stats/daily
+**Cover math:** `total_covers = lunch_pax + dinner_pax + (event_pax IF NOT event_in_cm ELSE 0)` applied everywhere.
 
-- `dinner_covers` and `lunch_covers` in `/api/stats/daily` now include event guests when `event_in_cm=FALSE`, distributed by `event_timeframe` (Noche → dinner, any other non-empty value → lunch).
-- Eliminates the avg-ticket spike on event days where revenue included event guests but covers did not.
-- Verified: 2026-05-25 dinner_covers=60 (24+36), dinner_avg_ticket=58.17; Apr 11 (event_in_cm=TRUE) dinner_covers=92 unchanged.
+**Revenue:** `COALESCE(NULLIF(z_total_sales, 0), total_sales)` everywhere.
+
+**Avg ticket redefined as event-excluded metric:** `_regular_shift_metrics()` helper subtracts event menu revenue and in-CM event pax before computing shift avgs. For non-event days the formula is identical to the original. `total_sales` and `total_covers` retain the full-picture values; `avg_ticket = total_sales / total_covers` identity is intentionally broken.
+
+**Per-shift cover display:** `dinner_covers` / `lunch_covers` include external event guests (when `event_in_cm=FALSE`), distributed by `event_timeframe`.
+
+**Period aggregation:** `_sum_period_rows` and `/api/stats/weekly` sum `regular_sales` and `regular_covers` across days then divide — never average daily averages.
+
+**Endpoints added:**
+- `/run-pipeline?save=true` — writes all 18 live fields (Agora + CM) to DB; `event_in_cm` excluded. Safe to re-run.
+- `/admin/event-flag` GET/POST — read and patch event metadata without re-running pipeline.
+
+**Daily post:** DB-path branch unified with live-path template (event-aware rendering in both paths). `build_owners_post_for_day` is now a single template.
+
+**`get_full_day()`:** Extended from 12 to 19 fields; all callers updated.
+
+**Backfill:** All 72 existing rows refreshed. Verified reference:
+- 2026-05-25: `total_covers=76`, `total_sales=5784.60`, `avg_ticket=45.91`, `dinner_covers=60`, `dinner_avg_ticket=43.42`
+- 2026-04-11: `total_covers=154`, `avg_ticket=44.69`, `dinner_avg_ticket=46.41` (event pax subtracted from covers and revenue)
+- 2026-05-08 (non-event): `avg_ticket=48.18`, `dinner_avg_ticket=49.81` — unchanged from original formula
