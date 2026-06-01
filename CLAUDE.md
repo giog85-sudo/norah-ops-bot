@@ -61,7 +61,9 @@ Rich daily breakdown with lunch/dinner split. Primary data table.
   - `venue_fee` FLOAT — `z_total_sales − total_net`, €1 tolerance (0 on most event days)
   - `event_in_cm` BOOLEAN NOT NULL DEFAULT TRUE — whether event guests are already counted in CoverManager's `dinner_pax`/`lunch_pax`
 
-**`event_in_cm` flag:** Default `TRUE` means event pax is part of the regular CM cover count and should not be added again. Set `FALSE` only for historical external events where guests were not booked through CM. Currently only **2026-05-25** is `FALSE` (36 external guests). Going forward, Angie's operational rule is that all events are registered in CoverManager — default `TRUE` is the long-term norm.
+**`event_in_cm` flag:** Default `TRUE` means event pax is part of the regular CM cover count and should not be added again. Set `FALSE` only for historical external events where guests were not booked through CM. Currently only **2026-05-25** is `FALSE` (36 external guests).
+
+**Angie's operational policy (confirmed 2026-06-01):** All future events are registered in CoverManager as standard reservations. The `TRUE` default is the permanent norm going forward. `FALSE` will never be needed for new event days — it exists only to correctly represent the single historical exception on 2026-05-25.
 
 **Cover math throughout the codebase:**
 `total_covers = lunch_pax + dinner_pax + (event_pax IF NOT event_in_cm ELSE 0)`
@@ -207,10 +209,10 @@ Use this any time you need to inspect a day's post before resending a corrected 
 `GET /run-pipeline?date=YYYY-MM-DD[&save=true]` — auth-protected. Fetches live Agora + CoverManager data for the given date and returns the computed `DailySales` object as JSON. **Does not write to DB by default.**
 
 Adding `?save=true` opts in to DB persistence:
-- If a row already exists: does a **targeted UPDATE** of Agora-derived fields only (`total_sales`, `visa`, `cash`, `tips`, `lunch_sales`, `dinner_sales`, `z_total_sales`, `transferencia`, `event_pax`, `event_menu_total`, `event_timeframe`, `venue_fee`). CoverManager fields (`lunch_pax`, `dinner_pax`, `walkins`, `noshows`) are **not touched** — preserving manually-corrected values.
+- If a row already exists: does a full UPDATE of all live fields from fresh Agora + CM data (`total_sales`, `visa`, `cash`, `tips`, `lunch_sales`, `lunch_pax`, `lunch_walkins`, `lunch_noshows`, `dinner_sales`, `dinner_pax`, `dinner_walkins`, `dinner_noshows`, `z_total_sales`, `transferencia`, `event_pax`, `event_menu_total`, `event_timeframe`, `venue_fee`). `event_in_cm` is the only field excluded — it is never overwritten by pipeline runs.
 - If no row exists: does a full INSERT including CM data via `upsert_full_day()`.
 
-Use this for backfilling event fields on historical days already present in the DB.
+Use this to backfill or refresh any historical day. Safe to re-run: CM data comes from the live API, and `event_in_cm` is always preserved.
 
 ### `/admin/event-flag?date=YYYY-MM-DD` Endpoint
 
@@ -295,6 +297,10 @@ Flask endpoints served alongside the bot. All require `Authorization: Bearer <to
 Returns per-day rows with event-aware math:
 - **Revenue**: `COALESCE(NULLIF(z_total_sales, 0), total_sales)` — uses Z-report total when available, falls back to legacy `total_sales`
 - **Total covers**: `lunch_pax + dinner_pax + CASE WHEN NOT event_in_cm THEN event_pax ELSE 0 END`
+- **dinner_covers**: `dinner_pax + (event_pax IF NOT event_in_cm AND event_timeframe = 'Noche' ELSE 0)`
+- **lunch_covers**: `lunch_pax + (event_pax IF NOT event_in_cm AND event_timeframe != 'Noche' AND event_timeframe != '' ELSE 0)`
+
+Per-shift avg tickets divide shift sales by these event-aware cover counts, eliminating the spike that appeared on event days when event guests were counted in revenue but not in covers.
 
 ### `/api/stats/weekly` and `/api/stats/monthly`
 
@@ -444,3 +450,15 @@ Multiple tags per note are supported. Tag analytics: `/tagstats`, `/soldout`, `/
 - New endpoints: `/run-pipeline?save=true` (backfill), `/admin/event-flag` (read/patch event metadata).
 - Dashboard SQL and AI agent tools (`_exec_get_period_summary`, `_sum_period_rows`, `_fmt_snapshot`, `send_evening_alerts`) updated to use event-aware math.
 - Backfilled all 72 existing `full_daily_stats` rows with correct Agora event fields. 8 event days confirmed (no false positives on detector). 2026-05-25 verified: total_covers=76, dashboard avg_ticket=76.11.
+
+### 2026-06-01 — /run-pipeline save=true regression fix
+
+- `/run-pipeline?save=true` was only updating Agora-sourced fields on existing rows, leaving CM fields (`lunch_pax`, `dinner_pax`, `walkins`, `noshows`) as stale zeros from the initial buggy backfill.
+- Fixed: the existing-row UPDATE now writes all 18 live fields (Agora + CM). `event_in_cm` remains the sole exclusion.
+- Verified: 2026-05-08 after fix shows lunch_covers=29, dinner_covers=95, total_covers=124, avg_ticket=48.18.
+
+### 2026-06-01 — Event-aware per-shift covers in /api/stats/daily
+
+- `dinner_covers` and `lunch_covers` in `/api/stats/daily` now include event guests when `event_in_cm=FALSE`, distributed by `event_timeframe` (Noche → dinner, any other non-empty value → lunch).
+- Eliminates the avg-ticket spike on event days where revenue included event guests but covers did not.
+- Verified: 2026-05-25 dinner_covers=60 (24+36), dinner_avg_ticket=58.17; Apr 11 (event_in_cm=TRUE) dinner_covers=92 unchanged.
