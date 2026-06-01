@@ -4553,6 +4553,137 @@ flask_app.add_url_rule("/admin/event-flag", "admin_event_flag_post",
                        admin_event_flag, methods=["POST"])
 
 
+@flask_app.route("/admin/health-check")
+def admin_health_check():
+    """
+    Scans full_daily_stats for known data anomaly patterns.
+    GET ?from=YYYY-MM-DD&to=YYYY-MM-DD  (default: last 90 days)
+    Auth: Bearer token.
+    """
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    today = date.today()
+    try:
+        from_date = date.fromisoformat(request.args.get("from", (today - timedelta(days=90)).isoformat()))
+        to_date   = date.fromisoformat(request.args.get("to",   today.isoformat()))
+    except ValueError:
+        return jsonify({"error": "Invalid date format, use YYYY-MM-DD"}), 400
+    if to_date < from_date:
+        return jsonify({"error": "to must be >= from"}), 400
+
+    # Count non-Sunday operating days in range
+    operating_days = set()
+    d = from_date
+    while d <= to_date:
+        if d.weekday() != 6:  # 6 = Sunday
+            operating_days.add(d)
+        d += timedelta(days=1)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT day,
+                       COALESCE(total_sales, 0),
+                       COALESCE(lunch_sales, 0),
+                       COALESCE(dinner_sales, 0),
+                       COALESCE(lunch_pax, 0),
+                       COALESCE(dinner_pax, 0),
+                       COALESCE(event_pax, 0),
+                       COALESCE(event_menu_total, 0),
+                       COALESCE(event_timeframe, ''),
+                       COALESCE(event_in_cm, TRUE)
+                FROM full_daily_stats
+                WHERE day BETWEEN %s AND %s
+                ORDER BY day
+                """,
+                (from_date, to_date),
+            )
+            rows = cur.fetchall()
+
+    rows_in_db = len(rows)
+    days_in_db = {r[0] for r in rows}
+    anomalies = []
+
+    for (day, total_sales, lunch_sales, dinner_sales,
+         lunch_pax, dinner_pax, event_pax, event_menu_total,
+         event_timeframe, event_in_cm) in rows:
+        ts  = float(total_sales  or 0)
+        ls  = float(lunch_sales  or 0)
+        ds  = float(dinner_sales or 0)
+        lp  = int(lunch_pax  or 0)
+        dp  = int(dinner_pax or 0)
+        ep  = int(event_pax  or 0)
+        emt = float(event_menu_total or 0)
+        tf  = (event_timeframe or "").strip()
+        in_cm = bool(event_in_cm) if event_in_cm is not None else True
+        iso = day.isoformat()
+
+        # 1. Silent save failure
+        if ts > 0 and (lp + dp) == 0:
+            anomalies.append({
+                "date": iso, "issue": "silent_save_failure",
+                "detail": f"total_sales=€{ts:.2f}, total_covers=0 (silent save failure — sales persisted but pax fields are zero)",
+            })
+
+        # 2. Negative shift sales
+        if ls < 0 or ds < 0:
+            parts = []
+            if ls < 0:
+                parts.append(f"lunch_sales=€{ls:.2f}")
+            if ds < 0:
+                parts.append(f"dinner_sales=€{ds:.2f}")
+            anomalies.append({
+                "date": iso, "issue": "negative_shift_sales",
+                "detail": f"{', '.join(parts)} (negative — likely Agora void/refund processed retroactively)",
+            })
+
+        # 3. event_pax without menu total
+        if ep > 0 and emt == 0:
+            anomalies.append({
+                "date": iso, "issue": "inconsistent_event_pax_without_menu",
+                "detail": f"event_pax={ep} but event_menu_total=0 (partial event state)",
+            })
+
+        # 4. event menu total without pax
+        if ep == 0 and emt > 0:
+            anomalies.append({
+                "date": iso, "issue": "inconsistent_event_menu_without_pax",
+                "detail": f"event_menu_total=€{emt:.2f} but event_pax=0 (partial event state)",
+            })
+
+        # 5. event_pax exceeds shift pax when event is in CM
+        if ep > 0 and in_cm:
+            is_noche = tf == "Noche"
+            is_lunch_tf = bool(tf) and not is_noche
+            if is_noche and dp < ep:
+                anomalies.append({
+                    "date": iso, "issue": "event_pax_exceeds_shift_in_cm",
+                    "detail": f"event_pax={ep} > dinner_pax={dp} (would produce negative regular covers before clamp)",
+                })
+            elif is_lunch_tf and lp < ep:
+                anomalies.append({
+                    "date": iso, "issue": "event_pax_exceeds_shift_in_cm",
+                    "detail": f"event_pax={ep} > lunch_pax={lp} (would produce negative regular covers before clamp)",
+                })
+
+    # 6. Missing rows for operating days
+    for missing_day in sorted(operating_days - days_in_db):
+        anomalies.append({
+            "date": missing_day.isoformat(), "issue": "missing_row",
+            "detail": "no row in full_daily_stats for this operating day",
+        })
+
+    anomalies.sort(key=lambda x: x["date"])
+
+    return jsonify({
+        "checked_days": len(operating_days),
+        "rows_in_db": rows_in_db,
+        "anomalies": anomalies,
+    })
+
+
 @flask_app.route("/raw-z-report")
 def raw_z_report():
     """
