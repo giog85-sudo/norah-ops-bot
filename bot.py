@@ -4414,19 +4414,32 @@ def admin_event_flag():
     if not date_str:
         return jsonify({"error": "date param required"}), 400
     if request.method == "POST":
-        val_str = request.args.get("value", "").lower()
-        if val_str not in ("true", "false"):
-            return jsonify({"error": "value must be true or false"}), 400
-        val = val_str == "true"
+        updates = {}
+        val_str = request.args.get("value", "")
+        if val_str:
+            if val_str.lower() not in ("true", "false"):
+                return jsonify({"error": "value must be true or false"}), 400
+            updates["event_in_cm"] = val_str.lower() == "true"
+        for int_col in ("lunch_pax", "dinner_pax", "lunch_walkins", "dinner_walkins",
+                        "lunch_noshows", "dinner_noshows"):
+            v = request.args.get(int_col)
+            if v is not None:
+                try:
+                    updates[int_col] = int(v)
+                except ValueError:
+                    return jsonify({"error": f"{int_col} must be an integer"}), 400
+        if not updates:
+            return jsonify({"error": "No fields to update"}), 400
+        set_clause = ", ".join(f"{k} = %s" for k in updates)
         with get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE full_daily_stats SET event_in_cm = %s WHERE day = %s",
-                    (val, date_str),
+                    f"UPDATE full_daily_stats SET {set_clause} WHERE day = %s",
+                    (*updates.values(), date_str),
                 )
                 rowcount = cur.rowcount
             conn.commit()
-        return jsonify({"date": date_str, "event_in_cm": val, "rows_updated": rowcount})
+        return jsonify({"date": date_str, "updated": updates, "rows_updated": rowcount})
     # GET: read current value
     with get_conn() as conn:
         with conn.cursor() as cur:
