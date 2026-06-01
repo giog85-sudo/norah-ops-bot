@@ -3256,32 +3256,83 @@ def build_owners_post_for_day(report_day: date, dry_run: bool = False) -> str:
         (
             total_sales, visa, cash, tips,
             lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
-            dinner_sales, dinner_pax, dinner_walkins, dinner_noshows
+            dinner_sales, dinner_pax, dinner_walkins, dinner_noshows,
+            z_total_sales, transferencia, event_pax, event_menu_total,
+            event_timeframe, venue_fee, event_in_cm,
         ) = full_row
 
-        lunch_avg = (float(lunch_sales) / int(lunch_pax)) if lunch_pax else 0.0
-        dinner_avg = (float(dinner_sales) / int(dinner_pax)) if dinner_pax else 0.0
-        total_covers = int(lunch_pax or 0) + int(dinner_pax or 0)
-        total_avg = (float(total_sales) / total_covers) if total_covers else 0.0
+        lp = int(lunch_pax or 0)
+        dp = int(dinner_pax or 0)
+        ep = int(event_pax or 0)
+        in_cm = bool(event_in_cm) if event_in_cm is not None else True
+        z = float(z_total_sales or 0)
+        emt = float(event_menu_total or 0)
+        vf  = float(venue_fee or 0)
+        tr  = float(transferencia or 0)
+
+        display_total = z if z > 0 else float(total_sales or 0)
+        agora_tag = " *(Agora POS)*" if z > 0 else ""
+
+        has_event = emt > 0
+        etf_lower = (event_timeframe or "").lower()
+        is_lunch_event  = has_event and any(w in etf_lower for w in ("mediodía", "mediodia", "tarde"))
+        is_dinner_event = has_event and ("noche" in etf_lower or "cena" in etf_lower)
+
+        display_lunch  = float(lunch_sales or 0) - emt if is_lunch_event  else float(lunch_sales or 0)
+        display_dinner = float(dinner_sales or 0) - emt if is_dinner_event else float(dinner_sales or 0)
+
+        total_covers = lp + dp + (0 if in_cm else ep)
+        regular_consumption = (display_lunch + display_dinner) if has_event else display_total
+        total_avg  = round(regular_consumption / total_covers, 2) if total_covers else 0.0
+        lunch_avg  = round(display_lunch  / lp, 2) if lp else 0.0
+        dinner_avg = round(display_dinner / dp, 2) if dp else 0.0
+
+        visa_str = euro_comma(visa) if visa else "—"
+        cash_str = euro_comma(cash) if cash else "—"
+        tips_str = euro_comma(tips) if tips else "—"
+
+        # (A) "Of which Transferencia" subtitle
+        transferencia_subtitle = (
+            f"Of which Transferencia: {euro_comma(tr)} (event)\n" if tr > 0 else ""
+        )
+        # (B) Transferencia payment line
+        transferencia_payment = (
+            f"Transferencia: {euro_comma(tr)}\n" if tr > 0 else ""
+        )
+        # (C) Event block
+        if has_event:
+            venue_line = f"Venue fee: {euro_comma(vf)}\n" if vf > 0 else ""
+            event_total = emt + vf
+            event_block = (
+                f"🎉 Event ({event_timeframe}):\n"
+                f"Menu ({ep} pax): {euro_comma(emt)}\n"
+                f"{venue_line}"
+                f"Total: {euro_comma(event_total)}\n\n"
+            )
+        else:
+            event_block = ""
 
         msg = (
             f"📌 Norah Daily Post\n"
             f"Day: {fmt_day_ddmmyyyy(report_day)}\n"
-            f"Total Sales Day: {euro_comma(total_sales)}\n"
+            f"Total Sales Day: {euro_comma(display_total)}{agora_tag}\n"
+            f"{transferencia_subtitle}"
             f"Total Covers: {total_covers}  |  Avg Ticket: {euro_comma(total_avg)}\n\n"
-            f"Visa: {euro_comma(visa)}\n"
-            f"Cash: {euro_comma(cash)}\n"
-            f"Tips: {euro_comma(tips)}\n\n"
-            f"Lunch: {euro_comma(lunch_sales)}\n"
-            f"Pax: {int(lunch_pax)}\n"
+            f"Visa: {visa_str}\n"
+            f"Cash: {cash_str}\n"
+            f"{transferencia_payment}"
+            f"Tips: {tips_str}\n\n"
+            f"Lunch: {euro_comma(display_lunch)}\n"
+            f"Pax: {lp}\n"
             f"Avg Ticket: {euro_comma(lunch_avg)}\n"
-            f"Walk in: {int(lunch_walkins)}\n"
-            f"No show: {int(lunch_noshows)}\n\n"
-            f"Dinner: {euro_comma(dinner_sales)}\n"
-            f"Pax: {int(dinner_pax)}\n"
+            f"Walk in: {int(lunch_walkins or 0)}\n"
+            f"No show: {int(lunch_noshows or 0)}\n\n"
+            f"Dinner: {euro_comma(display_dinner)}\n"
+            f"Pax: {dp}\n"
             f"Avg Ticket: {euro_comma(dinner_avg)}\n"
-            f"Walk in: {int(dinner_walkins)}\n"
-            f"No show: {int(dinner_noshows)}\n\n"
+            f"Walk in: {int(dinner_walkins or 0)}\n"
+            f"No show: {int(dinner_noshows or 0)}\n\n"
+            f"{event_block}"
             f"📝 Notes:\n{notes_block}"
         )
     else:
