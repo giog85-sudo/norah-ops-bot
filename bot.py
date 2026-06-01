@@ -4230,6 +4230,7 @@ def run_pipeline():
     if not _api_check_auth():
         return jsonify({"error": "Unauthorized"}), 401
     date_str = request.args.get("date", "2026-04-23")
+    save = request.args.get("save", "false").lower() == "true"
     try:
         from datetime import date as _date
         day_ = _date.fromisoformat(date_str)
@@ -4239,6 +4240,22 @@ def run_pipeline():
             return jsonify({"error": f"No sales data for {date_str}"}), 404
 
         cm = _try_cm_covers(day_)
+
+        if save:
+            db_total = ds.z_total_sales if ds.z_total_sales > 0 else ds.total_net
+            upsert_full_day(
+                day_,
+                db_total, ds.visa, ds.cash, ds.tips,
+                ds.lunch_net, cm["lunch_pax"], cm["lunch_walkins"], cm["lunch_noshows"],
+                ds.dinner_net, cm["dinner_pax"], cm["dinner_walkins"], cm["dinner_noshows"],
+                z_total_sales=ds.z_total_sales,
+                transferencia=ds.transferencia,
+                event_pax=ds.event_pax,
+                event_menu_total=ds.event_menu_total,
+                event_timeframe=ds.event_timeframe,
+                venue_fee=ds.venue_fee,
+            )
+            upsert_daily(day_, db_total, cm["total_covers"])
 
         return jsonify({
             "date":              ds.date,
