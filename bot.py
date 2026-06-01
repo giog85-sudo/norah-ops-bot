@@ -3997,8 +3997,15 @@ def api_stats_daily():
                                 THEN COALESCE(event_pax, 0) ELSE 0 END AS total_covers,
                        lunch_sales,
                        dinner_sales,
-                       lunch_pax,
-                       dinner_pax,
+                       lunch_pax
+                         + CASE WHEN NOT COALESCE(event_in_cm, TRUE)
+                                     AND COALESCE(event_timeframe, '') != 'Noche'
+                                     AND COALESCE(event_timeframe, '') != ''
+                                THEN COALESCE(event_pax, 0) ELSE 0 END AS lunch_covers,
+                       dinner_pax
+                         + CASE WHEN NOT COALESCE(event_in_cm, TRUE)
+                                     AND COALESCE(event_timeframe, '') = 'Noche'
+                                THEN COALESCE(event_pax, 0) ELSE 0 END AS dinner_covers,
                        COALESCE(tips, 0) AS tips,
                        COALESCE(lunch_noshows, 0) AS lunch_noshows,
                        COALESCE(dinner_noshows, 0) AS dinner_noshows
