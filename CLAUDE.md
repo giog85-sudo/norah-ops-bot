@@ -6,6 +6,21 @@ A Telegram bot that serves as the operational hub for **Norah**, a restaurant in
 
 ---
 
+## Working Agreements
+
+When making changes to the codebase, update CLAUDE.md as part of the same work — not as a follow-up. Specifically:
+
+- New endpoints, fields, or schema columns → document under the relevant architecture section
+- New defensive patterns, helpers, or invariants → document in the appropriate algorithm/logic section
+- Behavior changes that affect output, math, or API contracts → update the affected section AND add a changelog entry with today's date
+- Bug fixes that reveal something non-obvious about the system → add the lesson learned (so the same pitfall isn't rediscovered later)
+
+End every architectural change session by checking whether CLAUDE.md still reflects current system state. If not, fix it before considering the work done.
+
+CLAUDE.md is the briefing for the next session — keeping it fresh is part of the work, not after the work.
+
+---
+
 ## Stack
 
 | Layer | Technology |
