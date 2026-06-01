@@ -4245,9 +4245,9 @@ def run_pipeline():
             db_total = ds.z_total_sales if ds.z_total_sales > 0 else ds.total_net
             existing = get_full_day(day_)
             if existing:
-                # Row exists — only update Agora-sourced event fields;
-                # preserve existing CM data (lunch_pax/dinner_pax/walkins/noshows)
-                # which may not be available from CM API for historical dates.
+                # Row exists — overwrite all live fields from fresh Agora + CM data.
+                # event_in_cm is intentionally excluded; it is only set on INSERT
+                # and patched manually via /admin/event-flag.
                 with get_conn() as conn:
                     with conn.cursor() as cur:
                         cur.execute(
@@ -4258,7 +4258,13 @@ def run_pipeline():
                                 cash             = %s,
                                 tips             = %s,
                                 lunch_sales      = %s,
+                                lunch_pax        = %s,
+                                lunch_walkins    = %s,
+                                lunch_noshows    = %s,
                                 dinner_sales     = %s,
+                                dinner_pax       = %s,
+                                dinner_walkins   = %s,
+                                dinner_noshows   = %s,
                                 z_total_sales    = %s,
                                 transferencia    = %s,
                                 event_pax        = %s,
@@ -4269,7 +4275,8 @@ def run_pipeline():
                             """,
                             (
                                 db_total, ds.visa, ds.cash, ds.tips,
-                                ds.lunch_net, ds.dinner_net,
+                                ds.lunch_net, cm["lunch_pax"], cm["lunch_walkins"], cm["lunch_noshows"],
+                                ds.dinner_net, cm["dinner_pax"], cm["dinner_walkins"], cm["dinner_noshows"],
                                 ds.z_total_sales, ds.transferencia,
                                 ds.event_pax, ds.event_menu_total,
                                 ds.event_timeframe, ds.venue_fee,
