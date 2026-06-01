@@ -1408,25 +1408,25 @@ def _exec_get_period_summary(start_date: str, end_date: str) -> dict:
     except Exception:
         return {"error": "Invalid date format. Use YYYY-MM-DD."}
     p = Period(start, end)
-    agg = sum_full_in_period(p)
-    covers = agg["lunch_pax"] + agg["dinner_pax"]
+    rows = get_full_days_in_period(p)
+    agg = _sum_period_rows(rows)
     return {
         "start_date": start_date,
         "end_date": end_date,
-        "days_with_data": agg["full_days"],
-        "total_sales": agg["total_sales"],
+        "days_with_data": agg["days"],
+        "total_sales": agg["sales"],
         "tips": agg["tips"],
-        "covers": covers,
-        "avg_ticket": (agg["total_sales"] / covers) if covers else 0.0,
+        "covers": agg["covers"],
+        "avg_ticket": agg["avg_ticket"],
         "lunch_sales": agg["lunch_sales"],
         "lunch_pax": agg["lunch_pax"],
-        "lunch_avg": (agg["lunch_sales"] / agg["lunch_pax"]) if agg["lunch_pax"] else 0.0,
+        "lunch_avg": agg["lunch_avg"],
         "lunch_noshows": agg["lunch_noshows"],
         "dinner_sales": agg["dinner_sales"],
         "dinner_pax": agg["dinner_pax"],
-        "dinner_avg": (agg["dinner_sales"] / agg["dinner_pax"]) if agg["dinner_pax"] else 0.0,
+        "dinner_avg": agg["dinner_avg"],
         "dinner_noshows": agg["dinner_noshows"],
-        "total_noshows": agg["lunch_noshows"] + agg["dinner_noshows"],
+        "total_noshows": agg["total_noshows"],
     }
 
 
@@ -1980,17 +1980,22 @@ async def send_evening_alerts(context: ContextTypes.DEFAULT_TYPE):
 
     (total_sales, visa, cash, tips,
      lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
-     dinner_sales, dinner_pax, dinner_walkins, dinner_noshows) = row
+     dinner_sales, dinner_pax, dinner_walkins, dinner_noshows,
+     z_total_sales, _transferencia, event_pax, _event_menu_total,
+     _event_timeframe, _venue_fee, event_in_cm) = row
 
-    total_sales    = float(total_sales or 0)
-    lunch_sales    = float(lunch_sales or 0)
-    dinner_sales   = float(dinner_sales or 0)
-    lunch_pax      = int(lunch_pax or 0)
-    dinner_pax     = int(dinner_pax or 0)
+    z             = float(z_total_sales or 0)
+    total_sales   = z if z > 0 else float(total_sales or 0)
+    lunch_sales   = float(lunch_sales or 0)
+    dinner_sales  = float(dinner_sales or 0)
+    lunch_pax     = int(lunch_pax or 0)
+    dinner_pax    = int(dinner_pax or 0)
+    ep            = int(event_pax or 0)
+    in_cm         = bool(event_in_cm) if event_in_cm is not None else True
     lunch_noshows  = int(lunch_noshows or 0)
     dinner_noshows = int(dinner_noshows or 0)
     tips           = float(tips or 0)
-    covers         = lunch_pax + dinner_pax
+    covers         = lunch_pax + dinner_pax + (0 if in_cm else ep)
     lunch_avg      = (lunch_sales  / lunch_pax)  if lunch_pax  else 0.0
     dinner_avg     = (dinner_sales / dinner_pax) if dinner_pax else 0.0
     tips_pct       = (tips / total_sales * 100)  if total_sales else 0.0
@@ -2857,11 +2862,16 @@ def _fmt_snapshot(day_: date, label: str) -> str:
         return f"No data for {label} ({fmt_day_ddmmyyyy(day_)}) yet."
     (total_sales, visa, cash, tips,
      lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
-     dinner_sales, dinner_pax, dinner_walkins, dinner_noshows) = row
-    total_sales = float(total_sales or 0)
+     dinner_sales, dinner_pax, dinner_walkins, dinner_noshows,
+     z_total_sales, _transferencia, event_pax, _event_menu_total,
+     _event_timeframe, _venue_fee, event_in_cm) = row
+    z = float(z_total_sales or 0)
+    total_sales = z if z > 0 else float(total_sales or 0)
     lunch_pax = int(lunch_pax or 0)
     dinner_pax = int(dinner_pax or 0)
-    covers = lunch_pax + dinner_pax
+    ep = int(event_pax or 0)
+    in_cm = bool(event_in_cm) if event_in_cm is not None else True
+    covers = lunch_pax + dinner_pax + (0 if in_cm else ep)
     avg_ticket = (total_sales / covers) if covers else 0.0
     lunch_sales = float(lunch_sales or 0)
     dinner_sales = float(dinner_sales or 0)
@@ -2880,7 +2890,7 @@ def _fmt_snapshot(day_: date, label: str) -> str:
     )
 
 def _sum_period_rows(rows: list[dict]) -> dict:
-    sales = sum(r["total_sales"] for r in rows)
+    sales = sum(r.get("z_total_sales") or r["total_sales"] for r in rows)
     covers = sum(r["covers"] for r in rows)
     lunch_sales = sum(r.get("lunch_sales", 0) for r in rows)
     lunch_pax = sum(r.get("lunch_pax", 0) for r in rows)
