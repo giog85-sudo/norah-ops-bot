@@ -1335,6 +1335,28 @@ AGENT_TOOLS = [
 ]
 
 
+def _regular_shift_metrics(lunch_sales, lunch_pax, dinner_sales, dinner_pax,
+                            event_pax, event_menu_total, event_timeframe, event_in_cm):
+    """Return (reg_lunch_sales, reg_lunch_covers, reg_dinner_sales, reg_dinner_covers).
+
+    Subtracts event menu revenue and in-CM event pax so avg-ticket metrics
+    reflect regular F&B spend only, not fixed event pricing.
+    For non-event days (event_timeframe empty) all values are unchanged.
+    """
+    tf = (event_timeframe or "").strip()
+    is_noche  = tf == "Noche"
+    has_event = bool(tf)
+    emt  = float(event_menu_total or 0)
+    ep   = int(event_pax or 0)
+    in_cm = bool(event_in_cm) if event_in_cm is not None else True
+
+    rls = float(lunch_sales  or 0) - (emt if has_event and not is_noche else 0.0)
+    rds = float(dinner_sales or 0) - (emt if is_noche else 0.0)
+    rlc = int(lunch_pax  or 0) - (ep if in_cm and has_event and not is_noche else 0)
+    rdc = int(dinner_pax or 0) - (ep if in_cm and is_noche else 0)
+    return rls, rlc, rds, rdc
+
+
 def _agent_row_to_dict(row, day_: date, label: str = "") -> dict:
     (total_sales, visa, cash, tips,
      lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
@@ -1347,6 +1369,11 @@ def _agent_row_to_dict(row, day_: date, label: str = "") -> dict:
     in_cm = bool(event_in_cm) if event_in_cm is not None else True
     covers = lp + dp + (0 if in_cm else ep)
     z_sales = float(z_total_sales or 0) or float(total_sales or 0)
+    rls, rlc, rds, rdc = _regular_shift_metrics(
+        lunch_sales, lp, dinner_sales, dp,
+        ep, event_menu_total, event_timeframe, in_cm,
+    )
+    reg_covers = rlc + rdc
     return {
         "date": day_.isoformat(),
         **({"label": label} if label else {}),
@@ -1357,17 +1384,21 @@ def _agent_row_to_dict(row, day_: date, label: str = "") -> dict:
         "transferencia": float(transferencia or 0),
         "tips": float(tips or 0),
         "covers": covers,
-        "avg_ticket": (z_sales / covers) if covers else 0.0,
+        "avg_ticket": (rls + rds) / reg_covers if reg_covers else 0.0,
         "lunch_sales": float(lunch_sales or 0),
         "lunch_pax": lp,
         "lunch_walkins": int(lunch_walkins or 0),
         "lunch_noshows": int(lunch_noshows or 0),
-        "lunch_avg": (float(lunch_sales or 0) / lp) if lp else 0.0,
+        "lunch_avg": rls / rlc if rlc else 0.0,
         "dinner_sales": float(dinner_sales or 0),
         "dinner_pax": dp,
         "dinner_walkins": int(dinner_walkins or 0),
         "dinner_noshows": int(dinner_noshows or 0),
-        "dinner_avg": (float(dinner_sales or 0) / dp) if dp else 0.0,
+        "dinner_avg": rds / rdc if rdc else 0.0,
+        "reg_lunch_sales": rls,
+        "reg_lunch_covers": rlc,
+        "reg_dinner_sales": rds,
+        "reg_dinner_covers": rdc,
         "event_pax": ep,
         "event_menu_total": float(event_menu_total or 0),
         "event_timeframe": event_timeframe or "",
@@ -2865,20 +2896,27 @@ def _fmt_snapshot(day_: date, label: str) -> str:
     (total_sales, visa, cash, tips,
      lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
      dinner_sales, dinner_pax, dinner_walkins, dinner_noshows,
-     z_total_sales, _transferencia, event_pax, _event_menu_total,
-     _event_timeframe, _venue_fee, event_in_cm) = row
+     z_total_sales, _transferencia, event_pax, event_menu_total,
+     event_timeframe, _venue_fee, event_in_cm) = row
     z = float(z_total_sales or 0)
     total_sales = z if z > 0 else float(total_sales or 0)
-    lunch_pax = int(lunch_pax or 0)
-    dinner_pax = int(dinner_pax or 0)
+    lp = int(lunch_pax or 0)
+    dp = int(dinner_pax or 0)
     ep = int(event_pax or 0)
     in_cm = bool(event_in_cm) if event_in_cm is not None else True
-    covers = lunch_pax + dinner_pax + (0 if in_cm else ep)
-    avg_ticket = (total_sales / covers) if covers else 0.0
+    covers = lp + dp + (0 if in_cm else ep)
+    rls, rlc, rds, rdc = _regular_shift_metrics(
+        lunch_sales, lp, dinner_sales, dp,
+        ep, event_menu_total, event_timeframe, in_cm,
+    )
+    reg_covers = rlc + rdc
+    avg_ticket = (rls + rds) / reg_covers if reg_covers else 0.0
+    lunch_pax = lp
+    dinner_pax = dp
     lunch_sales = float(lunch_sales or 0)
     dinner_sales = float(dinner_sales or 0)
-    lunch_avg = (lunch_sales / lunch_pax) if lunch_pax else 0.0
-    dinner_avg = (dinner_sales / dinner_pax) if dinner_pax else 0.0
+    lunch_avg = rls / rlc if rlc else 0.0
+    dinner_avg = rds / rdc if rdc else 0.0
     return (
         f"📊 Norah — {label} ({fmt_day_ddmmyyyy(day_)})\n\n"
         f"💰 Sales: €{total_sales:.2f}\n"
@@ -2901,19 +2939,25 @@ def _sum_period_rows(rows: list[dict]) -> dict:
     lunch_noshows = sum(r.get("lunch_noshows", 0) for r in rows)
     dinner_noshows = sum(r.get("dinner_noshows", 0) for r in rows)
     tips = sum(r.get("tips", 0) for r in rows)
+    # Regular (event-excluded) aggregates for avg_ticket metrics
+    reg_ls = sum(r.get("reg_lunch_sales",  r.get("lunch_sales",  0)) for r in rows)
+    reg_lc = sum(r.get("reg_lunch_covers", r.get("lunch_pax",    0)) for r in rows)
+    reg_ds = sum(r.get("reg_dinner_sales",  r.get("dinner_sales", 0)) for r in rows)
+    reg_dc = sum(r.get("reg_dinner_covers", r.get("dinner_pax",   0)) for r in rows)
+    reg_covers = reg_lc + reg_dc
     total_noshows = lunch_noshows + dinner_noshows
     noshow_rate = (total_noshows / (covers + total_noshows) * 100) if (covers + total_noshows) > 0 else 0.0
     tips_pct = (tips / sales * 100) if sales else 0.0
     return {
         "sales": sales,
         "covers": covers,
-        "avg_ticket": (sales / covers) if covers else 0.0,
+        "avg_ticket": (reg_ls + reg_ds) / reg_covers if reg_covers else 0.0,
         "lunch_sales": lunch_sales,
         "lunch_pax": lunch_pax,
-        "lunch_avg": (lunch_sales / lunch_pax) if lunch_pax else 0.0,
+        "lunch_avg": reg_ls / reg_lc if reg_lc else 0.0,
         "dinner_sales": dinner_sales,
         "dinner_pax": dinner_pax,
-        "dinner_avg": (dinner_sales / dinner_pax) if dinner_pax else 0.0,
+        "dinner_avg": reg_ds / reg_dc if reg_dc else 0.0,
         "lunch_noshows": lunch_noshows,
         "dinner_noshows": dinner_noshows,
         "total_noshows": total_noshows,
@@ -3997,18 +4041,15 @@ def api_stats_daily():
                                 THEN COALESCE(event_pax, 0) ELSE 0 END AS total_covers,
                        lunch_sales,
                        dinner_sales,
-                       lunch_pax
-                         + CASE WHEN NOT COALESCE(event_in_cm, TRUE)
-                                     AND COALESCE(event_timeframe, '') != 'Noche'
-                                     AND COALESCE(event_timeframe, '') != ''
-                                THEN COALESCE(event_pax, 0) ELSE 0 END AS lunch_covers,
-                       dinner_pax
-                         + CASE WHEN NOT COALESCE(event_in_cm, TRUE)
-                                     AND COALESCE(event_timeframe, '') = 'Noche'
-                                THEN COALESCE(event_pax, 0) ELSE 0 END AS dinner_covers,
+                       lunch_pax,
+                       dinner_pax,
                        COALESCE(tips, 0) AS tips,
                        COALESCE(lunch_noshows, 0) AS lunch_noshows,
-                       COALESCE(dinner_noshows, 0) AS dinner_noshows
+                       COALESCE(dinner_noshows, 0) AS dinner_noshows,
+                       COALESCE(event_menu_total, 0),
+                       COALESCE(event_timeframe, ''),
+                       COALESCE(event_pax, 0),
+                       COALESCE(event_in_cm, TRUE)
                 FROM full_daily_stats
                 WHERE day BETWEEN %s AND %s
                 ORDER BY day
@@ -4019,16 +4060,29 @@ def api_stats_daily():
 
     result = []
     for row in rows:
-        day, total_sales, total_covers, lunch_sales, dinner_sales, lunch_covers, dinner_covers, tips, lunch_noshows, dinner_noshows = row
+        (day, total_sales, total_covers, lunch_sales, dinner_sales,
+         lunch_pax, dinner_pax, tips, lunch_noshows, dinner_noshows,
+         event_menu_total, event_timeframe, event_pax, event_in_cm) = row
+        tf    = (event_timeframe or "").strip()
+        is_noche  = tf == "Noche"
+        has_event = bool(tf)
+        ep    = int(event_pax or 0)
+        in_cm = bool(event_in_cm) if event_in_cm is not None else True
+        lp    = int(lunch_pax or 0)
+        dp    = int(dinner_pax or 0)
         total_covers = int(total_covers or 0)
-        total_sales = float(total_sales or 0)
-        lc = int(lunch_covers or 0)
-        dc = int(dinner_covers or 0)
-        ls = float(lunch_sales or 0)
-        ds = float(dinner_sales or 0)
-        avg_ticket = round(total_sales / total_covers, 2) if total_covers else 0.0
-        lunch_avg_ticket = round(ls / lc, 2) if lc else 0.0
-        dinner_avg_ticket = round(ds / dc, 2) if dc else 0.0
+        total_sales  = float(total_sales or 0)
+        # Displayed shift covers — all people in seats (external event guests included)
+        lc = lp + (ep if not in_cm and has_event and not is_noche else 0)
+        dc = dp + (ep if not in_cm and is_noche else 0)
+        # Regular metrics — event menu revenue and in-CM event pax excluded
+        rls, rlc, rds, rdc = _regular_shift_metrics(
+            lunch_sales, lp, dinner_sales, dp,
+            ep, event_menu_total, tf, in_cm,
+        )
+        avg_ticket        = round((rls + rds) / (rlc + rdc), 2) if (rlc + rdc) else 0.0
+        lunch_avg_ticket  = round(rls / rlc, 2) if rlc else 0.0
+        dinner_avg_ticket = round(rds / rdc, 2) if rdc else 0.0
         result.append({
             "date": day.isoformat(),
             "total_sales": round(total_sales, 2),
@@ -4073,7 +4127,15 @@ def api_stats_weekly():
                        COALESCE(NULLIF(z_total_sales, 0), total_sales) AS revenue,
                        lunch_pax + dinner_pax
                          + CASE WHEN NOT COALESCE(event_in_cm, TRUE)
-                                THEN COALESCE(event_pax, 0) ELSE 0 END AS covers
+                                THEN COALESCE(event_pax, 0) ELSE 0 END AS covers,
+                       lunch_sales,
+                       lunch_pax,
+                       dinner_sales,
+                       dinner_pax,
+                       COALESCE(event_menu_total, 0),
+                       COALESCE(event_timeframe, ''),
+                       COALESCE(event_pax, 0),
+                       COALESCE(event_in_cm, TRUE)
                 FROM full_daily_stats
                 WHERE day BETWEEN %s AND %s
                 ORDER BY day
@@ -4083,21 +4145,35 @@ def api_stats_weekly():
             rows = cur.fetchall()
 
     buckets = {}
-    for day, total_sales, covers in rows:
+    for (day, total_sales, covers, lunch_sales, lunch_pax, dinner_sales, dinner_pax,
+         event_menu_total, event_timeframe, event_pax, event_in_cm) in rows:
         monday = day - timedelta(days=day.weekday())
         if monday not in buckets:
-            buckets[monday] = {"total_sales": 0.0, "total_covers": 0}
-        buckets[monday]["total_sales"] += float(total_sales or 0)
+            buckets[monday] = {"total_sales": 0.0, "total_covers": 0,
+                                "reg_ls": 0.0, "reg_lc": 0, "reg_ds": 0.0, "reg_dc": 0}
+        ep    = int(event_pax or 0)
+        in_cm = bool(event_in_cm) if event_in_cm is not None else True
+        rls, rlc, rds, rdc = _regular_shift_metrics(
+            lunch_sales, int(lunch_pax or 0), dinner_sales, int(dinner_pax or 0),
+            ep, event_menu_total, event_timeframe, in_cm,
+        )
+        buckets[monday]["total_sales"]  += float(total_sales or 0)
         buckets[monday]["total_covers"] += int(covers or 0)
+        buckets[monday]["reg_ls"] += rls
+        buckets[monday]["reg_lc"] += rlc
+        buckets[monday]["reg_ds"] += rds
+        buckets[monday]["reg_dc"] += rdc
 
     result = []
     for i in range(weeks):
         week_start = last_monday - timedelta(weeks=weeks - 1 - i)
         week_end = week_start + timedelta(days=6)
-        b = buckets.get(week_start, {"total_sales": 0.0, "total_covers": 0})
-        total_sales = round(b["total_sales"], 2)
+        b = buckets.get(week_start, {"total_sales": 0.0, "total_covers": 0,
+                                      "reg_ls": 0.0, "reg_lc": 0, "reg_ds": 0.0, "reg_dc": 0})
+        total_sales  = round(b["total_sales"], 2)
         total_covers = b["total_covers"]
-        avg_ticket = round(total_sales / total_covers, 2) if total_covers else 0.0
+        reg_covers   = b["reg_lc"] + b["reg_dc"]
+        avg_ticket   = round((b["reg_ls"] + b["reg_ds"]) / reg_covers, 2) if reg_covers else 0.0
         result.append({
             "week_start": week_start.isoformat(),
             "week_end": week_end.isoformat(),
