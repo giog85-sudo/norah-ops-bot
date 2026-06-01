@@ -707,8 +707,7 @@ def upsert_full_day(
                     event_pax=EXCLUDED.event_pax,
                     event_menu_total=EXCLUDED.event_menu_total,
                     event_timeframe=EXCLUDED.event_timeframe,
-                    venue_fee=EXCLUDED.venue_fee,
-                    event_in_cm=EXCLUDED.event_in_cm;
+                    venue_fee=EXCLUDED.venue_fee;
                 """,
                 (
                     day_, total_sales, visa, cash, tips,
