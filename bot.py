@@ -1350,10 +1350,10 @@ def _regular_shift_metrics(lunch_sales, lunch_pax, dinner_sales, dinner_pax,
     ep   = int(event_pax or 0)
     in_cm = bool(event_in_cm) if event_in_cm is not None else True
 
-    rls = float(lunch_sales  or 0) - (emt if has_event and not is_noche else 0.0)
-    rds = float(dinner_sales or 0) - (emt if is_noche else 0.0)
-    rlc = int(lunch_pax  or 0) - (ep if in_cm and has_event and not is_noche else 0)
-    rdc = int(dinner_pax or 0) - (ep if in_cm and is_noche else 0)
+    rls = max(float(lunch_sales  or 0) - (emt if has_event and not is_noche else 0.0), 0.0)
+    rds = max(float(dinner_sales or 0) - (emt if is_noche else 0.0), 0.0)
+    rlc = max(int(lunch_pax  or 0) - (ep if in_cm and has_event and not is_noche else 0), 0)
+    rdc = max(int(dinner_pax or 0) - (ep if in_cm and is_noche else 0), 0)
     return rls, rlc, rds, rdc
 
 
