@@ -3979,8 +3979,10 @@ def api_stats_daily():
             cur.execute(
                 """
                 SELECT day,
-                       total_sales,
-                       lunch_pax + dinner_pax AS total_covers,
+                       COALESCE(NULLIF(z_total_sales, 0), total_sales) AS revenue,
+                       lunch_pax + dinner_pax
+                         + CASE WHEN NOT COALESCE(event_in_cm, TRUE)
+                                THEN COALESCE(event_pax, 0) ELSE 0 END AS total_covers,
                        lunch_sales,
                        dinner_sales,
                        lunch_pax,
@@ -4049,8 +4051,10 @@ def api_stats_weekly():
             cur.execute(
                 """
                 SELECT day,
-                       total_sales,
-                       lunch_pax + dinner_pax AS covers
+                       COALESCE(NULLIF(z_total_sales, 0), total_sales) AS revenue,
+                       lunch_pax + dinner_pax
+                         + CASE WHEN NOT COALESCE(event_in_cm, TRUE)
+                                THEN COALESCE(event_pax, 0) ELSE 0 END AS covers
                 FROM full_daily_stats
                 WHERE day BETWEEN %s AND %s
                 ORDER BY day
