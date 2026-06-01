@@ -280,8 +280,13 @@ def init_db():
                 "ALTER TABLE full_daily_stats ADD COLUMN IF NOT EXISTS event_menu_total DOUBLE PRECISION DEFAULT 0",
                 "ALTER TABLE full_daily_stats ADD COLUMN IF NOT EXISTS event_timeframe  TEXT             DEFAULT ''",
                 "ALTER TABLE full_daily_stats ADD COLUMN IF NOT EXISTS venue_fee        DOUBLE PRECISION DEFAULT 0",
+                "ALTER TABLE full_daily_stats ADD COLUMN IF NOT EXISTS event_in_cm      BOOLEAN NOT NULL DEFAULT TRUE",
             ]:
                 cur.execute(col_ddl)
+            # May 25 2026: event guests were not booked in CoverManager
+            cur.execute(
+                "UPDATE full_daily_stats SET event_in_cm = FALSE WHERE day = '2026-05-25'"
+            )
 
             cur.execute(
                 """
@@ -667,6 +672,7 @@ def upsert_full_day(
     event_menu_total: float = 0.0,
     event_timeframe:  str   = "",
     venue_fee:        float = 0.0,
+    event_in_cm:      bool  = True,
 ):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -677,9 +683,9 @@ def upsert_full_day(
                     lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
                     dinner_sales, dinner_pax, dinner_walkins, dinner_noshows,
                     z_total_sales, transferencia, event_pax,
-                    event_menu_total, event_timeframe, venue_fee
+                    event_menu_total, event_timeframe, venue_fee, event_in_cm
                 )
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (day) DO UPDATE SET
                     total_sales=EXCLUDED.total_sales,
                     visa=EXCLUDED.visa,
@@ -698,14 +704,15 @@ def upsert_full_day(
                     event_pax=EXCLUDED.event_pax,
                     event_menu_total=EXCLUDED.event_menu_total,
                     event_timeframe=EXCLUDED.event_timeframe,
-                    venue_fee=EXCLUDED.venue_fee;
+                    venue_fee=EXCLUDED.venue_fee,
+                    event_in_cm=EXCLUDED.event_in_cm;
                 """,
                 (
                     day_, total_sales, visa, cash, tips,
                     lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
                     dinner_sales, dinner_pax, dinner_walkins, dinner_noshows,
                     z_total_sales, transferencia, event_pax,
-                    event_menu_total, event_timeframe, venue_fee,
+                    event_menu_total, event_timeframe, venue_fee, event_in_cm,
                 ),
             )
         conn.commit()
@@ -723,7 +730,8 @@ def get_full_day(day_: date):
                        COALESCE(event_pax, 0),
                        COALESCE(event_menu_total, 0),
                        COALESCE(event_timeframe, ''),
-                       COALESCE(venue_fee, 0)
+                       COALESCE(venue_fee, 0),
+                       COALESCE(event_in_cm, TRUE)
                 FROM full_daily_stats
                 WHERE day=%s;
                 """,
@@ -791,9 +799,10 @@ def get_full_days_for_weekday(weekday: int, before_or_on: date, limit: int) -> l
                        lunch_sales, lunch_pax, lunch_noshows,
                        dinner_sales, dinner_pax, dinner_noshows,
                        tips,
-                       (COALESCE(lunch_pax,0) + COALESCE(dinner_pax,0)) AS covers,
                        COALESCE(z_total_sales, 0),
-                       COALESCE(event_menu_total, 0)
+                       COALESCE(event_menu_total, 0),
+                       COALESCE(event_pax, 0),
+                       COALESCE(event_in_cm, TRUE)
                 FROM full_daily_stats
                 WHERE EXTRACT(ISODOW FROM day) = %s AND day <= %s
                 ORDER BY day DESC
@@ -804,29 +813,33 @@ def get_full_days_for_weekday(weekday: int, before_or_on: date, limit: int) -> l
             rows = cur.fetchall()
     result = []
     for r in rows:
-        covers = int(r[9] or 0)
         sales = float(r[1] or 0)
-        z_sales = float(r[10] or 0) or sales
-        lunch_pax = int(r[3] or 0)
-        dinner_pax = int(r[6] or 0)
+        z_sales = float(r[9] or 0) or sales
+        lp = int(r[3] or 0)
+        dp = int(r[6] or 0)
+        ep = int(r[11] or 0)
+        in_cm = bool(r[12]) if r[12] is not None else True
+        covers = lp + dp + (0 if in_cm else ep)
         lunch_sales = float(r[2] or 0)
         dinner_sales = float(r[5] or 0)
         result.append({
             "day": r[0],
             "total_sales": sales,
             "z_total_sales": z_sales,
-            "event_menu_total": float(r[11] or 0),
+            "event_menu_total": float(r[10] or 0),
+            "event_pax": ep,
+            "event_in_cm": in_cm,
             "lunch_sales": lunch_sales,
-            "lunch_pax": lunch_pax,
+            "lunch_pax": lp,
             "lunch_noshows": int(r[4] or 0),
             "dinner_sales": dinner_sales,
-            "dinner_pax": dinner_pax,
+            "dinner_pax": dp,
             "dinner_noshows": int(r[7] or 0),
             "tips": float(r[8] or 0),
             "covers": covers,
             "avg_ticket": (z_sales / covers) if covers else 0.0,
-            "lunch_avg": (lunch_sales / lunch_pax) if lunch_pax else 0.0,
-            "dinner_avg": (dinner_sales / dinner_pax) if dinner_pax else 0.0,
+            "lunch_avg": (lunch_sales / lp) if lp else 0.0,
+            "dinner_avg": (dinner_sales / dp) if dp else 0.0,
         })
     return result
 
@@ -839,9 +852,10 @@ def get_full_days_in_period(p: Period) -> list[dict]:
                        lunch_sales, lunch_pax, lunch_noshows,
                        dinner_sales, dinner_pax, dinner_noshows,
                        tips,
-                       (COALESCE(lunch_pax,0) + COALESCE(dinner_pax,0)) AS covers,
                        COALESCE(z_total_sales, 0),
-                       COALESCE(event_menu_total, 0)
+                       COALESCE(event_menu_total, 0),
+                       COALESCE(event_pax, 0),
+                       COALESCE(event_in_cm, TRUE)
                 FROM full_daily_stats
                 WHERE day BETWEEN %s AND %s
                 ORDER BY day ASC;
@@ -851,29 +865,33 @@ def get_full_days_in_period(p: Period) -> list[dict]:
             rows = cur.fetchall()
     result = []
     for r in rows:
-        covers = int(r[9] or 0)
         sales = float(r[1] or 0)
-        z_sales = float(r[10] or 0) or sales
-        lunch_pax = int(r[3] or 0)
-        dinner_pax = int(r[6] or 0)
+        z_sales = float(r[9] or 0) or sales
+        lp = int(r[3] or 0)
+        dp = int(r[6] or 0)
+        ep = int(r[11] or 0)
+        in_cm = bool(r[12]) if r[12] is not None else True
+        covers = lp + dp + (0 if in_cm else ep)
         lunch_sales = float(r[2] or 0)
         dinner_sales = float(r[5] or 0)
         result.append({
             "day": r[0],
             "total_sales": sales,
             "z_total_sales": z_sales,
-            "event_menu_total": float(r[11] or 0),
+            "event_menu_total": float(r[10] or 0),
+            "event_pax": ep,
+            "event_in_cm": in_cm,
             "lunch_sales": lunch_sales,
-            "lunch_pax": lunch_pax,
+            "lunch_pax": lp,
             "lunch_noshows": int(r[4] or 0),
             "dinner_sales": dinner_sales,
-            "dinner_pax": dinner_pax,
+            "dinner_pax": dp,
             "dinner_noshows": int(r[7] or 0),
             "tips": float(r[8] or 0),
             "covers": covers,
             "avg_ticket": (z_sales / covers) if covers else 0.0,
-            "lunch_avg": (lunch_sales / lunch_pax) if lunch_pax else 0.0,
-            "dinner_avg": (dinner_sales / dinner_pax) if dinner_pax else 0.0,
+            "lunch_avg": (lunch_sales / lp) if lp else 0.0,
+            "dinner_avg": (dinner_sales / dp) if dp else 0.0,
         })
     return result
 
@@ -888,9 +906,10 @@ def get_full_days_for_dates(dates: list[date]) -> dict:
                        lunch_sales, lunch_pax, lunch_noshows,
                        dinner_sales, dinner_pax, dinner_noshows,
                        tips,
-                       (COALESCE(lunch_pax,0) + COALESCE(dinner_pax,0)) AS covers,
                        COALESCE(z_total_sales, 0),
-                       COALESCE(event_menu_total, 0)
+                       COALESCE(event_menu_total, 0),
+                       COALESCE(event_pax, 0),
+                       COALESCE(event_in_cm, TRUE)
                 FROM full_daily_stats
                 WHERE day = ANY(%s);
                 """,
@@ -899,29 +918,33 @@ def get_full_days_for_dates(dates: list[date]) -> dict:
             rows = cur.fetchall()
     result = {}
     for r in rows:
-        covers = int(r[9] or 0)
         sales = float(r[1] or 0)
-        z_sales = float(r[10] or 0) or sales
-        lunch_pax = int(r[3] or 0)
-        dinner_pax = int(r[6] or 0)
+        z_sales = float(r[9] or 0) or sales
+        lp = int(r[3] or 0)
+        dp = int(r[6] or 0)
+        ep = int(r[11] or 0)
+        in_cm = bool(r[12]) if r[12] is not None else True
+        covers = lp + dp + (0 if in_cm else ep)
         lunch_sales = float(r[2] or 0)
         dinner_sales = float(r[5] or 0)
         result[r[0]] = {
             "day": r[0],
             "total_sales": sales,
             "z_total_sales": z_sales,
-            "event_menu_total": float(r[11] or 0),
+            "event_menu_total": float(r[10] or 0),
+            "event_pax": ep,
+            "event_in_cm": in_cm,
             "lunch_sales": lunch_sales,
-            "lunch_pax": lunch_pax,
+            "lunch_pax": lp,
             "lunch_noshows": int(r[4] or 0),
             "dinner_sales": dinner_sales,
-            "dinner_pax": dinner_pax,
+            "dinner_pax": dp,
             "dinner_noshows": int(r[7] or 0),
             "tips": float(r[8] or 0),
             "covers": covers,
             "avg_ticket": (z_sales / covers) if covers else 0.0,
-            "lunch_avg": (lunch_sales / lunch_pax) if lunch_pax else 0.0,
-            "dinner_avg": (dinner_sales / dinner_pax) if dinner_pax else 0.0,
+            "lunch_avg": (lunch_sales / lp) if lp else 0.0,
+            "dinner_avg": (dinner_sales / dp) if dp else 0.0,
         }
     return result
 
@@ -1315,10 +1338,12 @@ def _agent_row_to_dict(row, day_: date, label: str = "") -> dict:
      lunch_sales, lunch_pax, lunch_walkins, lunch_noshows,
      dinner_sales, dinner_pax, dinner_walkins, dinner_noshows,
      z_total_sales, transferencia, event_pax, event_menu_total,
-     event_timeframe, venue_fee) = row
-    covers = int((lunch_pax or 0) + (dinner_pax or 0))
-    lunch_pax = int(lunch_pax or 0)
-    dinner_pax = int(dinner_pax or 0)
+     event_timeframe, venue_fee, event_in_cm) = row
+    lp = int(lunch_pax or 0)
+    dp = int(dinner_pax or 0)
+    ep = int(event_pax or 0)
+    in_cm = bool(event_in_cm) if event_in_cm is not None else True
+    covers = lp + dp + (0 if in_cm else ep)
     z_sales = float(z_total_sales or 0) or float(total_sales or 0)
     return {
         "date": day_.isoformat(),
@@ -1332,19 +1357,20 @@ def _agent_row_to_dict(row, day_: date, label: str = "") -> dict:
         "covers": covers,
         "avg_ticket": (z_sales / covers) if covers else 0.0,
         "lunch_sales": float(lunch_sales or 0),
-        "lunch_pax": lunch_pax,
+        "lunch_pax": lp,
         "lunch_walkins": int(lunch_walkins or 0),
         "lunch_noshows": int(lunch_noshows or 0),
-        "lunch_avg": (float(lunch_sales or 0) / lunch_pax) if lunch_pax else 0.0,
+        "lunch_avg": (float(lunch_sales or 0) / lp) if lp else 0.0,
         "dinner_sales": float(dinner_sales or 0),
-        "dinner_pax": dinner_pax,
+        "dinner_pax": dp,
         "dinner_walkins": int(dinner_walkins or 0),
         "dinner_noshows": int(dinner_noshows or 0),
-        "dinner_avg": (float(dinner_sales or 0) / dinner_pax) if dinner_pax else 0.0,
-        "event_pax": int(event_pax or 0),
+        "dinner_avg": (float(dinner_sales or 0) / dp) if dp else 0.0,
+        "event_pax": ep,
         "event_menu_total": float(event_menu_total or 0),
         "event_timeframe": event_timeframe or "",
         "venue_fee": float(venue_fee or 0),
+        "event_in_cm": in_cm,
     }
 
 
