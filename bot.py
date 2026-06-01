@@ -4348,6 +4348,56 @@ def preview_post():
         return str(e), 500
 
 
+@flask_app.route("/admin/event-flag")
+def admin_event_flag():
+    """
+    DIAGNOSTIC/ADMIN. GET: reads event_in_cm for a date. POST: sets it.
+    ?date=YYYY-MM-DD  required.
+    ?value=true|false required for POST.
+    Auth: Bearer token.
+    """
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    date_str = request.args.get("date")
+    if not date_str:
+        return jsonify({"error": "date param required"}), 400
+    if request.method == "POST":
+        val_str = request.args.get("value", "").lower()
+        if val_str not in ("true", "false"):
+            return jsonify({"error": "value must be true or false"}), 400
+        val = val_str == "true"
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE full_daily_stats SET event_in_cm = %s WHERE day = %s",
+                    (val, date_str),
+                )
+                rowcount = cur.rowcount
+            conn.commit()
+        return jsonify({"date": date_str, "event_in_cm": val, "rows_updated": rowcount})
+    # GET: read current value
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT day, event_in_cm, event_pax, venue_fee, z_total_sales "
+                "FROM full_daily_stats WHERE day = %s",
+                (date_str,),
+            )
+            row = cur.fetchone()
+    if not row:
+        return jsonify({"error": f"No row for {date_str}"}), 404
+    return jsonify({
+        "date": row[0].isoformat(),
+        "event_in_cm": row[1],
+        "event_pax": row[2],
+        "venue_fee": row[3],
+        "z_total_sales": row[4],
+    })
+
+flask_app.add_url_rule("/admin/event-flag", "admin_event_flag_post",
+                       admin_event_flag, methods=["POST"])
+
+
 @flask_app.route("/raw-z-report")
 def raw_z_report():
     """
