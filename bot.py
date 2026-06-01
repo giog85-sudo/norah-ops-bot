@@ -283,6 +283,9 @@ def init_db():
                 "ALTER TABLE full_daily_stats ADD COLUMN IF NOT EXISTS event_in_cm      BOOLEAN NOT NULL DEFAULT TRUE",
             ]:
                 cur.execute(col_ddl)
+        # Commit DDL before DML so the UPDATE runs in a clean transaction
+        conn.commit()
+        with conn.cursor() as cur:
             # May 25 2026: event guests were not booked in CoverManager
             cur.execute(
                 "UPDATE full_daily_stats SET event_in_cm = FALSE WHERE day = '2026-05-25'"
