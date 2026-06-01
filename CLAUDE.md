@@ -514,3 +514,41 @@ Multiple tags per note are supported. Tag analytics: `/tagstats`, `/soldout`, `/
 - 2026-05-25: `total_covers=76`, `total_sales=5784.60`, `avg_ticket=45.91`, `dinner_covers=60`, `dinner_avg_ticket=43.42`
 - 2026-04-11: `total_covers=154`, `avg_ticket=44.69`, `dinner_avg_ticket=46.41` (event pax subtracted from covers and revenue)
 - 2026-05-08 (non-event): `avg_ticket=48.18`, `dinner_avg_ticket=49.81` — unchanged from original formula
+
+### 2026-06-01 — Defensive clamp in _regular_shift_metrics()
+
+All four outputs of `_regular_shift_metrics()` are now clamped to non-negative via `max(..., 0)`:
+```
+regular_lunch_sales   = max(lunch_sales  - event_menu_lunch,   0)
+regular_dinner_sales  = max(dinner_sales - event_menu_dinner,  0)
+regular_lunch_covers  = max(lunch_pax  - event_pax_in_lunch_cm,  0)
+regular_dinner_covers = max(dinner_pax - event_pax_in_dinner_cm, 0)
+```
+
+Two real failure modes that motivated this:
+- **Silent save=true failure (Apr 10):** `dinner_pax=0` but `event_pax=13`, `event_in_cm=TRUE` → `regular_dinner_covers = 0 − 13 = −13` → `dinner_avg_ticket = −€295`. Clamp makes this `0/0 → 0.0` instead.
+- **Agora retroactive void (Mar 10):** Agora changed `dinner_sales` from €1,875.80 to −€22.20 (a ~€1,898 refund processed post-hoc). Clamp makes `dinner_avg_ticket = 0.0` instead of `−€0.54`.
+
+No-op on valid data. Raw fields in `full_daily_stats` are unaffected — only the in-memory avg_ticket calculation is clamped.
+
+### 2026-06-01 — /admin/health-check endpoint
+
+`GET /admin/health-check?from=YYYY-MM-DD&to=YYYY-MM-DD` (default: last 90 days). Auth: Bearer token.
+
+Scans `full_daily_stats` for six anomaly patterns and returns `{checked_days, rows_in_db, anomalies: [{date, issue, detail}]}`:
+
+| Issue code | Condition |
+|---|---|
+| `silent_save_failure` | `total_sales > 0` AND `(lunch_pax + dinner_pax) = 0` |
+| `negative_shift_sales` | `lunch_sales < 0` OR `dinner_sales < 0` |
+| `inconsistent_event_pax_without_menu` | `event_pax > 0` AND `event_menu_total = 0` |
+| `inconsistent_event_menu_without_pax` | `event_pax = 0` AND `event_menu_total > 0` |
+| `event_pax_exceeds_shift_in_cm` | `event_pax > 0`, `event_in_cm=TRUE`, and `event_pax > shift_pax` for the matching timeframe |
+| `missing_row` | Non-Sunday operating day with no row in DB |
+
+Run after any batch backfill or when the dashboard looks anomalous. Codifies the manual diagnostic queries used during the June 1 migration.
+
+**Known findings from first run (default 90-day window):**
+- `2026-03-03` through `2026-03-07` — five `missing_row` entries. Likely pre-bot-rollout period or a restaurant closure week. Not a bug; noted for awareness.
+- `2026-03-10` — `negative_shift_sales`: `dinner_sales=−€22.20`. Agora's view of this day changed between the original report (€1,875.80 dinner sales) and the June 1 backfill (−€22.20). Difference ~€1,898 indicates a void or refund processed retroactively in Agora. Pending investigation with Angie.
+- `2026-06-01` — `missing_row`: today, expected (daily post hasn't run yet).
