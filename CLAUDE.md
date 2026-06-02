@@ -111,6 +111,34 @@ Role assignments per chat.
 
 SQL upserts use `ON CONFLICT DO UPDATE`. All queries use parameterised `%s` placeholders.
 
+### `daily_product_sales`
+Agora line items aggregated by (day, product, timeframe). Populated by `/run-pipeline?save=true`.
+- `report_day` DATE — NOT NULL
+- `product` TEXT — NOT NULL
+- `family` TEXT — product family (nullable)
+- `timeframe` TEXT — NOT NULL (raw Agora TimeFrame value, e.g. `"Mediodía"`, `"Noche"`)
+- `quantity` NUMERIC — units sold
+- `net` NUMERIC — net revenue
+- `gross` NUMERIC — gross revenue
+- PRIMARY KEY: `(report_day, product, timeframe)`
+- Index on `report_day`
+
+Pipeline upsert: DELETE + INSERT (not merge), so each `/run-pipeline?save=true` run replaces the day's rows cleanly.
+
+### `daily_server_sales`
+Server revenue aggregated by (day, user_name) with lunch/dinner split. Populated by `/run-pipeline?save=true`.
+- `report_day` DATE — NOT NULL
+- `user_name` TEXT — NOT NULL (Agora `User` field, `"Unknown"` if blank)
+- `lunch_revenue` NUMERIC
+- `lunch_covers` INTEGER — distinct `DocumentId` count for lunch shift (NULL if no document IDs available)
+- `dinner_revenue` NUMERIC
+- `dinner_covers` INTEGER — distinct `DocumentId` count for dinner shift (NULL if no document IDs available)
+- `total_revenue` NUMERIC
+- PRIMARY KEY: `(report_day, user_name)`
+- Index on `report_day`
+
+TimeFrame classification mirrors `_LUNCH_FRAMES_BOT` / `_DINNER_FRAMES_BOT` constants defined in bot.py (same sets as agora_integration.py `_LUNCH_FRAMES`/`_DINNER_FRAMES` plus `"día"/"dia"`).
+
 ---
 
 ## Environment Variables
@@ -346,6 +374,20 @@ Returns per-day rows. All event-aware:
 
 Fetches the same raw fields per day, accumulates `regular_lunch_sales`, `regular_lunch_covers`, `regular_dinner_sales`, `regular_dinner_covers` per week bucket, then computes `avg_ticket` from the period sums — never by averaging daily averages.
 
+### `/run-pipeline?date=YYYY-MM-DD[&save=true]`
+
+When `save=true`: writes `full_daily_stats`, `daily_stats`, and (if `ds.line_items` is non-empty) **also writes `daily_product_sales` and `daily_server_sales`**. The aggregation tables are fully replaced for that day (DELETE + INSERT) so re-running is idempotent.
+
+### `/admin/peek-aggregations?date=YYYY-MM-DD`
+
+Diagnostic read-only endpoint. Returns all rows from `daily_product_sales` and `daily_server_sales` for a given date. Use to verify aggregation after running pipeline.
+
+### `/admin/health-check?from=YYYY-MM-DD&to=YYYY-MM-DD`
+
+Now includes two additional anomaly patterns:
+- **`missing_product_aggregation`**: day has `total_sales > 0` but no rows in `daily_product_sales`
+- **`missing_server_aggregation`**: day has `total_sales > 0` but no rows in `daily_server_sales`
+
 ---
 
 ## AI Agent Event Awareness
@@ -357,6 +399,19 @@ All agent query paths use event-aware aggregation via `_regular_shift_metrics()`
 - **`_exec_get_period_summary`**: calls `get_full_days_in_period()` → `_sum_period_rows()`.
 - **`_fmt_snapshot`**: uses `_regular_shift_metrics()` for `lunch_avg`, `dinner_avg`, `avg_ticket`. Displays raw `lunch_sales`/`dinner_sales` (full shift revenue) alongside event-excluded avg tickets.
 - **`send_evening_alerts`**: 19-field unpack from `get_full_day()`; revenue = `z_total_sales` if > 0, covers = event_in_cm-aware formula. Alert comparisons use these values.
+
+### AI Agent Tools — F&B + Staff (added 2026-06-02)
+
+Four new tools query the `daily_product_sales` / `daily_server_sales` tables:
+
+| Tool | Description |
+|---|---|
+| `get_top_products(period_start, period_end, metric, limit)` | Top products by revenue or quantity. `metric`: `'revenue'` (default) or `'quantity'`. `limit`: max 50. |
+| `get_category_breakdown(period_start, period_end)` | Revenue by product family with % share. |
+| `get_server_leaderboard(period_start, period_end, metric)` | Server ranking by revenue or avg_ticket; includes lunch/dinner split. |
+| `get_product_trend(product_name, period_start, period_end)` | Daily revenue+quantity for one product. Returns fuzzy name suggestions if exact match not found. |
+
+All four tools require data in `daily_product_sales` / `daily_server_sales`. If a day hasn't been backfilled via `/run-pipeline?save=true`, these tools return empty results for that period.
 
 ---
 
@@ -482,7 +537,7 @@ Multiple tags per note are supported. Tag analytics: `/tagstats`, `/soldout`, `/
 
 - **Bot commands are English-only.** The AI agent responds in the user's language (English, Spanish, Russian), but slash commands and structured parsing are English.
 - **Dynamic alert threshold tuning.** All thresholds are env vars; no `/setalert` command exists yet.
-- **Agent tool extensibility.** `AGENT_TOOLS` list is structured for easy addition of new query tools beyond the current 9.
+- **Agent tool extensibility.** `AGENT_TOOLS` list currently has 13 tools (9 original + 4 F&B/staff tools added 2026-06-02). Adding more tools requires a new tool dict in `AGENT_TOOLS`, a `_exec_*` function, and a new `elif` branch in `execute_agent_tool()`.
 - **Legacy role config.** `OWNERS_CHAT_IDS` in `settings` table still supported alongside `chat_roles` table; both code paths are live.
 - **No opening/shift-start alerts.** All scheduled alerts are end-of-day. Real-time shift alerts would require a second scheduled job or webhook triggers.
 - **Float rounding on avg ticket.** Headline avg ticket may show 1¢ low (e.g., 45.915 → 45.91 instead of 45.92) due to Python float arithmetic. Accepted.
@@ -491,6 +546,28 @@ Multiple tags per note are supported. Tag analytics: `/tagstats`, `/soldout`, `/
 ---
 
 ## Changelog
+
+### 2026-06-02 — Phase 1 F&B + Staff Analytics
+
+**Schema**: Two new tables added via `CREATE TABLE IF NOT EXISTS` in `init_db()` (second cursor block):
+- `daily_product_sales (report_day, product, family, timeframe, quantity, net, gross)` — PK: `(report_day, product, timeframe)`
+- `daily_server_sales (report_day, user_name, lunch_revenue, lunch_covers, dinner_revenue, dinner_covers, total_revenue)` — PK: `(report_day, user_name)`
+
+**Pipeline**: `/run-pipeline?save=true` now calls `upsert_product_sales()` and `upsert_server_sales()` after writing `full_daily_stats`. Both helpers do DELETE + INSERT for the day, so re-runs are idempotent.
+
+**Agent tools** (4 new tools, bringing total to 13):
+- `get_top_products` — products ranked by revenue/quantity
+- `get_category_breakdown` — revenue by product family with % share
+- `get_server_leaderboard` — servers ranked by revenue or avg_ticket
+- `get_product_trend` — daily rev+qty time series for one product; fuzzy name suggestions if not found
+
+**Health-check**: Two new anomaly patterns (`missing_product_aggregation`, `missing_server_aggregation`) added to `/admin/health-check`.
+
+**New endpoint**: `/admin/peek-aggregations?date=YYYY-MM-DD` — read-only diagnostic; returns both aggregation tables for a date.
+
+**Backfill**: No migration script. Trigger `/run-pipeline?date=YYYY-MM-DD&save=true` per day to populate the new tables. Use `/admin/health-check` to identify which days are missing.
+
+---
 
 ### 2026-05-31 – 2026-06-01 — Full Event-Aware Migration
 

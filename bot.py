@@ -326,6 +326,42 @@ def init_db():
                 """
             )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_chat_roles_role ON chat_roles(role);")
+
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS daily_product_sales (
+                    report_day DATE NOT NULL,
+                    product    TEXT NOT NULL,
+                    family     TEXT,
+                    timeframe  TEXT NOT NULL,
+                    quantity   NUMERIC,
+                    net        NUMERIC,
+                    gross      NUMERIC,
+                    PRIMARY KEY (report_day, product, timeframe)
+                );
+                """
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_dps_day ON daily_product_sales(report_day);"
+            )
+
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS daily_server_sales (
+                    report_day      DATE NOT NULL,
+                    user_name       TEXT NOT NULL,
+                    lunch_revenue   NUMERIC,
+                    lunch_covers    INTEGER,
+                    dinner_revenue  NUMERIC,
+                    dinner_covers   INTEGER,
+                    total_revenue   NUMERIC,
+                    PRIMARY KEY (report_day, user_name)
+                );
+                """
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_dss_day ON daily_server_sales(report_day);"
+            )
         conn.commit()
 
 def set_setting(key: str, value: str):
@@ -718,6 +754,105 @@ def upsert_full_day(
                 ),
             )
         conn.commit()
+
+
+# TimeFrame sets mirror agora_integration.py _LUNCH_FRAMES / _DINNER_FRAMES
+_LUNCH_FRAMES_BOT  = {"mediodía", "mediodia", "tarde", "almuerzo", "comida", "día", "dia"}
+_DINNER_FRAMES_BOT = {"noche", "cena"}
+
+
+def upsert_product_sales(day_: date, line_items: list):
+    """Aggregate line items by (product, timeframe) and upsert into daily_product_sales."""
+    from collections import defaultdict
+    agg = defaultdict(lambda: {"family": "", "quantity": 0.0, "net": 0.0, "gross": 0.0})
+    for r in line_items:
+        prod = (r.get("Product") or "—").strip()
+        tf   = (r.get("TimeFrame") or "").strip()
+        fam  = (r.get("Family") or "").strip()
+        qty  = float(r.get("Quantity", 0) or 0)
+        net  = float(r.get("Net",  0) or 0)
+        grs  = float(r.get("Gross", 0) or 0)
+        key  = (prod, tf)
+        agg[key]["family"]   = fam
+        agg[key]["quantity"] += qty
+        agg[key]["net"]      += net
+        agg[key]["gross"]    += grs
+
+    if not agg:
+        return
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Delete existing rows for this day to avoid stale product entries
+            cur.execute("DELETE FROM daily_product_sales WHERE report_day = %s", (day_,))
+            for (prod, tf), vals in agg.items():
+                cur.execute(
+                    """
+                    INSERT INTO daily_product_sales
+                        (report_day, product, family, timeframe, quantity, net, gross)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (report_day, product, timeframe) DO UPDATE SET
+                        family   = EXCLUDED.family,
+                        quantity = EXCLUDED.quantity,
+                        net      = EXCLUDED.net,
+                        gross    = EXCLUDED.gross
+                    """,
+                    (day_, prod, vals["family"], tf, vals["quantity"], vals["net"], vals["gross"]),
+                )
+        conn.commit()
+
+
+def upsert_server_sales(day_: date, line_items: list):
+    """Aggregate line items by (user, shift) and upsert into daily_server_sales."""
+    from collections import defaultdict
+    agg = defaultdict(lambda: {
+        "lunch_revenue": 0.0, "lunch_docs": set(),
+        "dinner_revenue": 0.0, "dinner_docs": set(),
+    })
+    for r in line_items:
+        user = (r.get("User") or "Unknown").strip()
+        tf   = (r.get("TimeFrame") or "").strip().lower()
+        net  = float(r.get("Net", 0) or 0)
+        doc  = r.get("DocumentId") or r.get("DocumentNumber") or None
+
+        if tf in _LUNCH_FRAMES_BOT:
+            agg[user]["lunch_revenue"] += net
+            if doc:
+                agg[user]["lunch_docs"].add(doc)
+        elif tf in _DINNER_FRAMES_BOT:
+            agg[user]["dinner_revenue"] += net
+            if doc:
+                agg[user]["dinner_docs"].add(doc)
+
+    if not agg:
+        return
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM daily_server_sales WHERE report_day = %s", (day_,))
+            for user, vals in agg.items():
+                lr = vals["lunch_revenue"]
+                lc = len(vals["lunch_docs"]) or None
+                dr = vals["dinner_revenue"]
+                dc = len(vals["dinner_docs"]) or None
+                tr = lr + dr
+                cur.execute(
+                    """
+                    INSERT INTO daily_server_sales
+                        (report_day, user_name, lunch_revenue, lunch_covers,
+                         dinner_revenue, dinner_covers, total_revenue)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (report_day, user_name) DO UPDATE SET
+                        lunch_revenue  = EXCLUDED.lunch_revenue,
+                        lunch_covers   = EXCLUDED.lunch_covers,
+                        dinner_revenue = EXCLUDED.dinner_revenue,
+                        dinner_covers  = EXCLUDED.dinner_covers,
+                        total_revenue  = EXCLUDED.total_revenue
+                    """,
+                    (day_, user, lr, lc, dr, dc, tr),
+                )
+        conn.commit()
+
 
 def get_full_day(day_: date):
     with get_conn() as conn:
@@ -1332,6 +1467,81 @@ AGENT_TOOLS = [
             "required": ["start_date", "end_date", "query"],
         },
     },
+    {
+        "name": "get_top_products",
+        "description": (
+            "Get the top-selling products for a date range, ranked by revenue or quantity. "
+            "Use this for questions about best-selling dishes, popular items, or menu performance."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "period_start": {"type": "string", "description": "Start date YYYY-MM-DD"},
+                "period_end":   {"type": "string", "description": "End date YYYY-MM-DD"},
+                "metric": {
+                    "type": "string",
+                    "description": "Sort by: 'revenue' (default) or 'quantity'",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of results to return (default 10, max 50)",
+                },
+            },
+            "required": ["period_start", "period_end"],
+        },
+    },
+    {
+        "name": "get_category_breakdown",
+        "description": (
+            "Get sales broken down by product family/category for a date range. "
+            "Use this for questions about food vs drinks mix, which categories drive most revenue, "
+            "or how category performance has changed over time."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "period_start": {"type": "string", "description": "Start date YYYY-MM-DD"},
+                "period_end":   {"type": "string", "description": "End date YYYY-MM-DD"},
+            },
+            "required": ["period_start", "period_end"],
+        },
+    },
+    {
+        "name": "get_server_leaderboard",
+        "description": (
+            "Get server/waiter performance ranked by total revenue or average ticket for a date range. "
+            "Use this for questions about top-performing servers, staff productivity, "
+            "or comparing lunch vs dinner server revenue."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "period_start": {"type": "string", "description": "Start date YYYY-MM-DD"},
+                "period_end":   {"type": "string", "description": "End date YYYY-MM-DD"},
+                "metric": {
+                    "type": "string",
+                    "description": "Sort by: 'revenue' (default) or 'avg_ticket'",
+                },
+            },
+            "required": ["period_start", "period_end"],
+        },
+    },
+    {
+        "name": "get_product_trend",
+        "description": (
+            "Get the daily revenue and quantity sold for a specific product over a date range. "
+            "Use this to track how a specific dish or drink is trending over time."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "product_name": {"type": "string", "description": "Exact product name as it appears in Agora POS"},
+                "period_start": {"type": "string", "description": "Start date YYYY-MM-DD"},
+                "period_end":   {"type": "string", "description": "End date YYYY-MM-DD"},
+            },
+            "required": ["product_name", "period_start", "period_end"],
+        },
+    },
 ]
 
 
@@ -1841,6 +2051,139 @@ def _exec_get_guest_intelligence(start_date: str, end_date: str,
         return {"error": f"Unknown query type: {query}. Use: top_guests, noshows, dinner_only, lunch_only, lapsed, large_groups"}
 
 
+def _exec_get_top_products(period_start: str, period_end: str, metric: str = "revenue", limit: int = 10) -> dict:
+    limit = min(max(1, int(limit)), 50)
+    sort_col = "net" if metric != "quantity" else "quantity"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT product, family,
+                       SUM(quantity) AS total_qty,
+                       SUM(net)      AS total_net
+                FROM daily_product_sales
+                WHERE report_day BETWEEN %s AND %s
+                GROUP BY product, family
+                ORDER BY SUM({sort_col}) DESC NULLS LAST
+                LIMIT %s
+                """,
+                (period_start, period_end, limit),
+            )
+            rows = cur.fetchall()
+    products = [
+        {"product": r[0], "family": r[1], "quantity": float(r[2] or 0), "revenue": float(r[3] or 0)}
+        for r in rows
+    ]
+    return {"period_start": period_start, "period_end": period_end, "ranked_by": metric, "products": products}
+
+
+def _exec_get_category_breakdown(period_start: str, period_end: str) -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COALESCE(NULLIF(family, ''), 'Other') AS family,
+                       SUM(quantity) AS total_qty,
+                       SUM(net)      AS total_net
+                FROM daily_product_sales
+                WHERE report_day BETWEEN %s AND %s
+                GROUP BY family
+                ORDER BY SUM(net) DESC NULLS LAST
+                """,
+                (period_start, period_end),
+            )
+            rows = cur.fetchall()
+    total_net = sum(float(r[2] or 0) for r in rows)
+    categories = [
+        {
+            "family": r[0],
+            "quantity": float(r[1] or 0),
+            "revenue": float(r[2] or 0),
+            "pct": round(float(r[2] or 0) / total_net * 100, 1) if total_net else 0.0,
+        }
+        for r in rows
+    ]
+    return {"period_start": period_start, "period_end": period_end,
+            "total_revenue": total_net, "categories": categories}
+
+
+def _exec_get_server_leaderboard(period_start: str, period_end: str, metric: str = "revenue") -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT user_name,
+                       SUM(lunch_revenue)  AS l_rev,
+                       SUM(lunch_covers)   AS l_cov,
+                       SUM(dinner_revenue) AS d_rev,
+                       SUM(dinner_covers)  AS d_cov,
+                       SUM(total_revenue)  AS total
+                FROM daily_server_sales
+                WHERE report_day BETWEEN %s AND %s
+                GROUP BY user_name
+                ORDER BY SUM(total_revenue) DESC NULLS LAST
+                """,
+                (period_start, period_end),
+            )
+            rows = cur.fetchall()
+    servers = []
+    for r in rows:
+        total_rev = float(r[5] or 0)
+        total_cov = int((r[2] or 0) + (r[4] or 0))
+        avg_ticket = round(total_rev / total_cov, 2) if total_cov else None
+        servers.append({
+            "server": r[0],
+            "lunch_revenue": float(r[1] or 0),
+            "lunch_covers": int(r[2] or 0) if r[2] is not None else None,
+            "dinner_revenue": float(r[3] or 0),
+            "dinner_covers": int(r[4] or 0) if r[4] is not None else None,
+            "total_revenue": total_rev,
+            "avg_ticket": avg_ticket,
+        })
+    if metric == "avg_ticket":
+        servers.sort(key=lambda x: x["avg_ticket"] or 0, reverse=True)
+    return {"period_start": period_start, "period_end": period_end,
+            "ranked_by": metric, "servers": servers}
+
+
+def _exec_get_product_trend(product_name: str, period_start: str, period_end: str) -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT report_day, SUM(quantity) AS qty, SUM(net) AS net
+                FROM daily_product_sales
+                WHERE product = %s
+                  AND report_day BETWEEN %s AND %s
+                GROUP BY report_day
+                ORDER BY report_day
+                """,
+                (product_name, period_start, period_end),
+            )
+            rows = cur.fetchall()
+    trend = [
+        {"date": r[0].isoformat(), "quantity": float(r[1] or 0), "revenue": float(r[2] or 0)}
+        for r in rows
+    ]
+    if not trend:
+        # Try a case-insensitive fuzzy match to suggest correct names
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT product FROM daily_product_sales
+                    WHERE LOWER(product) LIKE %s
+                    LIMIT 10
+                    """,
+                    (f"%{product_name.lower()}%",),
+                )
+                suggestions = [r[0] for r in cur.fetchall()]
+        return {"product": product_name, "found": False,
+                "suggestions": suggestions, "trend": []}
+    return {"product": product_name, "period_start": period_start,
+            "period_end": period_end, "trend": trend}
+
+
 def execute_agent_tool(tool_name: str, tool_input: dict) -> str:
     try:
         if tool_name == "get_today":
@@ -1881,6 +2224,25 @@ def execute_agent_tool(tool_name: str, tool_input: dict) -> str:
                 tool_input.get("start_date", ""), tool_input.get("end_date", ""),
                 tool_input.get("query", "top_guests"),
                 int(tool_input.get("top_n", 10)),
+            )
+        elif tool_name == "get_top_products":
+            result = _exec_get_top_products(
+                tool_input.get("period_start", ""), tool_input.get("period_end", ""),
+                tool_input.get("metric", "revenue"), int(tool_input.get("limit", 10)),
+            )
+        elif tool_name == "get_category_breakdown":
+            result = _exec_get_category_breakdown(
+                tool_input.get("period_start", ""), tool_input.get("period_end", ""),
+            )
+        elif tool_name == "get_server_leaderboard":
+            result = _exec_get_server_leaderboard(
+                tool_input.get("period_start", ""), tool_input.get("period_end", ""),
+                tool_input.get("metric", "revenue"),
+            )
+        elif tool_name == "get_product_trend":
+            result = _exec_get_product_trend(
+                tool_input.get("product_name", ""),
+                tool_input.get("period_start", ""), tool_input.get("period_end", ""),
             )
         else:
             result = {"error": f"Unknown tool: {tool_name}"}
@@ -4382,6 +4744,9 @@ def run_pipeline():
                     venue_fee=ds.venue_fee,
                 )
             upsert_daily(day_, db_total, cm["total_covers"])
+            if ds.line_items:
+                upsert_product_sales(day_, ds.line_items)
+                upsert_server_sales(day_, ds.line_items)
 
         return jsonify({
             "date":              ds.date,
@@ -4675,12 +5040,99 @@ def admin_health_check():
             "detail": "no row in full_daily_stats for this operating day",
         })
 
+    # 7 & 8. Missing product / server aggregations for days that have sales
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT report_day FROM daily_product_sales WHERE report_day BETWEEN %s AND %s",
+                (from_date, to_date),
+            )
+            product_agg_days = {r[0] for r in cur.fetchall()}
+            cur.execute(
+                "SELECT DISTINCT report_day FROM daily_server_sales WHERE report_day BETWEEN %s AND %s",
+                (from_date, to_date),
+            )
+            server_agg_days = {r[0] for r in cur.fetchall()}
+
+    for (day, total_sales, *_) in rows:
+        ts = float(total_sales or 0)
+        if ts <= 0:
+            continue
+        if day not in product_agg_days:
+            anomalies.append({
+                "date": day.isoformat(), "issue": "missing_product_aggregation",
+                "detail": f"total_sales=€{ts:.2f} but no rows in daily_product_sales (run /run-pipeline?date={day.isoformat()}&save=true)",
+            })
+        if day not in server_agg_days:
+            anomalies.append({
+                "date": day.isoformat(), "issue": "missing_server_aggregation",
+                "detail": f"total_sales=€{ts:.2f} but no rows in daily_server_sales (run /run-pipeline?date={day.isoformat()}&save=true)",
+            })
+
     anomalies.sort(key=lambda x: x["date"])
 
     return jsonify({
         "checked_days": len(operating_days),
         "rows_in_db": rows_in_db,
         "anomalies": anomalies,
+    })
+
+
+@flask_app.route("/admin/peek-aggregations")
+def admin_peek_aggregations():
+    """
+    Return daily_product_sales and daily_server_sales rows for a given date.
+    GET ?date=YYYY-MM-DD  Auth: Bearer token.
+    Diagnostic endpoint — read-only.
+    """
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    date_str = request.args.get("date", date.today().isoformat())
+    try:
+        day_ = date.fromisoformat(date_str)
+    except ValueError:
+        return jsonify({"error": "Invalid date format, use YYYY-MM-DD"}), 400
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT product, family, timeframe, quantity, net, gross
+                FROM daily_product_sales
+                WHERE report_day = %s
+                ORDER BY net DESC NULLS LAST
+                """,
+                (day_,),
+            )
+            products = [
+                {"product": r[0], "family": r[1], "timeframe": r[2],
+                 "quantity": float(r[3] or 0), "net": float(r[4] or 0), "gross": float(r[5] or 0)}
+                for r in cur.fetchall()
+            ]
+            cur.execute(
+                """
+                SELECT user_name, lunch_revenue, lunch_covers,
+                       dinner_revenue, dinner_covers, total_revenue
+                FROM daily_server_sales
+                WHERE report_day = %s
+                ORDER BY total_revenue DESC NULLS LAST
+                """,
+                (day_,),
+            )
+            servers = [
+                {"server": r[0],
+                 "lunch_revenue": float(r[1] or 0), "lunch_covers": r[2],
+                 "dinner_revenue": float(r[3] or 0), "dinner_covers": r[4],
+                 "total_revenue": float(r[5] or 0)}
+                for r in cur.fetchall()
+            ]
+
+    return jsonify({
+        "date": date_str,
+        "product_rows": len(products),
+        "server_rows": len(servers),
+        "products": products,
+        "servers": servers,
     })
 
 
