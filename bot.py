@@ -5243,11 +5243,11 @@ def admin_probe_waiter_report():
 
         _BASE = "IGT.POS.Bus.Reporting.Messages."
 
+        # ── Existing three probes ─────────────────────────────────────────────
         waiter_result = _probe(_BASE + "GetWaiterSalesReportRequest")
         ticket_result = _probe(_BASE + "GetTicketDetailReportRequest")
 
-        # Full tips probe — same endpoint that's already working, but expose
-        # ALL keys in the first record so we can see if Comensales/Covers is there
+        # Full tips probe — same working endpoint, dump ALL keys in first record
         tips_clr = _BASE + "GetTipsByUserReportRequest"
         tips_msg = _base_msg(tips_clr)
         tips_status, _, tips_text = _agora_mod._post(
@@ -5256,7 +5256,7 @@ def admin_probe_waiter_report():
             cookie=f"auth-token={auth_token}",
         )
         try:
-            tips_parsed = json.loads(tips_text)
+            tips_parsed  = json.loads(tips_text)
             tips_records = (tips_parsed.get("Message", {})
                                        .get("Report", {})
                                        .get("Tips", []))
@@ -5273,14 +5273,77 @@ def admin_probe_waiter_report():
                            "record_count": 0, "all_keys_in_first_record": [],
                            "sample_record": None}
 
+        # ── Tier 1 — previously tried with wrong params ───────────────────────
+        covers_result        = _probe(_BASE + "GetCoversReportRequest")
+        cash_register_result = _probe(_BASE + "GetCashRegisterReportRequest")
+
+        # ── Tier 2 — medium probability ───────────────────────────────────────
+        shift_result         = _probe(_BASE + "GetShiftReportRequest")
+        shift_summary_result = _probe(_BASE + "GetShiftSummaryReportRequest")
+        table_result         = _probe(_BASE + "GetTableReportRequest")
+
+        # ── Tier 3 — naming-pattern guesses, never tried ──────────────────────
+        waiter_covers_result  = _probe(_BASE + "GetWaiterCoversReportRequest")
+        waiter_details_result = _probe(_BASE + "GetWaiterDetailsReportRequest")
+        comensales_result     = _probe(_BASE + "GetComensalesReportRequest")
+        person_count_result   = _probe(_BASE + "GetPersonCountReportRequest")
+        server_sales_result   = _probe(_BASE + "GetServerSalesReportRequest")
+
+        # ── Deeper inspection: dump ALL keys from a working sales line item ───
+        sales_clr = _BASE + "GetSalesAnalyticsReportRequest"
+        sales_msg = {
+            "CLRType": sales_clr,
+            "IsBlocking": True,
+            "OutOfBandMessages": [],
+            "Sender": _sender(),
+            "PosGroupsIds": [1],
+            "TimeFrameGroupId": 1,
+            "IncludeDeliveryNotes": False,
+            "From": f"{date_str}T00:00:00.000",
+            "To":   f"{date_str}T23:59:59.000",
+        }
+        try:
+            sa_status, _, sa_text = _agora_mod._post(
+                "/bus/",
+                {"CLRType": sales_clr, "Message": sales_msg},
+                cookie=f"auth-token={auth_token}",
+            )
+            sa_parsed  = json.loads(sa_text)
+            sa_records = (sa_parsed.get("Message", {})
+                                   .get("Report", {})
+                                   .get("Sales", []))
+            sa_sample  = sa_records[0] if sa_records else None
+            sa_result  = {
+                "status": sa_status,
+                "error": None,
+                "record_count": len(sa_records),
+                "all_keys_in_first_record": list(sa_sample.keys()) if sa_sample else [],
+                "sample_record": sa_sample,
+            }
+        except Exception as exc:
+            sa_result = {"status": None, "error": str(exc),
+                         "record_count": 0, "all_keys_in_first_record": [],
+                         "sample_record": None}
+
         return jsonify({
             "date": date_str,
             "query_window": f"{d_from} → {d_to}",
             "machine_id_used": _agora_mod.AGORA_SALECENTER_MACHINE_ID,
             "probes": {
-                "waiter_sales_report": waiter_result,
-                "ticket_detail_report": ticket_result,
-                "tips_by_user_full": tips_result,
+                "waiter_sales_report":    waiter_result,
+                "ticket_detail_report":   ticket_result,
+                "tips_by_user_full":      tips_result,
+                "covers_report":          covers_result,
+                "cash_register_report":   cash_register_result,
+                "shift_report":           shift_result,
+                "shift_summary_report":   shift_summary_result,
+                "table_report":           table_result,
+                "waiter_covers_report":   waiter_covers_result,
+                "waiter_details_report":  waiter_details_result,
+                "comensales_report":      comensales_result,
+                "person_count_report":    person_count_result,
+                "server_sales_report":    server_sales_result,
+                "sales_analytics_full_keys": sa_result,
             },
         })
 
