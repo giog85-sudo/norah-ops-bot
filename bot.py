@@ -4923,6 +4923,7 @@ def admin_health_check():
     """
     Scans full_daily_stats for known data anomaly patterns.
     GET ?from=YYYY-MM-DD&to=YYYY-MM-DD  (default: last 90 days)
+        ?since=YYYY-MM-DD               (optional override for lower bound)
     Auth: Bearer token.
     """
     if not _api_check_auth():
@@ -4934,6 +4935,18 @@ def admin_health_check():
         to_date   = date.fromisoformat(request.args.get("to",   today.isoformat()))
     except ValueError:
         return jsonify({"error": "Invalid date format, use YYYY-MM-DD"}), 400
+
+    # Optional ?since= widens the lower bound without touching the upper bound
+    since_raw = request.args.get("since")
+    if since_raw is not None:
+        try:
+            since_date = date.fromisoformat(since_raw)
+        except ValueError:
+            return jsonify({"error": "Invalid since date format, use YYYY-MM-DD"}), 400
+        if since_date > today:
+            return jsonify({"error": f"since={since_raw} is in the future"}), 400
+        from_date = since_date
+
     if to_date < from_date:
         return jsonify({"error": "to must be >= from"}), 400
 
@@ -5072,6 +5085,8 @@ def admin_health_check():
     anomalies.sort(key=lambda x: x["date"])
 
     return jsonify({
+        "since_date": from_date.isoformat(),
+        "until_date": to_date.isoformat(),
         "checked_days": len(operating_days),
         "rows_in_db": rows_in_db,
         "anomalies": anomalies,

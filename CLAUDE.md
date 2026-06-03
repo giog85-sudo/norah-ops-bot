@@ -382,9 +382,17 @@ When `save=true`: writes `full_daily_stats`, `daily_stats`, and (if `ds.line_ite
 
 Diagnostic read-only endpoint. Returns all rows from `daily_product_sales` and `daily_server_sales` for a given date. Use to verify aggregation after running pipeline.
 
-### `/admin/health-check?from=YYYY-MM-DD&to=YYYY-MM-DD`
+### `/admin/health-check?from=YYYY-MM-DD&to=YYYY-MM-DD[&since=YYYY-MM-DD]`
 
-Now includes two additional anomaly patterns:
+Default window: last 90 days. Optional `?since=YYYY-MM-DD` overrides the lower bound without touching the upper bound — useful for inspecting dates older than 90 days (e.g. `?since=2026-03-01`). Returns 400 if `since` is in the future or malformed. Response always includes `since_date` and `until_date` fields confirming the actual window checked.
+
+Anomaly patterns:
+- **`silent_save_failure`**: `total_sales > 0` but `(lunch_pax + dinner_pax) = 0`
+- **`negative_shift_sales`**: `lunch_sales < 0` or `dinner_sales < 0`
+- **`inconsistent_event_pax_without_menu`**: `event_pax > 0` but `event_menu_total = 0`
+- **`inconsistent_event_menu_without_pax`**: `event_menu_total > 0` but `event_pax = 0`
+- **`event_pax_exceeds_shift_in_cm`**: `event_pax > shift_pax` when `event_in_cm = TRUE`
+- **`missing_row`**: non-Sunday operating day with no row in DB
 - **`missing_product_aggregation`**: day has `total_sales > 0` but no rows in `daily_product_sales`
 - **`missing_server_aggregation`**: day has `total_sales > 0` but no rows in `daily_server_sales`
 
