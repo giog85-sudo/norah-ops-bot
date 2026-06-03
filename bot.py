@@ -5136,6 +5136,158 @@ def admin_peek_aggregations():
     })
 
 
+@flask_app.route("/admin/probe-waiter-report")
+def admin_probe_waiter_report():
+    """
+    Discovery endpoint: probe three Agora CLRTypes that may expose per-waiter
+    guest counts (Comensales).  Read-only — no DB writes.
+
+    GET ?date=YYYY-MM-DD  Auth: Bearer token.
+    """
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    date_str = request.args.get("date", date.today().isoformat())
+    try:
+        date.fromisoformat(date_str)
+    except ValueError:
+        return jsonify({"error": "Invalid date format, use YYYY-MM-DD"}), 400
+
+    try:
+        import datetime as _dt
+        d0     = _dt.date.fromisoformat(date_str)
+        d_from = (d0 - _dt.timedelta(days=1)).isoformat()
+        d_to   = (d0 + _dt.timedelta(days=1)).isoformat()
+
+        auth_token, session = _agora_mod._login()
+
+        def _sender():
+            return {
+                "ApplicationName": "AgoraWebAdmin",
+                "ApplicationVersion": "8.5.6",
+                "LanguageCode": "es",
+                "MachineId": _agora_mod.AGORA_SALECENTER_MACHINE_ID,
+                "MachineName": "Web Device",
+                "MachineType": 4,
+                "PosId": 0,
+                "PosName": "",
+                "UserId": session["UserId"],
+                "UserName": session["UserName"],
+            }
+
+        def _base_msg(clr):
+            return {
+                "CLRType": clr,
+                "IsBlocking": True,
+                "OutOfBandMessages": [],
+                "Sender": _sender(),
+                "PosGroupsIds": [1],
+                "From": f"{d_from}T00:00:00.000",
+                "To":   f"{d_to}T23:59:59.000",
+            }
+
+        def _probe(clr):
+            """Fire one CLRType and return a structured result dict."""
+            msg = _base_msg(clr)
+            try:
+                status, _, text = _agora_mod._post(
+                    "/bus/",
+                    {"CLRType": clr, "Message": msg},
+                    cookie=f"auth-token={auth_token}",
+                )
+            except Exception as exc:
+                return {"status": "connection_error", "error": str(exc),
+                        "raw_response_keys": [], "sample_record": None, "record_count": 0}
+
+            if not text.strip():
+                return {"status": status, "error": "empty response",
+                        "raw_response_keys": [], "sample_record": None, "record_count": 0}
+
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                return {"status": status, "error": f"non-JSON response: {text[:300]}",
+                        "raw_response_keys": [], "sample_record": None, "record_count": 0}
+
+            err = (parsed.get("Error")
+                   or parsed.get("Message", {}).get("ErrorMessage")
+                   or parsed.get("Message", {}).get("Error"))
+            if err:
+                return {"status": status, "error": str(err)[:400],
+                        "raw_response_keys": list(parsed.keys()),
+                        "sample_record": None, "record_count": 0}
+
+            msg_body = parsed.get("Message", {})
+            report   = msg_body.get("Report", {})
+
+            # Find whichever list key holds the per-record data
+            list_key  = None
+            all_records = []
+            for k, v in report.items():
+                if isinstance(v, list) and v:
+                    list_key    = k
+                    all_records = v
+                    break
+
+            sample = all_records[0] if all_records else None
+            return {
+                "status": status,
+                "error": None,
+                "raw_response_keys": list(parsed.keys()),
+                "message_keys": list(msg_body.keys()),
+                "report_keys": list(report.keys()),
+                "list_key_found": list_key,
+                "record_count": len(all_records),
+                "sample_record": sample,
+            }
+
+        _BASE = "IGT.POS.Bus.Reporting.Messages."
+
+        waiter_result = _probe(_BASE + "GetWaiterSalesReportRequest")
+        ticket_result = _probe(_BASE + "GetTicketDetailReportRequest")
+
+        # Full tips probe — same endpoint that's already working, but expose
+        # ALL keys in the first record so we can see if Comensales/Covers is there
+        tips_clr = _BASE + "GetTipsByUserReportRequest"
+        tips_msg = _base_msg(tips_clr)
+        tips_status, _, tips_text = _agora_mod._post(
+            "/bus/",
+            {"CLRType": tips_clr, "Message": tips_msg},
+            cookie=f"auth-token={auth_token}",
+        )
+        try:
+            tips_parsed = json.loads(tips_text)
+            tips_records = (tips_parsed.get("Message", {})
+                                       .get("Report", {})
+                                       .get("Tips", []))
+            tips_sample  = tips_records[0] if tips_records else None
+            tips_result  = {
+                "status": tips_status,
+                "error": None,
+                "record_count": len(tips_records),
+                "all_keys_in_first_record": list(tips_sample.keys()) if tips_sample else [],
+                "sample_record": tips_sample,
+            }
+        except Exception as exc:
+            tips_result = {"status": tips_status, "error": str(exc),
+                           "record_count": 0, "all_keys_in_first_record": [],
+                           "sample_record": None}
+
+        return jsonify({
+            "date": date_str,
+            "query_window": f"{d_from} → {d_to}",
+            "machine_id_used": _agora_mod.AGORA_SALECENTER_MACHINE_ID,
+            "probes": {
+                "waiter_sales_report": waiter_result,
+                "ticket_detail_report": ticket_result,
+                "tips_by_user_full": tips_result,
+            },
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @flask_app.route("/raw-z-report")
 def raw_z_report():
     """
