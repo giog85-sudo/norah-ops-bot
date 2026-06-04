@@ -291,6 +291,9 @@
       cursor: pointer;
     }
 
+    /* ── F&B tab ─────────────────────────────────────────────── */
+    .fb-slow-wrap { max-height: 296px; overflow-y: auto; }
+
     /* ── Tab navigation ─────────────────────────────────────── */
     .tab-bar {
       background: var(--card);
@@ -370,7 +373,7 @@
   <button class="btn btn-ghost" onclick="setPreset(90)">90d</button>
   <button class="btn btn-ghost" onclick="setThisMonth()">This month</button>
   <div class="divider-v"></div>
-  <button class="btn btn-primary" onclick="loadAll()">Apply</button>
+  <button class="btn btn-primary" onclick="loadCurrentTab()">Apply</button>
 </div>
 
 <main>
@@ -519,9 +522,112 @@
 </div><!-- /#tab-overview -->
 
 <div class="tab-panel" id="tab-fb" style="display:none">
-  <p style="color: var(--muted); text-align: center; padding: 60px 0;">
-    F&amp;B analytics coming in the next commit.
-  </p>
+
+  <!-- F&B KPI cards -->
+  <div class="kpi-grid">
+    <div class="kpi">
+      <div class="kpi-label">Total Products Sold</div>
+      <div class="kpi-value" id="fb-kpi-sold">—</div>
+      <div class="kpi-sub" id="fb-kpi-sold-sub">—</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Total F&amp;B Revenue</div>
+      <div class="kpi-value" id="fb-kpi-revenue">—</div>
+      <div class="kpi-sub" id="fb-kpi-revenue-sub">—</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Top Family</div>
+      <div class="kpi-value" id="fb-kpi-family" style="font-size:1.15rem">—</div>
+      <div class="kpi-sub" id="fb-kpi-family-sub">—</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Distinct Products</div>
+      <div class="kpi-value" id="fb-kpi-products">—</div>
+      <div class="kpi-sub" id="fb-kpi-products-sub">—</div>
+    </div>
+  </div>
+
+  <!-- Top 10 by Revenue — full-width horizontal bar -->
+  <div class="chart-card">
+    <h2>
+      Top 10 Products by Revenue
+      <span class="legend-dots">
+        <span><i class="kpi-dot" style="background:var(--overall)"></i>Net revenue</span>
+      </span>
+    </h2>
+    <div style="position:relative; height:280px">
+      <canvas id="chart-fb-revenue"></canvas>
+    </div>
+  </div>
+
+  <!-- Top 10 by Quantity — full-width horizontal bar -->
+  <div class="chart-card">
+    <h2>
+      Top 10 Products by Quantity
+      <span class="legend-dots">
+        <span><i class="kpi-dot" style="background:var(--dinner)"></i>Units sold</span>
+      </span>
+    </h2>
+    <div style="position:relative; height:280px">
+      <canvas id="chart-fb-qty"></canvas>
+    </div>
+  </div>
+
+  <!-- Family Mix doughnut + Slow Movers table -->
+  <div class="charts-col2">
+    <div class="chart-card" style="margin-bottom:0">
+      <h2>Family Mix</h2>
+      <div style="position:relative; height:260px">
+        <canvas id="chart-fb-family"></canvas>
+      </div>
+    </div>
+    <div class="chart-card" style="margin-bottom:0">
+      <h2>Slow Movers — Bottom 20 by Quantity</h2>
+      <div class="table-wrap fb-slow-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Product</th>
+              <th>Family</th>
+              <th style="text-align:right">Qty</th>
+              <th style="text-align:right">Revenue</th>
+            </tr>
+          </thead>
+          <tbody id="fb-slowmovers-tbody">
+            <tr><td colspan="4" style="text-align:center;color:var(--muted);padding:20px">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div style="height:16px"></div>
+
+  <!-- Lunch Top 10 + Dinner Top 10 -->
+  <div class="charts-col2">
+    <div class="chart-card" style="margin-bottom:0">
+      <h2>
+        Lunch Top 10
+        <span class="legend-dots">
+          <span><i class="kpi-dot" style="background:var(--lunch)"></i>Net revenue</span>
+        </span>
+      </h2>
+      <div style="position:relative; height:240px">
+        <canvas id="chart-fb-lunch"></canvas>
+      </div>
+    </div>
+    <div class="chart-card" style="margin-bottom:0">
+      <h2>
+        Dinner Top 10
+        <span class="legend-dots">
+          <span><i class="kpi-dot" style="background:var(--dinner)"></i>Net revenue</span>
+        </span>
+      </h2>
+      <div style="position:relative; height:240px">
+        <canvas id="chart-fb-dinner"></canvas>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <div class="tab-panel" id="tab-staff" style="display:none">
@@ -558,7 +664,7 @@ function saveToken() {
   if (!val) return;
   localStorage.setItem('norah_token', val);
   document.getElementById('token-modal').classList.add('hidden');
-  loadAll();
+  loadCurrentTab();
 }
 
 // ── Dates ─────────────────────────────────────────────────────────────────────
@@ -580,14 +686,14 @@ function setPreset(days) {
   from.setDate(from.getDate() - (days - 1));
   document.getElementById('date-from').value = fmt(from);
   document.getElementById('date-to').value   = fmt(to);
-  loadAll();
+  loadCurrentTab();
 }
 function setThisMonth() {
   const now = new Date();
   const from = new Date(now.getFullYear(), now.getMonth(), 1);
   document.getElementById('date-from').value = fmt(from);
   document.getElementById('date-to').value   = fmt(now);
-  loadAll();
+  loadCurrentTab();
 }
 function initDates() {
   const to = new Date(), from = new Date();
@@ -1026,8 +1132,22 @@ async function loadBookingSources() {
   }
 }
 
+// ── Active-tab state ──────────────────────────────────────────────────────────
+let _activeTab = 'overview';
+let _fbLoaded  = false;
+
+// ── Tab-aware loader ──────────────────────────────────────────────────────────
+function loadCurrentTab() {
+  if (_activeTab === 'overview') {
+    loadAll();
+  } else if (_activeTab === 'fb') {
+    loadFBTab();
+  }
+}
+
 // ── Tab switching ─────────────────────────────────────────────────────────────
 function switchTab(name) {
+  _activeTab = name;
   // Hide all panels
   document.querySelectorAll('.tab-panel').forEach(el => { el.style.display = 'none'; });
   // Show selected panel
@@ -1037,11 +1157,193 @@ function switchTab(name) {
   document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
   const activeBtn = document.getElementById('tab-btn-' + name);
   if (activeBtn) activeBtn.classList.add('active');
-  // Show/hide period selector — only visible on Overview tab
+  // Period selector: visible on Overview and F&B, hidden on Staff
   document.getElementById('period-controls').style.display =
-    (name === 'overview') ? '' : 'none';
+    (name === 'staff') ? 'none' : '';
+  // Lazy-load tab data on first visit
+  if (name === 'fb' && !_fbLoaded) loadFBTab();
   // Persist selection
   localStorage.setItem('norah_active_tab', name);
+}
+
+// ── F&B palette (extends base COLORS for family doughnut) ─────────────────────
+const FAM_PALETTE = [
+  COLORS.overall, COLORS.lunch, COLORS.dinner, COLORS.blue, COLORS.green, COLORS.yellow,
+  '#F97316', '#A78BFA', '#E1306C', '#10B981', '#F59E0B', '#64748B',
+];
+
+// ── Shared horizontal-bar renderer ────────────────────────────────────────────
+function renderHBar(canvasId, items, color, valueKey, tooltipExtra) {
+  destroyChart(canvasId);
+  if (!items.length) return;
+  const top = items.slice(0, 10);
+  const labels = top.map(p => p.product.length > 30 ? p.product.slice(0, 29) + '…' : p.product);
+  const values = top.map(p => p[valueKey]);
+  const isRevenue = valueKey === 'net';
+  charts[canvasId] = new Chart(document.getElementById(canvasId), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{ data: values, backgroundColor: color, borderRadius: 4 }]
+    },
+    options: {
+      indexAxis: 'y',
+      maintainAspectRatio: false,
+      responsive: true,
+      animation: { duration: 350 },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const item = top[ctx.dataIndex];
+              const lines = isRevenue
+                ? [` €${ctx.parsed.x.toLocaleString('de-DE', {minimumFractionDigits:2, maximumFractionDigits:2})}`]
+                : [` ${ctx.parsed.x} units`];
+              if (item.family)        lines.push(` Family: ${item.family}`);
+              if (item.pct_of_total != null) lines.push(` ${item.pct_of_total}% of total`);
+              if (tooltipExtra)       lines.push(...tooltipExtra(item));
+              return lines;
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { color: COLORS.grid },
+          ticks: {
+            color: COLORS.tick, font: { size: 11 },
+            callback: v => isRevenue ? '€' + v.toLocaleString() : v,
+          }
+        },
+        y: { grid: { color: COLORS.grid }, ticks: { color: COLORS.tick, font: { size: 11 } } }
+      }
+    }
+  });
+}
+
+// ── F&B KPI cards ─────────────────────────────────────────────────────────────
+function renderFBKPIs(data) {
+  // Revenue: sum family_mix (covers all products/families)
+  const totalRev = data.family_mix.reduce((s, f) => s + f.net, 0);
+
+  // Total qty: union of top_by_quantity + slow_movers, deduped by product name
+  const qtyMap = {};
+  [...data.top_by_quantity, ...data.slow_movers].forEach(p => {
+    if (!(p.product in qtyMap)) qtyMap[p.product] = p.quantity;
+  });
+  const totalQty = Math.round(Object.values(qtyMap).reduce((s, q) => s + q, 0));
+
+  // Distinct products: union of all three lists
+  const prodSet = new Set();
+  [...data.top_by_revenue, ...data.top_by_quantity, ...data.slow_movers].forEach(p => prodSet.add(p.product));
+
+  const topFam = data.family_mix[0] || null;
+
+  document.getElementById('fb-kpi-sold').textContent       = totalQty.toLocaleString();
+  document.getElementById('fb-kpi-sold-sub').textContent   = 'units (top products + slow movers)';
+  document.getElementById('fb-kpi-revenue').textContent    = '€' + Math.round(totalRev).toLocaleString();
+  document.getElementById('fb-kpi-revenue-sub').textContent = data.family_mix.length + ' families tracked';
+  document.getElementById('fb-kpi-family').textContent     = topFam ? topFam.family : '—';
+  document.getElementById('fb-kpi-family-sub').textContent = topFam ? topFam.pct_of_total + '% of revenue' : '—';
+  document.getElementById('fb-kpi-products').textContent   = prodSet.size;
+  document.getElementById('fb-kpi-products-sub').textContent = 'distinct products with sales';
+}
+
+// ── F&B Family Mix doughnut ───────────────────────────────────────────────────
+function renderFBFamilyMix(familyMix) {
+  destroyChart('chart-fb-family');
+  if (!familyMix.length) return;
+  const labels = familyMix.map(f => f.family);
+  const values = familyMix.map(f => f.net);
+  const colors = familyMix.map((_, i) => FAM_PALETTE[i % FAM_PALETTE.length]);
+  charts['chart-fb-family'] = new Chart(document.getElementById('chart-fb-family'), {
+    type: 'doughnut',
+    data: { labels, datasets: [{ data: values, backgroundColor: colors, borderWidth: 2, borderColor: '#fff', hoverOffset: 6 }] },
+    options: {
+      maintainAspectRatio: false,
+      responsive: true,
+      animation: { duration: 350 },
+      cutout: '55%',
+      plugins: {
+        legend: {
+          display: true,
+          position: 'right',
+          labels: {
+            color: COLORS.tick,
+            font: { size: 11, family: 'Inter, sans-serif' },
+            boxWidth: 10, padding: 10,
+            generateLabels: (chart) => {
+              const ds = chart.data.datasets[0];
+              return chart.data.labels.map((label, i) => ({
+                text: `${label}  ${familyMix[i].pct_of_total}%`,
+                fillStyle: ds.backgroundColor[i],
+                strokeStyle: ds.backgroundColor[i],
+                hidden: false, index: i,
+              }));
+            }
+          }
+        },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const f = familyMix[ctx.dataIndex];
+              return ` €${f.net.toLocaleString('de-DE', {minimumFractionDigits:2})} — ${f.pct_of_total}%`;
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
+// ── F&B Slow Movers table ─────────────────────────────────────────────────────
+function renderFBSlowMovers(slowMovers) {
+  const tbody = document.getElementById('fb-slowmovers-tbody');
+  if (!slowMovers.length) {
+    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:20px">No data</td></tr>';
+    return;
+  }
+  tbody.innerHTML = slowMovers.map(p =>
+    `<tr>
+      <td>${p.product}</td>
+      <td style="color:var(--muted)">${p.family || '—'}</td>
+      <td class="num">${p.quantity}</td>
+      <td class="num">€${p.net.toFixed(2)}</td>
+    </tr>`
+  ).join('');
+}
+
+// ── Main F&B loader ───────────────────────────────────────────────────────────
+async function loadFBTab() {
+  const from = document.getElementById('date-from').value;
+  const to   = document.getElementById('date-to').value;
+  if (!from || !to) return;
+
+  // Reset KPIs to loading state
+  ['fb-kpi-sold','fb-kpi-revenue','fb-kpi-family','fb-kpi-products'].forEach(id => {
+    document.getElementById(id).textContent = '…';
+  });
+  ['fb-kpi-sold-sub','fb-kpi-revenue-sub','fb-kpi-family-sub','fb-kpi-products-sub'].forEach(id => {
+    document.getElementById(id).textContent = '';
+  });
+  document.getElementById('fb-slowmovers-tbody').innerHTML =
+    '<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:20px">Loading…</td></tr>';
+  ['chart-fb-revenue','chart-fb-qty','chart-fb-family','chart-fb-lunch','chart-fb-dinner'].forEach(destroyChart);
+
+  try {
+    const data = await apiFetch(`/api/dashboard/products?period_start=${from}&period_end=${to}`);
+    renderFBKPIs(data);
+    renderHBar('chart-fb-revenue', data.top_by_revenue,  COLORS.overall, 'net',      item => [` Units: ${item.quantity}`]);
+    renderHBar('chart-fb-qty',     data.top_by_quantity, COLORS.dinner,  'quantity', item => [` Revenue: €${item.net.toFixed(2)}`]);
+    renderFBFamilyMix(data.family_mix);
+    renderFBSlowMovers(data.slow_movers);
+    renderHBar('chart-fb-lunch',  data.lunch_top,  COLORS.lunch,   'net', null);
+    renderHBar('chart-fb-dinner', data.dinner_top, COLORS.dinner,  'net', null);
+    _fbLoaded = true;
+  } catch (e) {
+    if (e.message !== 'Unauthorized') showError('F&B data failed: ' + e.message);
+  }
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -1049,10 +1351,12 @@ initDates();
 // Restore last-selected tab (default: overview)
 const _savedTab = localStorage.getItem('norah_active_tab') || 'overview';
 switchTab(_savedTab);
-// Only load Overview data if that tab is active on init
+// Load data for the restored tab
 if (_savedTab === 'overview') {
   loadAll();
   loadBookingSources();
+} else if (_savedTab === 'fb') {
+  loadFBTab();
 }
 </script>
 </body>

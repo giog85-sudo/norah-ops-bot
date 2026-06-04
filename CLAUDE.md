@@ -367,12 +367,27 @@ Single-file SPA (`dashboard.html`). Three tabs managed by `switchTab(name)`:
 | Tab ID | Button | Content |
 |---|---|---|
 | `tab-overview` | Overview (default) | KPI cards, all charts, Monthly Summary, Booking Sources |
-| `tab-fb` | F&B | Product mix analytics (populated in Phase 3c) |
-| `tab-staff` | Staff | Server leaderboard analytics (populated in Phase 3d) |
+| `tab-fb` | F&B | 6 sections driven by `GET /api/dashboard/products` |
+| `tab-staff` | Staff | Server leaderboard analytics (Phase 3d — not yet built) |
 
 Tab state persists in `localStorage` under key `norah_active_tab`. On page load, the last-selected tab is restored (default: `overview`).
 
-Period selector (`#period-controls`) is shown only on the Overview tab. Each new tab will get its own independent period selector. Chart data (`loadAll()`, `loadBookingSources()`) is only triggered on init if the Overview tab is active.
+Period selector (`#period-controls`) is visible on Overview and F&B tabs; hidden on Staff. The Apply button calls `loadCurrentTab()`, which dispatches to `loadAll()` (Overview) or `loadFBTab()` (F&B).
+
+**`_fbLoaded` flag**: set `true` on first successful `loadFBTab()`. `switchTab('fb')` skips the fetch on re-visit; direct calls from period controls always re-fetch.
+
+### F&B tab sections (all fed by `/api/dashboard/products`)
+
+| Section | Element(s) | Data field |
+|---|---|---|
+| KPI cards | `#fb-kpi-sold/revenue/family/products` | Derived from `family_mix`, `top_by_quantity`, `slow_movers` |
+| Top 10 by Revenue | `#chart-fb-revenue` (horizontal bar, 280px) | `top_by_revenue[:10]`, value key `net` |
+| Top 10 by Quantity | `#chart-fb-qty` (horizontal bar, 280px) | `top_by_quantity[:10]`, value key `quantity` |
+| Family Mix | `#chart-fb-family` (doughnut, 260px) | `family_mix`, `FAM_PALETTE` colors |
+| Slow Movers | `#fb-slowmovers-tbody` (scrollable table 296px max) | `slow_movers` (bottom 20 by quantity) |
+| Lunch / Dinner Top 10 | `#chart-fb-lunch`, `#chart-fb-dinner` (horizontal bar, 240px) | `lunch_top[:10]`, `dinner_top[:10]` |
+
+`renderHBar(canvasId, items, color, valueKey, tooltipExtra)`: shared renderer for all horizontal bar charts. Truncates product names > 30 chars. Tooltip shows revenue or units + family + pct_of_total + any `tooltipExtra` lines.
 
 ## Dashboard HTTP API
 
@@ -633,6 +648,23 @@ Multiple tags per note are supported. Tag analytics: `/tagstats`, `/soldout`, `/
 - `_validate_period()` helper: shared param validation for all five endpoints.
 
 **No backfill required** — existing `daily_server_sales` rows remain at `tips=0` until re-pipelined. Products, events, transferencia, and walkins endpoints draw from tables already populated.
+
+### 2026-06-04 — Phase 3b+3c: Dashboard tab system + F&B tab
+
+**Tab navigation** (`switchTab`, Phase 3b):
+- Three-tab nav bar (Overview / F&B / Staff) in `dashboard.html`. `switchTab(name)` hides all `.tab-panel`, shows `#tab-{name}`, updates `.tab-btn.active`, controls period-selector visibility (hidden only for Staff), and persists to `localStorage('norah_active_tab')`.
+- Period selector now visible on both Overview and F&B (not just Overview).
+- `loadCurrentTab()` dispatcher replaces direct `loadAll()` calls on Apply button, `setPreset`, `setThisMonth`, and `saveToken`.
+- `_fbLoaded` flag: lazy-loads F&B on first visit; bypassed on period changes.
+
+**F&B tab content** (Phase 3c — fed entirely by `GET /api/dashboard/products`):
+- KPI row: Total Products Sold, Total F&B Revenue, Top Family, Distinct Products.
+- Top 10 by Revenue (horizontal bar, `COLORS.overall`).
+- Top 10 by Quantity (horizontal bar, `COLORS.dinner`).
+- Family Mix doughnut (`FAM_PALETTE`, legend right, 12-color palette).
+- Slow Movers table (bottom 20 by quantity, scrollable 296px max-height).
+- Lunch Top 10 / Dinner Top 10 side-by-side horizontal bars.
+- `renderHBar(canvasId, items, color, valueKey, tooltipExtra)`: shared renderer; `indexAxis:'y'`, `maintainAspectRatio:false`, multi-line tooltips, product names truncated at 30 chars.
 
 ### 2026-06-02 — Phase 1 F&B + Staff Analytics
 
