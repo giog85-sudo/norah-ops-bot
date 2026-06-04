@@ -5690,10 +5690,24 @@ def api_dashboard_products():
             )
             rows = cur.fetchall()
 
+            # Active menu size: distinct products with any sales in trailing 90 days ending at period_end
+            active_start = to_date - timedelta(days=89)
+            cur.execute(
+                "SELECT COUNT(DISTINCT product) FROM daily_product_sales"
+                " WHERE report_day BETWEEN %s AND %s",
+                (active_start, to_date),
+            )
+            _ams = int(cur.fetchone()[0] or 0)
+            active_menu_size = _ams if _ams > 0 else None
+
     if not rows:
-        empty = {"period_start": from_date.isoformat(), "period_end": to_date.isoformat(),
-                 "top_by_revenue": [], "top_by_quantity": [], "family_mix": [],
-                 "slow_movers": [], "lunch_top": [], "dinner_top": []}
+        empty = {
+            "period_start": from_date.isoformat(), "period_end": to_date.isoformat(),
+            "top_by_revenue": [], "top_by_quantity": [], "family_mix": [],
+            "slow_movers": [], "lunch_top": [], "dinner_top": [],
+            "food_revenue": 0.0, "drinks_revenue": 0.0,
+            "distinct_products_in_period": 0, "active_menu_size": active_menu_size,
+        }
         return jsonify(empty)
 
     # Collapse timeframe dimension for overall product aggregates
@@ -5706,6 +5720,10 @@ def api_dashboard_products():
         prod_agg[key]["net"]      += float(net or 0)
 
     total_net = sum(v["net"] for v in prod_agg.values())
+
+    food_revenue   = round(sum(v["net"] for v in prod_agg.values() if v["family"].upper() == "CARTA"), 2)
+    drinks_revenue = round(sum(v["net"] for v in prod_agg.values() if v["family"].upper() != "CARTA"), 2)
+    distinct_products_in_period = len(prod_agg)
 
     def _with_pct(items, sort_key, limit):
         sorted_items = sorted(items, key=lambda x: x[sort_key], reverse=True)[:limit]
@@ -5782,14 +5800,18 @@ def api_dashboard_products():
     )[:10]
 
     return jsonify({
-        "period_start":    from_date.isoformat(),
-        "period_end":      to_date.isoformat(),
-        "top_by_revenue":  top_by_revenue,
-        "top_by_quantity": top_by_quantity,
-        "family_mix":      family_mix,
-        "slow_movers":     slow_movers,
-        "lunch_top":       lunch_top,
-        "dinner_top":      dinner_top,
+        "period_start":               from_date.isoformat(),
+        "period_end":                 to_date.isoformat(),
+        "top_by_revenue":             top_by_revenue,
+        "top_by_quantity":            top_by_quantity,
+        "family_mix":                 family_mix,
+        "slow_movers":                slow_movers,
+        "lunch_top":                  lunch_top,
+        "dinner_top":                 dinner_top,
+        "food_revenue":               food_revenue,
+        "drinks_revenue":             drinks_revenue,
+        "distinct_products_in_period": distinct_products_in_period,
+        "active_menu_size":           active_menu_size,
     })
 
 

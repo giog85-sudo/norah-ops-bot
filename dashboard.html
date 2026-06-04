@@ -293,6 +293,12 @@
 
     /* ── F&B tab ─────────────────────────────────────────────── */
     .fb-slow-wrap { max-height: 296px; overflow-y: auto; }
+    .fb-split-row { display:flex; align-items:stretch; margin-top:6px; }
+    .fb-split-side { flex:1; display:flex; flex-direction:column; align-items:center; gap:2px; }
+    .fb-split-divider { width:1px; background:var(--border); margin:0 8px; }
+    .fb-split-label { font-size:0.7rem; font-weight:600; text-transform:uppercase; letter-spacing:.05em; }
+    .fb-split-value { font-size:1rem; font-weight:700; color:var(--text); }
+    .fb-split-pct   { font-size:0.75rem; color:var(--muted); }
 
     /* ── Tab navigation ─────────────────────────────────────── */
     .tab-bar {
@@ -536,14 +542,25 @@
       <div class="kpi-sub" id="fb-kpi-revenue-sub">—</div>
     </div>
     <div class="kpi">
-      <div class="kpi-label">Top Family</div>
-      <div class="kpi-value" id="fb-kpi-family" style="font-size:1.15rem">—</div>
-      <div class="kpi-sub" id="fb-kpi-family-sub">—</div>
+      <div class="kpi-label">Food vs Drinks</div>
+      <div class="fb-split-row">
+        <div class="fb-split-side">
+          <div class="fb-split-label" style="color:var(--lunch)">Food</div>
+          <div class="fb-split-value" id="fb-kpi-food-amt">—</div>
+          <div class="fb-split-pct"   id="fb-kpi-food-pct"></div>
+        </div>
+        <div class="fb-split-divider"></div>
+        <div class="fb-split-side">
+          <div class="fb-split-label" style="color:var(--dinner)">Drinks</div>
+          <div class="fb-split-value" id="fb-kpi-drinks-amt">—</div>
+          <div class="fb-split-pct"   id="fb-kpi-drinks-pct"></div>
+        </div>
+      </div>
     </div>
     <div class="kpi">
-      <div class="kpi-label">Distinct Products</div>
-      <div class="kpi-value" id="fb-kpi-products">—</div>
-      <div class="kpi-sub" id="fb-kpi-products-sub">—</div>
+      <div class="kpi-label">Menu Coverage</div>
+      <div class="kpi-value" id="fb-kpi-coverage">—</div>
+      <div class="kpi-sub"   id="fb-kpi-coverage-sub"></div>
     </div>
   </div>
 
@@ -1234,20 +1251,33 @@ function renderFBKPIs(data) {
   });
   const totalQty = Math.round(Object.values(qtyMap).reduce((s, q) => s + q, 0));
 
-  // Distinct products: union of all three lists
-  const prodSet = new Set();
-  [...data.top_by_revenue, ...data.top_by_quantity, ...data.slow_movers].forEach(p => prodSet.add(p.product));
-
-  const topFam = data.family_mix[0] || null;
-
   document.getElementById('fb-kpi-sold').textContent       = totalQty.toLocaleString();
   document.getElementById('fb-kpi-sold-sub').textContent   = 'units (top products + slow movers)';
   document.getElementById('fb-kpi-revenue').textContent    = '€' + Math.round(totalRev).toLocaleString();
   document.getElementById('fb-kpi-revenue-sub').textContent = data.family_mix.length + ' families tracked';
-  document.getElementById('fb-kpi-family').textContent     = topFam ? topFam.family : '—';
-  document.getElementById('fb-kpi-family-sub').textContent = topFam ? topFam.pct_of_total + '% of revenue' : '—';
-  document.getElementById('fb-kpi-products').textContent   = prodSet.size;
-  document.getElementById('fb-kpi-products-sub').textContent = 'distinct products with sales';
+
+  // Food vs Drinks split
+  const food       = data.food_revenue   || 0;
+  const drinks     = data.drinks_revenue || 0;
+  const splitTotal = food + drinks;
+  const foodPct   = splitTotal > 0 ? Math.round(food   / splitTotal * 100) : 0;
+  const drinksPct = splitTotal > 0 ? Math.round(drinks / splitTotal * 100) : 0;
+  document.getElementById('fb-kpi-food-amt').textContent   = '€' + Math.round(food).toLocaleString();
+  document.getElementById('fb-kpi-food-pct').textContent   = foodPct + '%';
+  document.getElementById('fb-kpi-drinks-amt').textContent = '€' + Math.round(drinks).toLocaleString();
+  document.getElementById('fb-kpi-drinks-pct').textContent = drinksPct + '%';
+
+  // Menu Coverage
+  const periodItems = data.distinct_products_in_period || 0;
+  const menuSize    = data.active_menu_size;
+  if (menuSize === null || menuSize === undefined) {
+    document.getElementById('fb-kpi-coverage').textContent     = 'N/A';
+    document.getElementById('fb-kpi-coverage-sub').textContent = '';
+  } else {
+    const pct = Math.round(periodItems / menuSize * 100);
+    document.getElementById('fb-kpi-coverage').textContent     = pct + '%';
+    document.getElementById('fb-kpi-coverage-sub').textContent = `${periodItems} of ${menuSize} items sold`;
+  }
 }
 
 // ── F&B Family Mix doughnut ───────────────────────────────────────────────────
@@ -1321,10 +1351,11 @@ async function loadFBTab() {
   if (!from || !to) return;
 
   // Reset KPIs to loading state
-  ['fb-kpi-sold','fb-kpi-revenue','fb-kpi-family','fb-kpi-products'].forEach(id => {
+  ['fb-kpi-sold','fb-kpi-revenue','fb-kpi-coverage'].forEach(id => {
     document.getElementById(id).textContent = '…';
   });
-  ['fb-kpi-sold-sub','fb-kpi-revenue-sub','fb-kpi-family-sub','fb-kpi-products-sub'].forEach(id => {
+  ['fb-kpi-sold-sub','fb-kpi-revenue-sub','fb-kpi-coverage-sub',
+   'fb-kpi-food-amt','fb-kpi-food-pct','fb-kpi-drinks-amt','fb-kpi-drinks-pct'].forEach(id => {
     document.getElementById(id).textContent = '';
   });
   document.getElementById('fb-slowmovers-tbody').innerHTML =

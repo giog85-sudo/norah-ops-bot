@@ -380,12 +380,19 @@ Period selector (`#period-controls`) is visible on Overview and F&B tabs; hidden
 
 | Section | Element(s) | Data field |
 |---|---|---|
-| KPI cards | `#fb-kpi-sold/revenue/family/products` | Derived from `family_mix`, `top_by_quantity`, `slow_movers` |
+| KPI — Total Products Sold | `#fb-kpi-sold` | Deduped union of `top_by_quantity` + `slow_movers` quantities |
+| KPI — Total F&B Revenue | `#fb-kpi-revenue` | Sum of `family_mix[].net` |
+| KPI — Food vs Drinks | `#fb-kpi-food-amt/pct`, `#fb-kpi-drinks-amt/pct` | `food_revenue` / `drinks_revenue`; pct computed client-side |
+| KPI — Menu Coverage | `#fb-kpi-coverage`, `#fb-kpi-coverage-sub` | `distinct_products_in_period / active_menu_size * 100`; shows "N/A" if `active_menu_size` is null |
 | Top 10 by Revenue | `#chart-fb-revenue` (horizontal bar, 280px) | `top_by_revenue[:10]`, value key `net` |
 | Top 10 by Quantity | `#chart-fb-qty` (horizontal bar, 280px) | `top_by_quantity[:10]`, value key `quantity` |
 | Family Mix | `#chart-fb-family` (doughnut, 260px) | `family_mix`, `FAM_PALETTE` colors |
 | Slow Movers | `#fb-slowmovers-tbody` (scrollable table 296px max) | `slow_movers` (bottom 20 by quantity) |
 | Lunch / Dinner Top 10 | `#chart-fb-lunch`, `#chart-fb-dinner` (horizontal bar, 240px) | `lunch_top[:10]`, `dinner_top[:10]` |
+
+**Food vs Drinks card:** Two-column layout with `--lunch` (red) label for Food and `--dinner` (teal) for Drinks, separated by a `--border` vertical divider. Percentages computed as `food_revenue / (food + drinks) * 100`.
+
+**Menu Coverage card:** `active_menu_size` is the baseline — unique products sold in the trailing 90 days ending at `period_end`. Shows percentage of that baseline sold during the selected period. Useful for spotting menu items that haven't moved recently.
 
 `renderHBar(canvasId, items, color, valueKey, tooltipExtra)`: shared renderer for all horizontal bar charts. Truncates product names > 30 chars. Tooltip shows revenue or units + family + pct_of_total + any `tooltipExtra` lines.
 
@@ -445,6 +452,10 @@ Queries `daily_product_sales`. Returns:
 - `slow_movers` — bottom 20 by quantity (zero-quantity items excluded)
 - `lunch_top` — top 10 by revenue in lunch timeframes (`mediodía`, `comida`, `lunch`, `almuerzo`, `mediodia`)
 - `dinner_top` — top 10 by revenue in dinner timeframes (`noche`, `cena`, `dinner`)
+- `food_revenue` — sum of net revenue where `family = 'CARTA'` (case-insensitive)
+- `drinks_revenue` — sum of net revenue where `family != 'CARTA'` (all other families including unbucketed)
+- `distinct_products_in_period` — count of unique product names with any sales in `period_start..period_end`
+- `active_menu_size` — count of unique product names with any sales in the trailing 90 days ending at `period_end` (i.e., `period_end − 89d` to `period_end`). `null` if zero products found (no data yet), so the dashboard can show "N/A" without dividing by zero.
 
 #### `GET /api/dashboard/servers`
 
@@ -648,6 +659,18 @@ Multiple tags per note are supported. Tag analytics: `/tagstats`, `/soldout`, `/
 - `_validate_period()` helper: shared param validation for all five endpoints.
 
 **No backfill required** — existing `daily_server_sales` rows remain at `tips=0` until re-pipelined. Products, events, transferencia, and walkins endpoints draw from tables already populated.
+
+### 2026-06-04 — F&B KPI cards: Food vs Drinks + Menu Coverage
+
+**`/api/dashboard/products` new fields:**
+- `food_revenue` — net revenue where `family = 'CARTA'`
+- `drinks_revenue` — net revenue where `family != 'CARTA'` (all others including unbucketed)
+- `distinct_products_in_period` — unique product count for the selected period
+- `active_menu_size` — unique product count in trailing 90 days ending at `period_end`; `null` if no data
+
+**Dashboard:**
+- Replaced "Top Family" KPI card with "Food vs Drinks" two-column split (Food=`--lunch`, Drinks=`--dinner` colors).
+- Replaced "Distinct Products" KPI card with "Menu Coverage" showing `distinct_products_in_period / active_menu_size` as a percentage; shows "N/A" when `active_menu_size` is null.
 
 ### 2026-06-04 — Fix: aggregation tables not written by scheduled daily post
 
