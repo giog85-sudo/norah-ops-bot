@@ -291,6 +291,33 @@
       cursor: pointer;
     }
 
+    /* ── Tab navigation ─────────────────────────────────────── */
+    .tab-bar {
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+      padding: 0 32px;
+      display: flex;
+      gap: 0;
+    }
+    .tab-btn {
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      padding: 12px 18px;
+      font-size: 0.82rem;
+      font-family: inherit;
+      font-weight: 500;
+      color: var(--muted);
+      cursor: pointer;
+      margin-bottom: -1px;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active {
+      color: var(--text);
+      border-bottom-color: var(--text);
+    }
+
     /* ── Responsive ─────────────────────────────────────────── */
     @media (max-width: 900px) {
       header, main, #error-banner { padding-left: 16px; padding-right: 16px; }
@@ -322,22 +349,33 @@
     <span class="brand-name">Norah</span>
     <span class="brand-sub">Operations Dashboard</span>
   </div>
-  <div class="controls">
-    <label>From</label>
-    <input type="date" id="date-from" />
-    <label>To</label>
-    <input type="date" id="date-to" />
-    <div class="divider-v"></div>
-    <button class="btn btn-ghost" onclick="setPreset(7)">7d</button>
-    <button class="btn btn-ghost" onclick="setPreset(30)">30d</button>
-    <button class="btn btn-ghost" onclick="setPreset(90)">90d</button>
-    <button class="btn btn-ghost" onclick="setThisMonth()">This month</button>
-    <div class="divider-v"></div>
-    <button class="btn btn-primary" onclick="loadAll()">Apply</button>
-  </div>
 </header>
 
+<!-- Tab navigation -->
+<nav class="tab-bar">
+  <button class="tab-btn active" id="tab-btn-overview" onclick="switchTab('overview')">Overview</button>
+  <button class="tab-btn"        id="tab-btn-fb"       onclick="switchTab('fb')">F&amp;B</button>
+  <button class="tab-btn"        id="tab-btn-staff"    onclick="switchTab('staff')">Staff</button>
+</nav>
+
+<!-- Period selector (Overview only) -->
+<div id="period-controls" class="controls" style="padding: 10px 32px; background: var(--card); border-bottom: 1px solid var(--border);">
+  <label>From</label>
+  <input type="date" id="date-from" />
+  <label>To</label>
+  <input type="date" id="date-to" />
+  <div class="divider-v"></div>
+  <button class="btn btn-ghost" onclick="setPreset(7)">7d</button>
+  <button class="btn btn-ghost" onclick="setPreset(30)">30d</button>
+  <button class="btn btn-ghost" onclick="setPreset(90)">90d</button>
+  <button class="btn btn-ghost" onclick="setThisMonth()">This month</button>
+  <div class="divider-v"></div>
+  <button class="btn btn-primary" onclick="loadAll()">Apply</button>
+</div>
+
 <main>
+
+<div class="tab-panel" id="tab-overview">
 
   <!-- KPI cards -->
   <div class="kpi-grid">
@@ -477,6 +515,20 @@
       <canvas id="chart-booking-trends" height="200" style="display:none"></canvas>
     </div>
   </div>
+
+</div><!-- /#tab-overview -->
+
+<div class="tab-panel" id="tab-fb" style="display:none">
+  <p style="color: var(--muted); text-align: center; padding: 60px 0;">
+    F&amp;B analytics coming in the next commit.
+  </p>
+</div>
+
+<div class="tab-panel" id="tab-staff" style="display:none">
+  <p style="color: var(--muted); text-align: center; padding: 60px 0;">
+    Staff analytics coming in the next commit.
+  </p>
+</div>
 
 </main>
 
@@ -974,10 +1026,34 @@ async function loadBookingSources() {
   }
 }
 
+// ── Tab switching ─────────────────────────────────────────────────────────────
+function switchTab(name) {
+  // Hide all panels
+  document.querySelectorAll('.tab-panel').forEach(el => { el.style.display = 'none'; });
+  // Show selected panel
+  const panel = document.getElementById('tab-' + name);
+  if (panel) panel.style.display = '';
+  // Update button active state
+  document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+  const activeBtn = document.getElementById('tab-btn-' + name);
+  if (activeBtn) activeBtn.classList.add('active');
+  // Show/hide period selector — only visible on Overview tab
+  document.getElementById('period-controls').style.display =
+    (name === 'overview') ? '' : 'none';
+  // Persist selection
+  localStorage.setItem('norah_active_tab', name);
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 initDates();
-loadAll();
-loadBookingSources();
+// Restore last-selected tab (default: overview)
+const _savedTab = localStorage.getItem('norah_active_tab') || 'overview';
+switchTab(_savedTab);
+// Only load Overview data if that tab is active on init
+if (_savedTab === 'overview') {
+  loadAll();
+  loadBookingSources();
+}
 </script>
 </body>
 </html>

@@ -360,6 +360,20 @@ The shared implementation is `_regular_shift_metrics(lunch_sales, lunch_pax, din
 
 ---
 
+## Dashboard — UI Structure
+
+Single-file SPA (`dashboard.html`). Three tabs managed by `switchTab(name)`:
+
+| Tab ID | Button | Content |
+|---|---|---|
+| `tab-overview` | Overview (default) | KPI cards, all charts, Monthly Summary, Booking Sources |
+| `tab-fb` | F&B | Product mix analytics (populated in Phase 3c) |
+| `tab-staff` | Staff | Server leaderboard analytics (populated in Phase 3d) |
+
+Tab state persists in `localStorage` under key `norah_active_tab`. On page load, the last-selected tab is restored (default: `overview`).
+
+Period selector (`#period-controls`) is shown only on the Overview tab. Each new tab will get its own independent period selector. Chart data (`loadAll()`, `loadBookingSources()`) is only triggered on init if the Overview tab is active.
+
 ## Dashboard HTTP API
 
 Flask endpoints served alongside the bot. All require `Authorization: Bearer <token>`.
