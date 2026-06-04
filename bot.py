@@ -3847,6 +3847,12 @@ def build_owners_post_for_day(report_day: date, dry_run: bool = False) -> str:
                     venue_fee=agora.venue_fee,
                 )
                 upsert_daily(report_day, db_total, cm["total_covers"])
+                if agora.line_items:
+                    try:
+                        upsert_product_sales(report_day, agora.line_items)
+                        upsert_server_sales(report_day, agora.line_items, agora.tips_by_user)
+                    except Exception as e:
+                        print(f"[daily_post] aggregation upsert failed for {report_day}: {e}")
 
             msg = (
                 f"📌 Norah Daily Post\n"

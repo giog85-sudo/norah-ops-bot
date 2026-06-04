@@ -649,6 +649,12 @@ Multiple tags per note are supported. Tag analytics: `/tagstats`, `/soldout`, `/
 
 **No backfill required** — existing `daily_server_sales` rows remain at `tips=0` until re-pipelined. Products, events, transferencia, and walkins endpoints draw from tables already populated.
 
+### 2026-06-04 — Fix: aggregation tables not written by scheduled daily post
+
+**Bug:** `build_owners_post_for_day` called `upsert_full_day` and `upsert_daily` but not `upsert_product_sales` / `upsert_server_sales`. So the scheduled 11:05 post populated `full_daily_stats` (Overview tab correct) but left `daily_product_sales` and `daily_server_sales` empty (F&B and Staff tabs missing yesterday's data).
+
+**Fix:** Added guarded aggregation calls immediately after `upsert_daily` in the `if not dry_run:` block of `build_owners_post_for_day`. Mirrors the pattern in `/run-pipeline?save=true`. Failure of the aggregation upserts is caught with `try/except` and logged as a warning — it does not prevent the Telegram post from being sent or `full_daily_stats` from being written.
+
 ### 2026-06-04 — Phase 3b+3c: Dashboard tab system + F&B tab
 
 **Tab navigation** (`switchTab`, Phase 3b):
