@@ -362,6 +362,10 @@ def init_db():
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_dss_day ON daily_server_sales(report_day);"
             )
+            # Idempotent column migration — safe on existing DBs
+            cur.execute(
+                "ALTER TABLE daily_server_sales ADD COLUMN IF NOT EXISTS tips NUMERIC DEFAULT 0;"
+            )
         conn.commit()
 
 def set_setting(key: str, value: str):
@@ -802,8 +806,12 @@ def upsert_product_sales(day_: date, line_items: list):
         conn.commit()
 
 
-def upsert_server_sales(day_: date, line_items: list):
-    """Aggregate line items by (user, shift) and upsert into daily_server_sales."""
+def upsert_server_sales(day_: date, line_items: list, tips_by_user: dict | None = None):
+    """Aggregate line items by (user, shift) and upsert into daily_server_sales.
+
+    tips_by_user: optional dict of {UserName: TipAmount} from GetTipsByUserReportRequest.
+    When provided, each server row is enriched with their individual tip total.
+    """
     from collections import defaultdict
     agg = defaultdict(lambda: {
         "lunch_revenue": 0.0, "lunch_docs": set(),
@@ -827,29 +835,33 @@ def upsert_server_sales(day_: date, line_items: list):
     if not agg:
         return
 
+    tips_map = tips_by_user or {}
+
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM daily_server_sales WHERE report_day = %s", (day_,))
             for user, vals in agg.items():
-                lr = vals["lunch_revenue"]
-                lc = len(vals["lunch_docs"]) or None
-                dr = vals["dinner_revenue"]
-                dc = len(vals["dinner_docs"]) or None
-                tr = lr + dr
+                lr   = vals["lunch_revenue"]
+                lc   = len(vals["lunch_docs"]) or None
+                dr   = vals["dinner_revenue"]
+                dc   = len(vals["dinner_docs"]) or None
+                tr   = lr + dr
+                tips = round(tips_map.get(user, 0.0), 2)
                 cur.execute(
                     """
                     INSERT INTO daily_server_sales
                         (report_day, user_name, lunch_revenue, lunch_covers,
-                         dinner_revenue, dinner_covers, total_revenue)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                         dinner_revenue, dinner_covers, total_revenue, tips)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (report_day, user_name) DO UPDATE SET
                         lunch_revenue  = EXCLUDED.lunch_revenue,
                         lunch_covers   = EXCLUDED.lunch_covers,
                         dinner_revenue = EXCLUDED.dinner_revenue,
                         dinner_covers  = EXCLUDED.dinner_covers,
-                        total_revenue  = EXCLUDED.total_revenue
+                        total_revenue  = EXCLUDED.total_revenue,
+                        tips           = EXCLUDED.tips
                     """,
-                    (day_, user, lr, lc, dr, dc, tr),
+                    (day_, user, lr, lc, dr, dc, tr, tips),
                 )
         conn.commit()
 
@@ -4746,7 +4758,7 @@ def run_pipeline():
             upsert_daily(day_, db_total, cm["total_covers"])
             if ds.line_items:
                 upsert_product_sales(day_, ds.line_items)
-                upsert_server_sales(day_, ds.line_items)
+                upsert_server_sales(day_, ds.line_items, ds.tips_by_user)
 
         return jsonify({
             "date":              ds.date,
@@ -5613,6 +5625,480 @@ def run_probe_endpoint():
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# =========================
+# /api/dashboard/* — period-based analytics endpoints
+# All require: Authorization: Bearer DASHBOARD_API_KEY
+# All require query params: period_start=YYYY-MM-DD, period_end=YYYY-MM-DD (inclusive)
+# =========================
+
+def _validate_period():
+    """Parse and validate period_start / period_end query params.
+
+    Returns (from_date, to_date, None) on success.
+    Returns (None, None, (response, status_code)) on validation failure.
+    """
+    from_str = request.args.get("period_start")
+    to_str   = request.args.get("period_end")
+    if not from_str or not to_str:
+        return None, None, (
+            jsonify({"error": "period_start and period_end are required (YYYY-MM-DD)"}), 400
+        )
+    try:
+        from_date = date.fromisoformat(from_str)
+        to_date   = date.fromisoformat(to_str)
+    except ValueError:
+        return None, None, (jsonify({"error": "Invalid date format, use YYYY-MM-DD"}), 400)
+    if from_date > to_date:
+        return None, None, (jsonify({"error": "period_start must be <= period_end"}), 400)
+    if (to_date - from_date).days > 365:
+        return None, None, (jsonify({"error": "Period cannot exceed 365 days"}), 400)
+    return from_date, to_date, None
+
+
+@flask_app.route("/api/dashboard/products")
+def api_dashboard_products():
+    """Top products, family mix, slow movers, and lunch/dinner split for a period."""
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    from_date, to_date, err = _validate_period()
+    if err:
+        return err
+
+    _LUNCH_TF  = {"mediodía", "mediodia", "comida", "lunch", "almuerzo"}
+    _DINNER_TF = {"noche", "cena", "dinner"}
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT product, family, timeframe,
+                       SUM(quantity) AS total_qty,
+                       SUM(net)      AS total_net
+                FROM daily_product_sales
+                WHERE report_day BETWEEN %s AND %s
+                GROUP BY product, family, timeframe
+                """,
+                (from_date, to_date),
+            )
+            rows = cur.fetchall()
+
+    if not rows:
+        empty = {"period_start": from_date.isoformat(), "period_end": to_date.isoformat(),
+                 "top_by_revenue": [], "top_by_quantity": [], "family_mix": [],
+                 "slow_movers": [], "lunch_top": [], "dinner_top": []}
+        return jsonify(empty)
+
+    # Collapse timeframe dimension for overall product aggregates
+    prod_agg: dict = {}
+    for (product, family, timeframe, qty, net) in rows:
+        key = product
+        if key not in prod_agg:
+            prod_agg[key] = {"family": family or "", "quantity": 0.0, "net": 0.0}
+        prod_agg[key]["quantity"] += float(qty or 0)
+        prod_agg[key]["net"]      += float(net or 0)
+
+    total_net = sum(v["net"] for v in prod_agg.values())
+
+    def _with_pct(items, sort_key, limit):
+        sorted_items = sorted(items, key=lambda x: x[sort_key], reverse=True)[:limit]
+        return [
+            {
+                "product":      p["product"],
+                "family":       p["family"],
+                "net":          round(p["net"], 2),
+                "quantity":     round(p["quantity"], 2),
+                "pct_of_total": round(p["net"] / total_net * 100, 1) if total_net else 0.0,
+            }
+            for p in sorted_items
+        ]
+
+    products = [{"product": k, **v} for k, v in prod_agg.items()]
+    top_by_revenue  = _with_pct(products, "net",      15)
+    top_by_quantity = _with_pct(products, "quantity", 15)
+
+    # Family mix
+    fam_agg: dict = {}
+    for p in products:
+        fam = p["family"] or "—"
+        fam_agg[fam] = fam_agg.get(fam, 0.0) + p["net"]
+    family_mix = sorted(
+        [
+            {
+                "family":       fam,
+                "net":          round(net, 2),
+                "pct_of_total": round(net / total_net * 100, 1) if total_net else 0.0,
+            }
+            for fam, net in fam_agg.items() if net > 0
+        ],
+        key=lambda x: x["net"], reverse=True,
+    )
+
+    # Slow movers — bottom 20 by quantity, excluding zero-quantity items
+    slow_movers = sorted(
+        [p for p in products if p["quantity"] > 0],
+        key=lambda x: x["quantity"],
+    )[:20]
+    slow_movers = [
+        {"product": p["product"], "family": p["family"],
+         "net": round(p["net"], 2), "quantity": round(p["quantity"], 2)}
+        for p in slow_movers
+    ]
+
+    # Lunch / dinner top 10 — use timeframe dimension from the raw rows
+    lunch_agg: dict = {}
+    dinner_agg: dict = {}
+    for (product, family, timeframe, qty, net) in rows:
+        tf_l  = (timeframe or "").strip().lower()
+        net_f = float(net or 0)
+        qty_f = float(qty or 0)
+        if any(t in tf_l for t in _LUNCH_TF):
+            if product not in lunch_agg:
+                lunch_agg[product] = {"net": 0.0, "quantity": 0.0}
+            lunch_agg[product]["net"]      += net_f
+            lunch_agg[product]["quantity"] += qty_f
+        elif any(t in tf_l for t in _DINNER_TF):
+            if product not in dinner_agg:
+                dinner_agg[product] = {"net": 0.0, "quantity": 0.0}
+            dinner_agg[product]["net"]      += net_f
+            dinner_agg[product]["quantity"] += qty_f
+
+    lunch_top = sorted(
+        [{"product": p, "net": round(v["net"], 2), "quantity": round(v["quantity"], 2)}
+         for p, v in lunch_agg.items()],
+        key=lambda x: x["net"], reverse=True,
+    )[:10]
+    dinner_top = sorted(
+        [{"product": p, "net": round(v["net"], 2), "quantity": round(v["quantity"], 2)}
+         for p, v in dinner_agg.items()],
+        key=lambda x: x["net"], reverse=True,
+    )[:10]
+
+    return jsonify({
+        "period_start":    from_date.isoformat(),
+        "period_end":      to_date.isoformat(),
+        "top_by_revenue":  top_by_revenue,
+        "top_by_quantity": top_by_quantity,
+        "family_mix":      family_mix,
+        "slow_movers":     slow_movers,
+        "lunch_top":       lunch_top,
+        "dinner_top":      dinner_top,
+    })
+
+
+@flask_app.route("/api/dashboard/servers")
+def api_dashboard_servers():
+    """Server leaderboard with tips, weekly consistency sparklines, and prior-period comparison."""
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    from_date, to_date, err = _validate_period()
+    if err:
+        return err
+
+    # Prior period: same length immediately before period_start
+    period_len  = (to_date - from_date).days + 1
+    prior_end   = from_date - timedelta(days=1)
+    prior_start = prior_end - timedelta(days=period_len - 1)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Current period — aggregated per server
+            cur.execute(
+                """
+                SELECT user_name,
+                       SUM(lunch_revenue)                  AS lr,
+                       SUM(COALESCE(lunch_covers,  0))     AS lc,
+                       SUM(dinner_revenue)                 AS dr,
+                       SUM(COALESCE(dinner_covers, 0))     AS dc,
+                       SUM(total_revenue)                  AS tr,
+                       SUM(COALESCE(tips, 0))              AS tips
+                FROM daily_server_sales
+                WHERE report_day BETWEEN %s AND %s
+                  AND UPPER(user_name) != 'EXTRAS'
+                GROUP BY user_name
+                ORDER BY SUM(total_revenue) DESC
+                """,
+                (from_date, to_date),
+            )
+            current_rows = cur.fetchall()
+
+            # Prior period — aggregated per server
+            cur.execute(
+                """
+                SELECT user_name, SUM(total_revenue) AS tr
+                FROM daily_server_sales
+                WHERE report_day BETWEEN %s AND %s
+                  AND UPPER(user_name) != 'EXTRAS'
+                GROUP BY user_name
+                """,
+                (prior_start, prior_end),
+            )
+            prior_rows = cur.fetchall()
+
+            # Raw daily rows for weekly consistency sparklines
+            cur.execute(
+                """
+                SELECT user_name, report_day, total_revenue
+                FROM daily_server_sales
+                WHERE report_day BETWEEN %s AND %s
+                  AND UPPER(user_name) != 'EXTRAS'
+                ORDER BY report_day
+                """,
+                (from_date, to_date),
+            )
+            daily_rows = cur.fetchall()
+
+    # Build leaderboard
+    leaderboard = []
+    total_period_revenue = sum(float(r[5] or 0) for r in current_rows)
+    for (user_name, lr, lc, dr, dc, tr, tips) in current_rows:
+        lr_f   = round(float(lr   or 0), 2)
+        lc_i   = int(lc   or 0)
+        dr_f   = round(float(dr   or 0), 2)
+        dc_i   = int(dc   or 0)
+        tr_f   = round(float(tr   or 0), 2)
+        tips_f = round(float(tips or 0), 2)
+        tc_i   = lc_i + dc_i
+        leaderboard.append({
+            "user_name":             user_name,
+            "total_revenue":         tr_f,
+            "lunch_revenue":         lr_f,
+            "lunch_tickets":         lc_i,
+            "dinner_revenue":        dr_f,
+            "dinner_tickets":        dc_i,
+            "total_tickets":         tc_i,
+            "avg_per_check":         round(tr_f / tc_i, 2) if tc_i else 0.0,
+            "lunch_avg_per_check":   round(lr_f / lc_i, 2) if lc_i else 0.0,
+            "dinner_avg_per_check":  round(dr_f / dc_i, 2) if dc_i else 0.0,
+            "tips":                  tips_f,
+            "tips_pct_of_revenue":   round(tips_f / tr_f * 100, 2) if tr_f else 0.0,
+        })
+
+    # Top performer
+    top_performer = None
+    if leaderboard:
+        top = leaderboard[0]
+        top_performer = {
+            "user_name":       top["user_name"],
+            "total_revenue":   top["total_revenue"],
+            "period_share_pct": round(top["total_revenue"] / total_period_revenue * 100, 1)
+                                if total_period_revenue else 0.0,
+        }
+
+    # Weekly consistency sparklines
+    from collections import defaultdict
+    weekly: dict = defaultdict(lambda: defaultdict(float))
+    for (user_name, report_day, total_revenue) in daily_rows:
+        monday = report_day - timedelta(days=report_day.weekday())
+        weekly[user_name][monday.isoformat()] += float(total_revenue or 0)
+
+    weekly_consistency = [
+        {
+            "user_name": user,
+            "weeks": [
+                {"week_start": ws, "revenue": round(rev, 2)}
+                for ws, rev in sorted(weeks.items())
+            ],
+        }
+        for user, weeks in sorted(weekly.items())
+    ]
+
+    # Prior period comparison
+    prior_map = {r[0]: float(r[1] or 0) for r in prior_rows}
+    current_map = {row["user_name"]: row["total_revenue"] for row in leaderboard}
+    all_names = set(current_map) | set(prior_map)
+    prior_period_comparison = sorted(
+        [
+            {
+                "user_name":       name,
+                "current_revenue": round(current_map.get(name, 0.0), 2),
+                "prior_revenue":   round(prior_map.get(name, 0.0), 2),
+                "delta_pct": (
+                    round((current_map.get(name, 0.0) - prior_map.get(name, 0.0))
+                          / prior_map[name] * 100, 1)
+                    if prior_map.get(name)
+                    else None
+                ),
+            }
+            for name in all_names
+        ],
+        key=lambda x: x["current_revenue"],
+        reverse=True,
+    )
+
+    return jsonify({
+        "period_start":             from_date.isoformat(),
+        "period_end":               to_date.isoformat(),
+        "leaderboard":              leaderboard,
+        "top_performer":            top_performer,
+        "weekly_consistency":       weekly_consistency,
+        "prior_period_comparison":  prior_period_comparison,
+    })
+
+
+@flask_app.route("/api/dashboard/events")
+def api_dashboard_events():
+    """Event-flagged days in a period with summary totals."""
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    from_date, to_date, err = _validate_period()
+    if err:
+        return err
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT day,
+                       COALESCE(transferencia,    0)    AS transferencia,
+                       COALESCE(event_pax,        0)    AS event_pax,
+                       COALESCE(event_menu_total, 0)    AS event_menu_total,
+                       COALESCE(event_in_cm,      TRUE) AS event_in_cm,
+                       COALESCE(lunch_sales,      0)    AS lunch_sales,
+                       COALESCE(dinner_sales,     0)    AS dinner_sales,
+                       COALESCE(z_total_sales,    0)    AS z_total_sales
+                FROM full_daily_stats
+                WHERE day BETWEEN %s AND %s
+                  AND (
+                    COALESCE(event_menu_total, 0) > 0
+                    OR COALESCE(transferencia,  0) > 500
+                    OR COALESCE(event_in_cm, TRUE) = FALSE
+                  )
+                ORDER BY day
+                """,
+                (from_date, to_date),
+            )
+            rows = cur.fetchall()
+
+    event_days = [
+        {
+            "date":             r[0].isoformat(),
+            "transferencia":    round(float(r[1]), 2),
+            "event_pax":        int(r[2]),
+            "event_menu_total": round(float(r[3]), 2),
+            "event_in_cm":      bool(r[4]),
+            "lunch_sales":      round(float(r[5]), 2),
+            "dinner_sales":     round(float(r[6]), 2),
+            "z_total_sales":    round(float(r[7]), 2),
+        }
+        for r in rows
+    ]
+
+    total_event_revenue = round(
+        sum(d["event_menu_total"] + d["transferencia"] for d in event_days), 2
+    )
+    pax_nonzero = [d["event_pax"] for d in event_days if d["event_pax"] > 0]
+    avg_event_pax = round(sum(pax_nonzero) / len(pax_nonzero), 1) if pax_nonzero else None
+
+    return jsonify({
+        "period_start": from_date.isoformat(),
+        "period_end":   to_date.isoformat(),
+        "event_days":   event_days,
+        "summary": {
+            "event_days_count":    len(event_days),
+            "total_event_revenue": total_event_revenue,
+            "avg_event_pax":       avg_event_pax,
+        },
+    })
+
+
+@flask_app.route("/api/dashboard/transferencia")
+def api_dashboard_transferencia():
+    """Daily transferencia values and summary for a period."""
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    from_date, to_date, err = _validate_period()
+    if err:
+        return err
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT day, COALESCE(transferencia, 0) AS t
+                FROM full_daily_stats
+                WHERE day BETWEEN %s AND %s
+                ORDER BY day
+                """,
+                (from_date, to_date),
+            )
+            rows = cur.fetchall()
+
+    daily = [
+        {"date": r[0].isoformat(), "transferencia": round(float(r[1]), 2)}
+        for r in rows
+    ]
+    nonzero = [d["transferencia"] for d in daily if d["transferencia"] > 0]
+    total    = round(sum(nonzero), 2)
+    avg_nz   = round(total / len(nonzero), 2) if nonzero else 0.0
+
+    return jsonify({
+        "period_start": from_date.isoformat(),
+        "period_end":   to_date.isoformat(),
+        "daily":        daily,
+        "summary": {
+            "total":                 total,
+            "nonzero_days":          len(nonzero),
+            "avg_per_nonzero_day":   avg_nz,
+        },
+    })
+
+
+@flask_app.route("/api/dashboard/walkins")
+def api_dashboard_walkins():
+    """Walk-in vs reservation share per day and overall for a period."""
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+    from_date, to_date, err = _validate_period()
+    if err:
+        return err
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT day,
+                       COALESCE(lunch_walkins,  0) AS lw,
+                       COALESCE(lunch_pax,      0) AS lp,
+                       COALESCE(dinner_walkins, 0) AS dw,
+                       COALESCE(dinner_pax,     0) AS dp
+                FROM full_daily_stats
+                WHERE day BETWEEN %s AND %s
+                ORDER BY day
+                """,
+                (from_date, to_date),
+            )
+            rows = cur.fetchall()
+
+    daily = []
+    for (day, lw, lp, dw, dp) in rows:
+        lw_i = int(lw); lp_i = int(lp)
+        dw_i = int(dw); dp_i = int(dp)
+        daily.append({
+            "date":              day.isoformat(),
+            "lunch_walkins":     lw_i,
+            "lunch_pax":         lp_i,
+            "dinner_walkins":    dw_i,
+            "dinner_pax":        dp_i,
+            "lunch_walkin_pct":  round(lw_i / lp_i * 100, 1) if lp_i else 0.0,
+            "dinner_walkin_pct": round(dw_i / dp_i * 100, 1) if dp_i else 0.0,
+        })
+
+    total_walkins = sum(d["lunch_walkins"] + d["dinner_walkins"] for d in daily)
+    total_pax     = sum(d["lunch_pax"]     + d["dinner_pax"]     for d in daily)
+    overall_pct   = round(total_walkins / total_pax * 100, 1) if total_pax else 0.0
+
+    return jsonify({
+        "period_start": from_date.isoformat(),
+        "period_end":   to_date.isoformat(),
+        "daily":        daily,
+        "summary": {
+            "total_walkins":      total_walkins,
+            "total_pax":          total_pax,
+            "overall_walkin_pct": overall_pct,
+        },
+    })
 
 
 # =========================

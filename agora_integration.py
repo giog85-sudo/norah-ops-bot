@@ -102,8 +102,9 @@ class DailySales:
     venue_fee:        float = 0.0  # z_total_sales minus all line-item net
 
     # ── Raw data ──────────────────────────────────────────────────────────────
-    line_items: list = field(default_factory=list)
-    raw_items: int   = 0
+    line_items:   list = field(default_factory=list)
+    raw_items:    int  = 0
+    tips_by_user: dict = field(default_factory=dict)  # UserName → TipAmount for the day
 
 
 # =============================================================================
@@ -412,7 +413,13 @@ def _fetch_tips_by_user(auth_token: str, session: dict, date_str: str) -> float:
     print(f"[agora] tips matching BusinessDay={date_str}: {len(matching)} records, "
           f"amounts={[t.get('TipAmount') for t in matching]}")
 
-    return round(sum(float(t.get("TipAmount") or 0) for t in matching), 2)
+    per_user: dict[str, float] = {}
+    for t in matching:
+        uname = (t.get("UserName") or "Unknown").strip()
+        per_user[uname] = per_user.get(uname, 0.0) + float(t.get("TipAmount") or 0)
+    per_user = {k: round(v, 2) for k, v in per_user.items()}
+    total = round(sum(per_user.values()), 2)
+    return total, per_user
 
 
 # =============================================================================
@@ -662,7 +669,7 @@ def get_daily_sales(query_date, save_to_db: bool = True) -> Optional[DailySales]
 
     # Enrich with tips from GetTipsByUserReportRequest
     try:
-        ds.tips = _fetch_tips_by_user(auth_token, session, date_str)
+        ds.tips, ds.tips_by_user = _fetch_tips_by_user(auth_token, session, date_str)
     except Exception as e:
         print(f"[agora] tips fetch failed for {date_str}: {e}")
 

@@ -134,10 +134,13 @@ Server revenue aggregated by (day, user_name) with lunch/dinner split. Populated
 - `dinner_revenue` NUMERIC
 - `dinner_covers` INTEGER — distinct `DocumentId` count for dinner shift (NULL if no document IDs available)
 - `total_revenue` NUMERIC
+- `tips` NUMERIC DEFAULT 0 — server's individual tip total from `GetTipsByUserReportRequest`, matched by `UserName`. Added 2026-06-04 via idempotent `ADD COLUMN IF NOT EXISTS`. Rows written before the migration stay at 0 until next pipeline run.
 - PRIMARY KEY: `(report_day, user_name)`
 - Index on `report_day`
 
 TimeFrame classification mirrors `_LUNCH_FRAMES_BOT` / `_DINNER_FRAMES_BOT` constants defined in bot.py (same sets as agora_integration.py `_LUNCH_FRAMES`/`_DINNER_FRAMES` plus `"día"/"dia"`).
+
+**EXTRAS filtering:** `user_name == "EXTRAS"` (case-insensitive) is excluded from all `/api/dashboard/servers` response sections. The row is still written to the DB; exclusion is at query time.
 
 ---
 
@@ -396,6 +399,47 @@ Anomaly patterns:
 - **`missing_product_aggregation`**: day has `total_sales > 0` but no rows in `daily_product_sales`
 - **`missing_server_aggregation`**: day has `total_sales > 0` but no rows in `daily_server_sales`
 
+### `/api/dashboard/*` — Period-based analytics endpoints (added 2026-06-04)
+
+All five endpoints share the same conventions:
+- Auth: `Authorization: Bearer DASHBOARD_API_KEY`
+- Required params: `period_start=YYYY-MM-DD`, `period_end=YYYY-MM-DD` (both inclusive)
+- Validation: 400 if either param missing or malformed; 400 if `period_start > period_end`; 400 if span exceeds 365 days
+- All numeric values rounded to 2 decimal places
+
+#### `GET /api/dashboard/products`
+
+Queries `daily_product_sales`. Returns:
+- `top_by_revenue` — top 15 products by net revenue, with `pct_of_total`
+- `top_by_quantity` — top 15 products by quantity, with `pct_of_total`
+- `family_mix` — all families with non-zero sales, sorted by revenue, with `pct_of_total`
+- `slow_movers` — bottom 20 by quantity (zero-quantity items excluded)
+- `lunch_top` — top 10 by revenue in lunch timeframes (`mediodía`, `comida`, `lunch`, `almuerzo`, `mediodia`)
+- `dinner_top` — top 10 by revenue in dinner timeframes (`noche`, `cena`, `dinner`)
+
+#### `GET /api/dashboard/servers`
+
+Queries `daily_server_sales`. `EXTRAS` user excluded from all sections. Returns:
+- `leaderboard` — sorted by `total_revenue` desc. Each entry: `user_name`, `total_revenue`, `lunch_revenue`, `lunch_tickets`, `dinner_revenue`, `dinner_tickets`, `total_tickets`, `avg_per_check`, `lunch_avg_per_check`, `dinner_avg_per_check`, `tips`, `tips_pct_of_revenue`
+- `top_performer` — #1 from leaderboard with `period_share_pct` (% of all server revenue)
+- `weekly_consistency` — week-bucketed revenue per server for sparklines (`week_start` aligned to Monday)
+- `prior_period_comparison` — same-length period immediately prior; `delta_pct` is `null` if no prior revenue
+
+#### `GET /api/dashboard/events`
+
+Queries `full_daily_stats`. Days are included if `event_menu_total > 0 OR transferencia > 500 OR event_in_cm = FALSE`. Returns:
+- `event_days` — list of days with `date`, `transferencia`, `event_pax`, `event_menu_total`, `event_in_cm`, `lunch_sales`, `dinner_sales`, `z_total_sales`
+- `summary.total_event_revenue` — sum of `event_menu_total + transferencia` across event days
+- `summary.avg_event_pax` — average of non-zero `event_pax` values; `null` if none
+
+#### `GET /api/dashboard/transferencia`
+
+Queries `full_daily_stats`. Returns all days in range with their `transferencia` value (including zero-value days). Summary: `total`, `nonzero_days`, `avg_per_nonzero_day`.
+
+#### `GET /api/dashboard/walkins`
+
+Queries `full_daily_stats`. Returns all days in range with per-shift walk-in counts and percentages. `lunch_walkin_pct = lunch_walkins / lunch_pax * 100` (0.0 if no pax). Summary: `total_walkins`, `total_pax`, `overall_walkin_pct`.
+
 ---
 
 ## AI Agent Event Awareness
@@ -554,6 +598,27 @@ Multiple tags per note are supported. Tag analytics: `/tagstats`, `/soldout`, `/
 ---
 
 ## Changelog
+
+### 2026-06-04 — Dashboard analytics endpoints + per-server tips
+
+**Schema**: `daily_server_sales.tips NUMERIC DEFAULT 0` added via idempotent `ADD COLUMN IF NOT EXISTS` in `init_db()`. Existing rows remain at 0 until next pipeline run.
+
+**`agora_integration.py`**:
+- `_fetch_tips_by_user()` now returns `(total: float, per_user: dict[str, float])` instead of just `float`. Per-user dict maps `UserName → TipAmount` (summed across multiple records per user per day).
+- `DailySales` dataclass gained `tips_by_user: dict` field.
+- `get_daily_sales()` unpacks both values: `ds.tips, ds.tips_by_user = _fetch_tips_by_user(...)`.
+
+**`bot.py`**:
+- `upsert_server_sales(day_, line_items, tips_by_user=None)` — new optional `tips_by_user` param. Writes each server's tip total by matching `UserName` in the dict. Pipeline call updated to pass `ds.tips_by_user`.
+- Five new `/api/dashboard/*` endpoints (all auth-gated, all validate `period_start`/`period_end`/365-day cap):
+  - `GET /api/dashboard/products` — product mix from `daily_product_sales`
+  - `GET /api/dashboard/servers` — server leaderboard with tips and prior-period comparison from `daily_server_sales`
+  - `GET /api/dashboard/events` — event-flagged days from `full_daily_stats`
+  - `GET /api/dashboard/transferencia` — daily transferencia values from `full_daily_stats`
+  - `GET /api/dashboard/walkins` — walk-in vs reservation share from `full_daily_stats`
+- `_validate_period()` helper: shared param validation for all five endpoints.
+
+**No backfill required** — existing `daily_server_sales` rows remain at `tips=0` until re-pipelined. Products, events, transferencia, and walkins endpoints draw from tables already populated.
 
 ### 2026-06-02 — Phase 1 F&B + Staff Analytics
 
