@@ -421,6 +421,18 @@ When `save=true`: writes `full_daily_stats`, `daily_stats`, and (if `ds.line_ite
 
 Diagnostic read-only endpoint. Returns all rows from `daily_product_sales` and `daily_server_sales` for a given date. Use to verify aggregation after running pipeline.
 
+### `/admin/sync-check?since=YYYY-MM-DD&threshold=N`
+
+Cross-checks `full_daily_stats` vs `daily_product_sales` revenue per day. Surfaces days where the two tables disagree by `>= threshold` EUR (default: 1.0). Read-only.
+
+- `since` (optional): lower bound of scan window (default: 90 days before today). Rejected if in the future.
+- `threshold` (optional, default `1.0`): minimum `abs(diff)` to include in `mismatched_days`.
+- **`overview_column_used`**: `COALESCE(NULLIF(z_total_sales, 0), total_sales)` — same expression the Overview KPI sums via `/api/stats/daily`.
+- `mismatched_days` sorted by `abs(diff)` descending (biggest gap first).
+- DB query wrapped in `try/except`; returns HTTP 500 with `error` field on failure.
+
+Response fields: `since`, `until`, `threshold`, `overview_column_used`, `total_full_daily_stats`, `total_daily_product_sales`, `total_diff`, `mismatched_days[]` (`date`, `full_daily_stats_value`, `daily_product_sales_total`, `diff`).
+
 ### `/admin/health-check?from=YYYY-MM-DD&to=YYYY-MM-DD[&since=YYYY-MM-DD]`
 
 Default window: last 90 days. Optional `?since=YYYY-MM-DD` overrides the lower bound without touching the upper bound — useful for inspecting dates older than 90 days (e.g. `?since=2026-03-01`). Returns 400 if `since` is in the future or malformed. Response always includes `since_date` and `until_date` fields confirming the actual window checked.
@@ -659,6 +671,10 @@ Multiple tags per note are supported. Tag analytics: `/tagstats`, `/soldout`, `/
 - `_validate_period()` helper: shared param validation for all five endpoints.
 
 **No backfill required** — existing `daily_server_sales` rows remain at `tips=0` until re-pipelined. Products, events, transferencia, and walkins endpoints draw from tables already populated.
+
+### 2026-06-05 — Add /admin/sync-check diagnostic endpoint
+
+Read-only endpoint that LEFT JOINs `full_daily_stats` against `daily_product_sales` per day and reports days where `COALESCE(NULLIF(z_total_sales,0), total_sales) − SUM(net)` exceeds the threshold. Used to diagnose the ~€4,500 residual gap between the Overview and F&B tabs over 90-day windows. No DB writes, no changes to existing endpoints.
 
 ### 2026-06-04 — F&B KPI cards: Food vs Drinks + Menu Coverage
 

@@ -5169,6 +5169,100 @@ def admin_peek_aggregations():
     })
 
 
+@flask_app.route("/admin/sync-check")
+def admin_sync_check():
+    """
+    Cross-check full_daily_stats vs daily_product_sales revenue per day.
+
+    The Overview tab sums COALESCE(NULLIF(z_total_sales,0), total_sales) from
+    full_daily_stats.  The F&B tab sums SUM(net) from daily_product_sales.
+    This endpoint reports days where those two values diverge by >= threshold EUR.
+
+    GET ?since=YYYY-MM-DD&threshold=N
+      since     : lower bound (default: 90 days before today)
+      threshold : minimum abs(diff) to include (default: 1.0)
+    Auth: Bearer token.  Read-only — no DB writes.
+    """
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    today = date.today()
+
+    since_str = request.args.get("since")
+    if since_str:
+        try:
+            since_date = date.fromisoformat(since_str)
+        except ValueError:
+            return jsonify({"error": "Invalid since format, use YYYY-MM-DD"}), 400
+        if since_date > today:
+            return jsonify({"error": "since must not be in the future"}), 400
+    else:
+        since_date = today - timedelta(days=90)
+
+    threshold_str = request.args.get("threshold", "1.0")
+    try:
+        threshold = float(threshold_str)
+        if threshold < 0:
+            raise ValueError
+    except ValueError:
+        return jsonify({"error": "threshold must be a non-negative number"}), 400
+
+    until_date = today
+
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        f.day,
+                        COALESCE(NULLIF(f.z_total_sales, 0), f.total_sales) AS fds_value,
+                        COALESCE(SUM(p.net), 0)                              AS dps_total
+                    FROM full_daily_stats f
+                    LEFT JOIN daily_product_sales p ON p.report_day = f.day
+                    WHERE f.day BETWEEN %s AND %s
+                      AND COALESCE(NULLIF(f.z_total_sales, 0), f.total_sales) > 0
+                    GROUP BY f.day, f.z_total_sales, f.total_sales
+                    ORDER BY f.day
+                    """,
+                    (since_date, until_date),
+                )
+                rows = cur.fetchall()
+    except Exception as e:
+        return jsonify({"error": f"Query failed: {e}"}), 500
+
+    total_fds = 0.0
+    total_dps = 0.0
+    mismatched = []
+
+    for (day_, fds_val, dps_val) in rows:
+        fds_f = float(fds_val or 0)
+        dps_f = float(dps_val or 0)
+        total_fds += fds_f
+        total_dps += dps_f
+        diff = fds_f - dps_f
+        if abs(diff) >= threshold:
+            mismatched.append({
+                "date":                    day_.isoformat(),
+                "full_daily_stats_value":  round(fds_f, 2),
+                "daily_product_sales_total": round(dps_f, 2),
+                "diff":                    round(diff, 2),
+            })
+
+    mismatched.sort(key=lambda x: abs(x["diff"]), reverse=True)
+
+    return jsonify({
+        "since":                   since_date.isoformat(),
+        "until":                   until_date.isoformat(),
+        "threshold":               threshold,
+        "overview_column_used":    "COALESCE(NULLIF(z_total_sales, 0), total_sales)",
+        "total_full_daily_stats":  round(total_fds, 2),
+        "total_daily_product_sales": round(total_dps, 2),
+        "total_diff":              round(total_fds - total_dps, 2),
+        "mismatched_days":         mismatched,
+    })
+
+
 @flask_app.route("/admin/probe-waiter-report")
 def admin_probe_waiter_report():
     """
