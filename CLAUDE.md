@@ -385,13 +385,17 @@ Period selector (`#period-controls`) is visible on Overview and F&B tabs; hidden
 | KPI — Food vs Drinks | `#fb-kpi-food-amt/pct`, `#fb-kpi-drinks-amt/pct` | `food_revenue` / `drinks_revenue`; pct computed client-side |
 | KPI — Menu Coverage | `#fb-kpi-coverage`, `#fb-kpi-coverage-sub` | `distinct_products_in_period / active_menu_size * 100`; shows "N/A" if `active_menu_size` is null |
 | KPI — Non-Product Revenue | `#fb-kpi-nonprod`, `#fb-kpi-nonprod-sub1/2` | `non_product_revenue_total`; sub-lines show venue fees (N events) and other adjustments separately |
-| Top 10 by Revenue | `#chart-fb-revenue` (horizontal bar, 280px) | `top_by_revenue[:10]`, value key `net` |
-| Top 10 by Quantity | `#chart-fb-qty` (horizontal bar, 280px) | `top_by_quantity[:10]`, value key `quantity` |
+| Top 10 Food by Revenue | `#chart-fb-food-rev` (horizontal bar, 280px, `--lunch`) | `food_top_by_revenue`, value key `net` |
+| Top 10 Drinks by Revenue | `#chart-fb-drinks-rev` (horizontal bar, 280px, `--dinner`) | `drinks_top_by_revenue`, value key `net` |
+| Top 10 Food by Quantity | `#chart-fb-food-qty` (horizontal bar, 280px, `--lunch`) | `food_top_by_quantity`, value key `quantity` |
+| Top 10 Drinks by Quantity | `#chart-fb-drinks-qty` (horizontal bar, 280px, `--dinner`) | `drinks_top_by_quantity`, value key `quantity` |
 | Family Mix | `#chart-fb-family` (doughnut, 260px) | `family_mix`, `FAM_PALETTE` colors |
 | Slow Movers | `#fb-slowmovers-tbody` (scrollable table 296px max) | `slow_movers` (bottom 20 by quantity) |
 | Lunch / Dinner Top 10 | `#chart-fb-lunch`, `#chart-fb-dinner` (horizontal bar, 240px) | `lunch_top[:10]`, `dinner_top[:10]` |
 
 **Food vs Drinks card:** Two-column layout with `--lunch` (red) label for Food and `--dinner` (teal) for Drinks, separated by a `--border` vertical divider. Percentages computed as `food_revenue / (food + drinks) * 100`.
+
+**Color convention (food/drinks):** `--lunch` (#FF6B6B coral) = Food / CARTA. `--dinner` (#4ECDC4 teal) = Drinks / non-CARTA. Applied consistently across the Food vs Drinks KPI card and all four food/drinks top-10 charts.
 
 **Menu Coverage card:** `active_menu_size` is the baseline — unique products sold in the trailing 90 days ending at `period_end`. Shows percentage of that baseline sold during the selected period. Useful for spotting menu items that haven't moved recently.
 
@@ -487,6 +491,12 @@ Queries `daily_product_sales`. Returns:
 - `venue_fee_event_count` — count of distinct days where `venue_fee > 0` in the period. `null` on query failure.
 - `other_adjustments_total` — sum of positive per-day diffs (`fds_value − dps_total >= 1.0 EUR`) across the period, minus `venue_fees_total`, floored at 0. Represents revenue booked at POS-ticket level that doesn't appear as product line items (excluding identifiable venue fees). `null` on query failure.
 - `non_product_revenue_total` — `venue_fees_total + other_adjustments_total`. The "useful" portion of the Overview/F&B gap. `null` on query failure.
+- `food_top_by_revenue` — top 10 CARTA-family products by net DESC (same shape as `top_by_revenue`; `pct_of_total` relative to overall period total)
+- `drinks_top_by_revenue` — top 10 non-CARTA products by net DESC
+- `food_top_by_quantity` — top 10 CARTA products by quantity DESC
+- `drinks_top_by_quantity` — top 10 non-CARTA products by quantity DESC
+
+`top_by_revenue` and `top_by_quantity` (original combined fields) are retained for backward compatibility.
 
 **Dependency note:** `venue_fees_total` is only accurate when events are rung up correctly — i.e., both a `LineType=="Menú"` product line AND the venue fee difference appears in the Z-report closeout. If an event day has `venue_fee = 0` but real venue revenue, it will surface as `other_adjustments_total` instead.
 
@@ -710,6 +720,10 @@ One-off surgical corrections to the DB that cannot be handled by the normal pipe
 - `_validate_period()` helper: shared param validation for all five endpoints.
 
 **No backfill required** — existing `daily_server_sales` rows remain at `tips=0` until re-pipelined. Products, events, transferencia, and walkins endpoints draw from tables already populated.
+
+### 2026-06-06 — Split F&B top-10 charts into food vs drinks
+
+Replaced the two full-width "Top 10 by Revenue / Quantity" charts with four side-by-side charts separated by food (CARTA) vs drinks (non-CARTA). Food charts use `--lunch` color, drinks use `--dinner`. Four new endpoint fields added to `/api/dashboard/products`; original `top_by_revenue`/`top_by_quantity` kept for compatibility.
 
 ### 2026-06-06 — Add inspect-day and cleanup-negative-lines admin endpoints
 

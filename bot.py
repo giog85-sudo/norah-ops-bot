@@ -5999,6 +5999,8 @@ def api_dashboard_products():
             "venue_fees_total": venue_fees_total, "venue_fee_event_count": venue_fee_event_count,
             "other_adjustments_total": other_adjustments_total,
             "non_product_revenue_total": non_product_revenue_total,
+            "food_top_by_revenue": [], "drinks_top_by_revenue": [],
+            "food_top_by_quantity": [], "drinks_top_by_quantity": [],
         }
         return jsonify(empty)
 
@@ -6033,6 +6035,13 @@ def api_dashboard_products():
     products = [{"product": k, **v} for k, v in prod_agg.items()]
     top_by_revenue  = _with_pct(products, "net",      15)
     top_by_quantity = _with_pct(products, "quantity", 15)
+
+    food_products   = [p for p in products if p["family"].upper() == "CARTA"]
+    drinks_products = [p for p in products if p["family"].upper() != "CARTA"]
+    food_top_by_revenue    = _with_pct(food_products,   "net",      10)
+    drinks_top_by_revenue  = _with_pct(drinks_products, "net",      10)
+    food_top_by_quantity   = _with_pct(food_products,   "quantity", 10)
+    drinks_top_by_quantity = _with_pct(drinks_products, "quantity", 10)
 
     # Family mix
     fam_agg: dict = {}
@@ -6108,6 +6117,10 @@ def api_dashboard_products():
         "venue_fee_event_count":      venue_fee_event_count,
         "other_adjustments_total":    other_adjustments_total,
         "non_product_revenue_total":  non_product_revenue_total,
+        "food_top_by_revenue":        food_top_by_revenue,
+        "drinks_top_by_revenue":      drinks_top_by_revenue,
+        "food_top_by_quantity":       food_top_by_quantity,
+        "drinks_top_by_quantity":     drinks_top_by_quantity,
     })
 
 

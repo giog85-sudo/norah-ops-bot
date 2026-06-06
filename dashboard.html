@@ -570,31 +570,59 @@
     </div>
   </div>
 
-  <!-- Top 10 by Revenue — full-width horizontal bar -->
-  <div class="chart-card">
-    <h2>
-      Top 10 Products by Revenue
-      <span class="legend-dots">
-        <span><i class="kpi-dot" style="background:var(--overall)"></i>Net revenue</span>
-      </span>
-    </h2>
-    <div style="position:relative; height:280px">
-      <canvas id="chart-fb-revenue"></canvas>
+  <!-- Top 10 by Revenue — Food vs Drinks side-by-side -->
+  <div class="charts-col2">
+    <div class="chart-card" style="margin-bottom:0">
+      <h2>
+        Top 10 Food by Revenue
+        <span class="legend-dots">
+          <span><i class="kpi-dot" style="background:var(--lunch)"></i>Net revenue</span>
+        </span>
+      </h2>
+      <div style="position:relative; height:280px">
+        <canvas id="chart-fb-food-rev"></canvas>
+      </div>
+    </div>
+    <div class="chart-card" style="margin-bottom:0">
+      <h2>
+        Top 10 Drinks by Revenue
+        <span class="legend-dots">
+          <span><i class="kpi-dot" style="background:var(--dinner)"></i>Net revenue</span>
+        </span>
+      </h2>
+      <div style="position:relative; height:280px">
+        <canvas id="chart-fb-drinks-rev"></canvas>
+      </div>
     </div>
   </div>
+  <div style="height:16px"></div>
 
-  <!-- Top 10 by Quantity — full-width horizontal bar -->
-  <div class="chart-card">
-    <h2>
-      Top 10 Products by Quantity
-      <span class="legend-dots">
-        <span><i class="kpi-dot" style="background:var(--dinner)"></i>Units sold</span>
-      </span>
-    </h2>
-    <div style="position:relative; height:280px">
-      <canvas id="chart-fb-qty"></canvas>
+  <!-- Top 10 by Quantity — Food vs Drinks side-by-side -->
+  <div class="charts-col2">
+    <div class="chart-card" style="margin-bottom:0">
+      <h2>
+        Top 10 Food by Quantity
+        <span class="legend-dots">
+          <span><i class="kpi-dot" style="background:var(--lunch)"></i>Units sold</span>
+        </span>
+      </h2>
+      <div style="position:relative; height:280px">
+        <canvas id="chart-fb-food-qty"></canvas>
+      </div>
+    </div>
+    <div class="chart-card" style="margin-bottom:0">
+      <h2>
+        Top 10 Drinks by Quantity
+        <span class="legend-dots">
+          <span><i class="kpi-dot" style="background:var(--dinner)"></i>Units sold</span>
+        </span>
+      </h2>
+      <div style="position:relative; height:280px">
+        <canvas id="chart-fb-drinks-qty"></canvas>
+      </div>
     </div>
   </div>
+  <div style="height:16px"></div>
 
   <!-- Family Mix doughnut + Slow Movers table -->
   <div class="charts-col2">
@@ -1387,13 +1415,16 @@ async function loadFBTab() {
   });
   document.getElementById('fb-slowmovers-tbody').innerHTML =
     '<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:20px">Loading…</td></tr>';
-  ['chart-fb-revenue','chart-fb-qty','chart-fb-family','chart-fb-lunch','chart-fb-dinner'].forEach(destroyChart);
+  ['chart-fb-food-rev','chart-fb-drinks-rev','chart-fb-food-qty','chart-fb-drinks-qty',
+   'chart-fb-family','chart-fb-lunch','chart-fb-dinner'].forEach(destroyChart);
 
   try {
     const data = await apiFetch(`/api/dashboard/products?period_start=${from}&period_end=${to}`);
     renderFBKPIs(data);
-    renderHBar('chart-fb-revenue', data.top_by_revenue,  COLORS.overall, 'net',      item => [` Units: ${item.quantity}`]);
-    renderHBar('chart-fb-qty',     data.top_by_quantity, COLORS.dinner,  'quantity', item => [` Revenue: €${item.net.toFixed(2)}`]);
+    renderHBar('chart-fb-food-rev',    data.food_top_by_revenue,    COLORS.lunch,   'net',      item => [` Units: ${item.quantity}`]);
+    renderHBar('chart-fb-drinks-rev',  data.drinks_top_by_revenue,  COLORS.dinner,  'net',      item => [` Units: ${item.quantity}`]);
+    renderHBar('chart-fb-food-qty',    data.food_top_by_quantity,   COLORS.lunch,   'quantity', item => [` Revenue: €${item.net.toFixed(2)}`]);
+    renderHBar('chart-fb-drinks-qty',  data.drinks_top_by_quantity, COLORS.dinner,  'quantity', item => [` Revenue: €${item.net.toFixed(2)}`]);
     renderFBFamilyMix(data.family_mix);
     renderFBSlowMovers(data.slow_movers);
     renderHBar('chart-fb-lunch',  data.lunch_top,  COLORS.lunch,   'net', null);
