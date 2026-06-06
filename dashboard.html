@@ -1227,7 +1227,7 @@ const FAM_PALETTE = [
 function renderHBar(canvasId, items, color, valueKey, tooltipExtra) {
   destroyChart(canvasId);
   if (!items.length) return;
-  const top = items.slice(0, 10);
+  const top = items;
   const labels = top.map(p => p.product.length > 30 ? p.product.slice(0, 29) + '…' : p.product);
   const values = top.map(p => p[valueKey]);
   const isRevenue = valueKey === 'net';
