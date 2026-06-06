@@ -464,6 +464,18 @@ On failure: HTTP 500 with `{ error, agora_url, payload }` (or `response_preview`
 
 Use to inspect per-waiter pax fields (`Comensales`) and any other SaleCenter data not exposed by the normal pipeline.
 
+### `/admin/raw-sales-analytics?date=YYYY-MM-DD`
+
+Forensic read-only endpoint. Logs into Agora, sends `GetSalesAnalyticsReportRequest` with `AGORA_MACHINE_ID` (same as the normal pipeline), and returns the **complete unprocessed JSON** response — every line item in full, no filtering, no field selection. No DB writes.
+
+Auth: Bearer token. Defaults to today if `date` is omitted.
+
+Response envelope: `{ date, agora_url, http_status, line_item_count, raw_response }`. `line_item_count` is a convenience count of `Message.Report.Sales[]`; `raw_response` is the full parsed Agora payload including the wrapping `Message` and `Report` objects.
+
+On failure: HTTP 500 with `{ error, agora_url, payload }` (or `response_preview` if Agora returned a non-200).
+
+Use to inspect per-line-item fields (`WaiterId`, `WaiterName`, `LineType`, `TableCompanions`, etc.) that the normal pipeline discards. Complements `/admin/raw-salecenter` (which covers SaleCenter / per-waiter pax data).
+
 ### `/admin/health-check?from=YYYY-MM-DD&to=YYYY-MM-DD[&since=YYYY-MM-DD]`
 
 Default window: last 90 days. Optional `?since=YYYY-MM-DD` overrides the lower bound without touching the upper bound — useful for inspecting dates older than 90 days (e.g. `?since=2026-03-01`). Returns 400 if `since` is in the future or malformed. Response always includes `since_date` and `until_date` fields confirming the actual window checked.
