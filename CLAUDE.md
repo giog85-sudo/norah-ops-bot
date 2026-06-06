@@ -452,6 +452,18 @@ Response: `{ date, deleted_count, deleted_total_net }`.
 
 **Reversible:** `/run-pipeline?date=YYYY-MM-DD&save=true` re-imports the original Agora line items (including any corrections present at pipeline-run time).
 
+### `/admin/raw-salecenter?date=YYYY-MM-DD`
+
+Forensic read-only endpoint. Logs into Agora, sends `GetSaleCenterSalesFileReportRequest` with `AGORA_SALECENTER_MACHINE_ID`, and returns the **complete unprocessed JSON** response with no filtering or transformation. No DB writes.
+
+Auth: Bearer token. Defaults to today if `date` is omitted.
+
+Response envelope: `{ date, agora_url, http_status, raw_response }` where `raw_response` is the full parsed Agora payload.
+
+On failure: HTTP 500 with `{ error, agora_url, payload }` (or `response_preview` if Agora returned a non-200).
+
+Use to inspect per-waiter pax fields (`Comensales`) and any other SaleCenter data not exposed by the normal pipeline.
+
 ### `/admin/health-check?from=YYYY-MM-DD&to=YYYY-MM-DD[&since=YYYY-MM-DD]`
 
 Default window: last 90 days. Optional `?since=YYYY-MM-DD` overrides the lower bound without touching the upper bound — useful for inspecting dates older than 90 days (e.g. `?since=2026-03-01`). Returns 400 if `since` is in the future or malformed. Response always includes `since_date` and `until_date` fields confirming the actual window checked.

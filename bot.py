@@ -5415,6 +5415,83 @@ def admin_cleanup_negative_lines():
         return jsonify({"error": f"Operation failed: {e}"}), 500
 
 
+@flask_app.route("/admin/raw-salecenter")
+def admin_raw_salecenter():
+    """
+    Forensic endpoint: returns the complete unprocessed JSON from Agora's
+    GetSaleCenterSalesFileReportRequest for a given date.  No filtering,
+    no transformation, no DB writes.
+
+    GET ?date=YYYY-MM-DD  Auth: Bearer token.
+    """
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    date_str = request.args.get("date", date.today().isoformat())
+    try:
+        target_date = date.fromisoformat(date_str)
+    except ValueError:
+        return jsonify({"error": "Invalid date — use YYYY-MM-DD"}), 400
+
+    CLR = "IGT.POS.Bus.Reporting.Messages.GetSaleCenterSalesFileReportRequest"
+    agora_url = _agora_mod.AGORA_URL
+
+    try:
+        auth_token, session = _agora_mod._login()
+    except Exception as e:
+        return jsonify({"error": f"Agora login failed: {e}"}), 500
+
+    payload = {
+        "CLRType": CLR,
+        "IsBlocking": True,
+        "OutOfBandMessages": [],
+        "Sender": {
+            "ApplicationName": "AgoraWebAdmin",
+            "ApplicationVersion": "8.5.6",
+            "LanguageCode": "es",
+            "MachineId": _agora_mod.AGORA_SALECENTER_MACHINE_ID,
+            "MachineName": "Web Device",
+            "MachineType": 4,
+            "PosId": 0,
+            "PosName": "",
+            "UserId": session["UserId"],
+            "UserName": session["UserName"],
+        },
+        "PosGroupsIds": [1],
+        "From": f"{target_date}T00:00:00.000",
+        "To":   f"{target_date}T23:59:59.000",
+    }
+    body = {"CLRType": CLR, "Message": payload}
+
+    try:
+        status, _, text = _agora_mod._post(
+            "/bus/", body, cookie=f"auth-token={auth_token}"
+        )
+        if status != 200:
+            return jsonify({
+                "error":   f"Agora returned HTTP {status}",
+                "agora_url": agora_url,
+                "payload": body,
+                "response_preview": text[:500],
+            }), 500
+
+        import json as _json
+        raw = _json.loads(text)
+        return jsonify({
+            "date":      date_str,
+            "agora_url": agora_url,
+            "http_status": status,
+            "raw_response": raw,
+        })
+
+    except Exception as e:
+        return jsonify({
+            "error":     str(e),
+            "agora_url": agora_url,
+            "payload":   body,
+        }), 500
+
+
 @flask_app.route("/admin/probe-waiter-report")
 def admin_probe_waiter_report():
     """
