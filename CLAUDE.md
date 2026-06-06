@@ -434,6 +434,20 @@ Cross-checks `full_daily_stats` vs `daily_product_sales` revenue per day. Surfac
 
 Response fields: `since`, `until`, `threshold`, `overview_column_used`, `total_full_daily_stats`, `total_daily_product_sales`, `total_diff`, `mismatched_days[]` (`date`, `full_daily_stats_value`, `daily_product_sales_total`, `diff`).
 
+### `/admin/inspect-day?date=YYYY-MM-DD`
+
+Read-only. Returns all `daily_product_sales` rows for a date, grouped by `(product, family, timeframe)`, sorted by `total_net` ASC (most-negative first). Response includes `row_count`, `negative_count`, `negative_total_net`, and a `rows[]` array with `product`, `family`, `timeframe`, `total_qty`, `total_net`, `lunch_net`, `dinner_net`.
+
+Use before calling `/admin/cleanup-negative-lines` to verify which rows will be removed.
+
+### `/admin/cleanup-negative-lines?date=YYYY-MM-DD&confirm=yes`
+
+**POST only.** Surgical DELETE of all `daily_product_sales` rows where `report_day = date AND net < 0`. Requires `confirm=yes` query param; returns 400 with an explanation if omitted. Wrapped in a DB transaction; rolls back on error. Logs every deleted row to stdout as an audit trail before deleting.
+
+Response: `{ date, deleted_count, deleted_total_net }`.
+
+**Reversible:** `/run-pipeline?date=YYYY-MM-DD&save=true` re-imports the original Agora line items (including any corrections present at pipeline-run time).
+
 ### `/admin/health-check?from=YYYY-MM-DD&to=YYYY-MM-DD[&since=YYYY-MM-DD]`
 
 Default window: last 90 days. Optional `?since=YYYY-MM-DD` overrides the lower bound without touching the upper bound — useful for inspecting dates older than 90 days (e.g. `?since=2026-03-01`). Returns 400 if `since` is in the future or malformed. Response always includes `since_date` and `until_date` fields confirming the actual window checked.
@@ -658,6 +672,22 @@ Multiple tags per note are supported. Tag analytics: `/tagstats`, `/soldout`, `/
 
 ---
 
+## Manual Data Corrections
+
+One-off surgical corrections to the DB that cannot be handled by the normal pipeline.
+
+### 2026-03-10 — Remove Sojo Madrid reversal line items from daily_product_sales
+
+**Background:** On 2026-03-07 a Sojo Madrid private event was billed for 54–55 menus. On 2026-03-10, 29 of those menus were reversed in Agora because only 25 should have been billed (the remaining guests were invitados). The reversal posted as ~29 negative line items against the 2026-03-10 date in Agora, totalling approximately −€1,898. This was imported into `daily_product_sales` by the pipeline and created a ~€1,484 gap in the "Other adjustments" bucket of the F&B tab's Non-Product Revenue card.
+
+**Action:** DELETE rows WHERE `report_day = '2026-03-10' AND net < 0` from `daily_product_sales`. Mar 7's data is untouched (the original billing stays as historical record).
+
+**Status:** Pending — inspect via `/admin/inspect-day?date=2026-03-10`, then execute via `POST /admin/cleanup-negative-lines?date=2026-03-10&confirm=yes`.
+
+**Reversible:** `/run-pipeline?date=2026-03-10&save=true` re-imports the original Agora line items (including the negative corrections). Do not run the pipeline for this date after the cleanup unless explicitly needed.
+
+---
+
 ## Changelog
 
 ### 2026-06-04 — Dashboard analytics endpoints + per-server tips
@@ -680,6 +710,12 @@ Multiple tags per note are supported. Tag analytics: `/tagstats`, `/soldout`, `/
 - `_validate_period()` helper: shared param validation for all five endpoints.
 
 **No backfill required** — existing `daily_server_sales` rows remain at `tips=0` until re-pipelined. Products, events, transferencia, and walkins endpoints draw from tables already populated.
+
+### 2026-06-06 — Add inspect-day and cleanup-negative-lines admin endpoints
+
+`GET /admin/inspect-day?date=YYYY-MM-DD` — read-only, returns all `daily_product_sales` rows for a date sorted by net ASC (most-negative first).
+`POST /admin/cleanup-negative-lines?date=YYYY-MM-DD&confirm=yes` — transaction-wrapped DELETE of negative-net rows; logs audit trail to stdout; reversible via pipeline re-run.
+Both are additive — no changes to existing endpoints or tables.
 
 ### 2026-06-06 — F&B tab: Non-Product Revenue KPI card
 

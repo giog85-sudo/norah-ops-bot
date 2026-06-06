@@ -5263,6 +5263,158 @@ def admin_sync_check():
     })
 
 
+@flask_app.route("/admin/inspect-day")
+def admin_inspect_day():
+    """
+    Return all daily_product_sales rows for a date, sorted by total_net ASC
+    (most-negative first). Read-only — no DB writes.
+
+    GET ?date=YYYY-MM-DD  Auth: Bearer token.
+    """
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    date_str = request.args.get("date")
+    if not date_str:
+        return jsonify({"error": "date param required (YYYY-MM-DD)"}), 400
+    try:
+        day_ = date.fromisoformat(date_str)
+    except ValueError:
+        return jsonify({"error": "Invalid date format, use YYYY-MM-DD"}), 400
+
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        product,
+                        family,
+                        timeframe,
+                        SUM(quantity) AS total_qty,
+                        SUM(net)      AS total_net,
+                        SUM(CASE WHEN LOWER(timeframe) IN ('mediodía','mediodia','comida','lunch','almuerzo')
+                                 THEN net ELSE 0 END) AS lunch_net,
+                        SUM(CASE WHEN LOWER(timeframe) IN ('noche','cena','dinner')
+                                 THEN net ELSE 0 END) AS dinner_net
+                    FROM daily_product_sales
+                    WHERE report_day = %s
+                    GROUP BY product, family, timeframe
+                    ORDER BY SUM(net) ASC
+                    """,
+                    (day_,),
+                )
+                rows = cur.fetchall()
+    except Exception as e:
+        return jsonify({"error": f"Query failed: {e}"}), 500
+
+    items = [
+        {
+            "product":   r[0],
+            "family":    r[1],
+            "timeframe": r[2],
+            "total_qty": round(float(r[3] or 0), 2),
+            "total_net": round(float(r[4] or 0), 2),
+            "lunch_net": round(float(r[5] or 0), 2),
+            "dinner_net": round(float(r[6] or 0), 2),
+        }
+        for r in rows
+    ]
+    negative = [x for x in items if x["total_net"] < 0]
+    return jsonify({
+        "date":           day_.isoformat(),
+        "row_count":      len(items),
+        "negative_count": len(negative),
+        "negative_total_net": round(sum(x["total_net"] for x in negative), 2),
+        "rows":           items,
+    })
+
+
+@flask_app.route("/admin/cleanup-negative-lines", methods=["POST"])
+def admin_cleanup_negative_lines():
+    """
+    Surgically delete negative-net line items from daily_product_sales for a
+    given date. Requires explicit confirm=yes to prevent accidental use.
+
+    POST ?date=YYYY-MM-DD&confirm=yes  Auth: Bearer token.
+
+    The operation is reversible by running:
+      /run-pipeline?date=YYYY-MM-DD&save=true
+    which re-imports the original line items from Agora (including any
+    corrections that were there at the time of the pipeline run).
+    """
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    date_str = request.args.get("date")
+    if not date_str:
+        return jsonify({"error": "date param required (YYYY-MM-DD)"}), 400
+    try:
+        day_ = date.fromisoformat(date_str)
+    except ValueError:
+        return jsonify({"error": "Invalid date format, use YYYY-MM-DD"}), 400
+
+    confirm = request.args.get("confirm", "")
+    if confirm != "yes":
+        return jsonify({
+            "error": "Safety check failed — add confirm=yes to proceed",
+            "detail": (
+                f"This will DELETE all daily_product_sales rows where "
+                f"report_day = '{day_}' AND net < 0. "
+                f"Re-run /run-pipeline?date={day_}&save=true to restore."
+            ),
+        }), 400
+
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                # Fetch rows to be deleted for the audit log and response
+                cur.execute(
+                    """
+                    SELECT product, family, timeframe, quantity, net
+                    FROM daily_product_sales
+                    WHERE report_day = %s AND net < 0
+                    ORDER BY net ASC
+                    """,
+                    (day_,),
+                )
+                to_delete = cur.fetchall()
+
+                if not to_delete:
+                    return jsonify({
+                        "date": day_.isoformat(),
+                        "deleted_count": 0,
+                        "deleted_total_net": 0.0,
+                        "message": "No negative-net rows found — nothing deleted.",
+                    })
+
+                deleted_total_net = sum(float(r[4] or 0) for r in to_delete)
+
+                # Log audit trail before deleting
+                print(f"[cleanup-negative-lines] Deleting {len(to_delete)} rows for {day_}:")
+                for r in to_delete:
+                    print(f"  product={r[0]!r} family={r[1]!r} timeframe={r[2]!r} "
+                          f"qty={r[3]} net={r[4]}")
+
+                cur.execute(
+                    "DELETE FROM daily_product_sales WHERE report_day = %s AND net < 0",
+                    (day_,),
+                )
+                conn.commit()
+
+        print(f"[cleanup-negative-lines] Deleted {len(to_delete)} rows, "
+              f"total_net={deleted_total_net:.2f} for {day_}")
+
+        return jsonify({
+            "date":              day_.isoformat(),
+            "deleted_count":     len(to_delete),
+            "deleted_total_net": round(deleted_total_net, 2),
+        })
+
+    except Exception as e:
+        return jsonify({"error": f"Operation failed: {e}"}), 500
+
+
 @flask_app.route("/admin/probe-waiter-report")
 def admin_probe_waiter_report():
     """
