@@ -384,6 +384,7 @@ Period selector (`#period-controls`) is visible on Overview and F&B tabs; hidden
 | KPI — Total F&B Revenue | `#fb-kpi-revenue` | Sum of `family_mix[].net` |
 | KPI — Food vs Drinks | `#fb-kpi-food-amt/pct`, `#fb-kpi-drinks-amt/pct` | `food_revenue` / `drinks_revenue`; pct computed client-side |
 | KPI — Menu Coverage | `#fb-kpi-coverage`, `#fb-kpi-coverage-sub` | `distinct_products_in_period / active_menu_size * 100`; shows "N/A" if `active_menu_size` is null |
+| KPI — Non-Product Revenue | `#fb-kpi-nonprod`, `#fb-kpi-nonprod-sub1/2` | `non_product_revenue_total`; sub-lines show venue fees (N events) and other adjustments separately |
 | Top 10 by Revenue | `#chart-fb-revenue` (horizontal bar, 280px) | `top_by_revenue[:10]`, value key `net` |
 | Top 10 by Quantity | `#chart-fb-qty` (horizontal bar, 280px) | `top_by_quantity[:10]`, value key `quantity` |
 | Family Mix | `#chart-fb-family` (doughnut, 260px) | `family_mix`, `FAM_PALETTE` colors |
@@ -468,6 +469,14 @@ Queries `daily_product_sales`. Returns:
 - `drinks_revenue` — sum of net revenue where `family != 'CARTA'` (all other families including unbucketed)
 - `distinct_products_in_period` — count of unique product names with any sales in `period_start..period_end`
 - `active_menu_size` — count of unique product names with any sales in the trailing 90 days ending at `period_end` (i.e., `period_end − 89d` to `period_end`). `null` if zero products found (no data yet), so the dashboard can show "N/A" without dividing by zero.
+- `venue_fees_total` — `SUM(venue_fee)` from `full_daily_stats` for the period (NULL treated as 0). `null` if the secondary query fails.
+- `venue_fee_event_count` — count of distinct days where `venue_fee > 0` in the period. `null` on query failure.
+- `other_adjustments_total` — sum of positive per-day diffs (`fds_value − dps_total >= 1.0 EUR`) across the period, minus `venue_fees_total`, floored at 0. Represents revenue booked at POS-ticket level that doesn't appear as product line items (excluding identifiable venue fees). `null` on query failure.
+- `non_product_revenue_total` — `venue_fees_total + other_adjustments_total`. The "useful" portion of the Overview/F&B gap. `null` on query failure.
+
+**Dependency note:** `venue_fees_total` is only accurate when events are rung up correctly — i.e., both a `LineType=="Menú"` product line AND the venue fee difference appears in the Z-report closeout. If an event day has `venue_fee = 0` but real venue revenue, it will surface as `other_adjustments_total` instead.
+
+**Secondary query isolation:** The four non-product-revenue fields are computed via a separate `get_conn()` call wrapped in `try/except`. On failure, all four fields return `null` and a warning is logged. The rest of the endpoint response (charts, family mix, etc.) is unaffected.
 
 #### `GET /api/dashboard/servers`
 
@@ -671,6 +680,10 @@ Multiple tags per note are supported. Tag analytics: `/tagstats`, `/soldout`, `/
 - `_validate_period()` helper: shared param validation for all five endpoints.
 
 **No backfill required** — existing `daily_server_sales` rows remain at `tips=0` until re-pipelined. Products, events, transferencia, and walkins endpoints draw from tables already populated.
+
+### 2026-06-06 — F&B tab: Non-Product Revenue KPI card
+
+Extended `/api/dashboard/products` with four new fields (`venue_fees_total`, `venue_fee_event_count`, `other_adjustments_total`, `non_product_revenue_total`) computed via a secondary LEFT JOIN query between `full_daily_stats` and `daily_product_sales`. Positive diffs >= €1.0 are summed; venue fees are separated out; residual is `other_adjustments_total`. Added a 5th KPI card to the F&B tab. Secondary query is isolated in its own `try/except` so a failure returns null for those four fields only, leaving the rest of the endpoint intact.
 
 ### 2026-06-05 — Add /admin/sync-check diagnostic endpoint
 

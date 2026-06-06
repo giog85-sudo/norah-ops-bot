@@ -562,6 +562,12 @@
       <div class="kpi-value" id="fb-kpi-coverage">—</div>
       <div class="kpi-sub"   id="fb-kpi-coverage-sub"></div>
     </div>
+    <div class="kpi">
+      <div class="kpi-label">Non-Product Revenue</div>
+      <div class="kpi-value" id="fb-kpi-nonprod">—</div>
+      <div class="kpi-sub"   id="fb-kpi-nonprod-sub1"></div>
+      <div class="kpi-sub"   id="fb-kpi-nonprod-sub2"></div>
+    </div>
   </div>
 
   <!-- Top 10 by Revenue — full-width horizontal bar -->
@@ -1278,6 +1284,26 @@ function renderFBKPIs(data) {
     document.getElementById('fb-kpi-coverage').textContent     = pct + '%';
     document.getElementById('fb-kpi-coverage-sub').textContent = `${periodItems} of ${menuSize} items sold`;
   }
+
+  // Non-Product Revenue
+  const nonProd  = data.non_product_revenue_total;
+  const vfTotal  = data.venue_fees_total  || 0;
+  const vfCount  = data.venue_fee_event_count || 0;
+  const otherAdj = data.other_adjustments_total || 0;
+  if (!nonProd) {
+    document.getElementById('fb-kpi-nonprod').textContent      = '€0';
+    document.getElementById('fb-kpi-nonprod-sub1').textContent = 'No venue fees or adjustments this period';
+    document.getElementById('fb-kpi-nonprod-sub2').textContent = '';
+  } else {
+    document.getElementById('fb-kpi-nonprod').textContent =
+      '€' + nonProd.toLocaleString('de-DE', {minimumFractionDigits:2, maximumFractionDigits:2});
+    document.getElementById('fb-kpi-nonprod-sub1').textContent = vfCount > 0
+      ? `Venue fees: €${Math.round(vfTotal).toLocaleString()} (${vfCount} event${vfCount !== 1 ? 's' : ''})`
+      : '';
+    document.getElementById('fb-kpi-nonprod-sub2').textContent = otherAdj >= 1.0
+      ? `Other adjustments: €${Math.round(otherAdj).toLocaleString()}`
+      : '';
+  }
 }
 
 // ── F&B Family Mix doughnut ───────────────────────────────────────────────────
@@ -1351,11 +1377,12 @@ async function loadFBTab() {
   if (!from || !to) return;
 
   // Reset KPIs to loading state
-  ['fb-kpi-sold','fb-kpi-revenue','fb-kpi-coverage'].forEach(id => {
+  ['fb-kpi-sold','fb-kpi-revenue','fb-kpi-coverage','fb-kpi-nonprod'].forEach(id => {
     document.getElementById(id).textContent = '…';
   });
   ['fb-kpi-sold-sub','fb-kpi-revenue-sub','fb-kpi-coverage-sub',
-   'fb-kpi-food-amt','fb-kpi-food-pct','fb-kpi-drinks-amt','fb-kpi-drinks-pct'].forEach(id => {
+   'fb-kpi-food-amt','fb-kpi-food-pct','fb-kpi-drinks-amt','fb-kpi-drinks-pct',
+   'fb-kpi-nonprod-sub1','fb-kpi-nonprod-sub2'].forEach(id => {
     document.getElementById(id).textContent = '';
   });
   document.getElementById('fb-slowmovers-tbody').innerHTML =

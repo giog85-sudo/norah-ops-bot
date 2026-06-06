@@ -5794,6 +5794,49 @@ def api_dashboard_products():
             _ams = int(cur.fetchone()[0] or 0)
             active_menu_size = _ams if _ams > 0 else None
 
+    # Non-product revenue: venue fees + other positive gap between full_daily_stats and product sales
+    venue_fees_total          = None
+    venue_fee_event_count     = None
+    other_adjustments_total   = None
+    non_product_revenue_total = None
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        COALESCE(NULLIF(f.z_total_sales, 0), f.total_sales) AS fds_value,
+                        COALESCE(SUM(p.net), 0)  AS dps_total,
+                        COALESCE(f.venue_fee, 0) AS venue_fee
+                    FROM full_daily_stats f
+                    LEFT JOIN daily_product_sales p ON p.report_day = f.day
+                    WHERE f.day BETWEEN %s AND %s
+                      AND COALESCE(NULLIF(f.z_total_sales, 0), f.total_sales) > 0
+                    GROUP BY f.day, f.z_total_sales, f.total_sales, f.venue_fee
+                    """,
+                    (from_date, to_date),
+                )
+                gap_rows = cur.fetchall()
+        _vf_total  = 0.0
+        _vf_count  = 0
+        _pos_diffs = 0.0
+        for (fds_val, dps_val, vf) in gap_rows:
+            fds_f = float(fds_val or 0)
+            dps_f = float(dps_val or 0)
+            vf_f  = float(vf or 0)
+            _vf_total += vf_f
+            if vf_f > 0:
+                _vf_count += 1
+            diff = fds_f - dps_f
+            if diff >= 1.0:
+                _pos_diffs += diff
+        venue_fees_total          = round(_vf_total, 2)
+        venue_fee_event_count     = _vf_count
+        other_adjustments_total   = round(max(_pos_diffs - _vf_total, 0.0), 2)
+        non_product_revenue_total = round(venue_fees_total + other_adjustments_total, 2)
+    except Exception as e:
+        print(f"[api_dashboard_products] non-product revenue query failed: {e}")
+
     if not rows:
         empty = {
             "period_start": from_date.isoformat(), "period_end": to_date.isoformat(),
@@ -5801,6 +5844,9 @@ def api_dashboard_products():
             "slow_movers": [], "lunch_top": [], "dinner_top": [],
             "food_revenue": 0.0, "drinks_revenue": 0.0,
             "distinct_products_in_period": 0, "active_menu_size": active_menu_size,
+            "venue_fees_total": venue_fees_total, "venue_fee_event_count": venue_fee_event_count,
+            "other_adjustments_total": other_adjustments_total,
+            "non_product_revenue_total": non_product_revenue_total,
         }
         return jsonify(empty)
 
@@ -5906,6 +5952,10 @@ def api_dashboard_products():
         "drinks_revenue":             drinks_revenue,
         "distinct_products_in_period": distinct_products_in_period,
         "active_menu_size":           active_menu_size,
+        "venue_fees_total":           venue_fees_total,
+        "venue_fee_event_count":      venue_fee_event_count,
+        "other_adjustments_total":    other_adjustments_total,
+        "non_product_revenue_total":  non_product_revenue_total,
     })
 
 
