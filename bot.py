@@ -6033,15 +6033,15 @@ def api_dashboard_products():
         ]
 
     products = [{"product": k, **v} for k, v in prod_agg.items()]
-    top_by_revenue  = _with_pct(products, "net",      15)
-    top_by_quantity = _with_pct(products, "quantity", 15)
+    top_by_revenue  = _with_pct(products, "net",      20)
+    top_by_quantity = _with_pct(products, "quantity", 20)
 
     food_products   = [p for p in products if p["family"].upper() == "CARTA"]
     drinks_products = [p for p in products if p["family"].upper() != "CARTA"]
-    food_top_by_revenue    = _with_pct(food_products,   "net",      10)
-    drinks_top_by_revenue  = _with_pct(drinks_products, "net",      10)
-    food_top_by_quantity   = _with_pct(food_products,   "quantity", 10)
-    drinks_top_by_quantity = _with_pct(drinks_products, "quantity", 10)
+    food_top_by_revenue    = _with_pct(food_products,   "net",      20)
+    drinks_top_by_revenue  = _with_pct(drinks_products, "net",      20)
+    food_top_by_quantity   = _with_pct(food_products,   "quantity", 20)
+    drinks_top_by_quantity = _with_pct(drinks_products, "quantity", 20)
 
     # Family mix
     fam_agg: dict = {}
@@ -6093,12 +6093,12 @@ def api_dashboard_products():
         [{"product": p, "net": round(v["net"], 2), "quantity": round(v["quantity"], 2)}
          for p, v in lunch_agg.items()],
         key=lambda x: x["net"], reverse=True,
-    )[:10]
+    )[:20]
     dinner_top = sorted(
         [{"product": p, "net": round(v["net"], 2), "quantity": round(v["quantity"], 2)}
          for p, v in dinner_agg.items()],
         key=lambda x: x["net"], reverse=True,
-    )[:10]
+    )[:20]
 
     return jsonify({
         "period_start":               from_date.isoformat(),
