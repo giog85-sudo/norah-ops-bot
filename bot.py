@@ -1378,7 +1378,11 @@ AGENT_TOOLS = [
     },
     {
         "name": "get_period_summary",
-        "description": "Get aggregated sales and operational summary for a date range.",
+        "description": (
+            "Get aggregated sales and operational summary for a date range. "
+            "This tool returns aggregated totals only — no daily/weekly breakdown. "
+            "Do not invent finer-grained values."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1390,22 +1394,40 @@ AGENT_TOOLS = [
     },
     {
         "name": "get_week_comparison",
-        "description": "Compare this week's performance vs the same period last week.",
+        "description": (
+            "Compare this week's performance vs the same period last week. "
+            "This tool returns aggregated totals only — no daily/weekly breakdown. "
+            "Do not invent finer-grained values."
+        ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "get_month_comparison",
-        "description": "Compare this month's performance vs the same period last month.",
+        "description": (
+            "Compare this month's performance vs the same period last month. "
+            "This tool returns aggregated totals only — no daily/weekly breakdown. "
+            "Do not invent finer-grained values."
+        ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "get_weekend_comparison",
-        "description": "Compare last weekend (Fri+Sat) vs the previous weekend.",
+        "description": (
+            "Compare last weekend (Fri+Sat) vs the previous weekend. "
+            "This tool returns aggregated totals only — no daily/weekly breakdown. "
+            "Do not invent finer-grained values."
+        ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "get_weekday_history",
-        "description": "Get historical data for a specific day of the week (e.g., all recent Tuesdays). Use this to answer questions like 'how do our Fridays compare' or 'what's our typical Tuesday like'.",
+        "description": (
+            "Get historical data for a specific day of the week (e.g., all recent Tuesdays). "
+            "Use this to answer questions like 'how do our Fridays compare' or 'what's our typical Tuesday like'. "
+            "The returned array contains ONLY dates that have non-zero data. Dates not present "
+            "in the response had no sales (or no service that day). Do not mention absent dates "
+            "as if they had data."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1423,7 +1445,12 @@ AGENT_TOOLS = [
     },
     {
         "name": "get_notes",
-        "description": "Get manager operational notes for a date range. Notes may contain incidents, complaints, sold-out items, staff issues, and other operational observations.",
+        "description": (
+            "Get manager operational notes for a date range. Notes may contain incidents, complaints, "
+            "sold-out items, staff issues, and other operational observations. "
+            "The returned array contains ONLY dates that have recorded notes. Dates not present "
+            "in the response had no notes that day. Do not mention absent dates as if they had data."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1440,7 +1467,10 @@ AGENT_TOOLS = [
             "Use this for any question about upcoming or recent reservations, covers, "
             "no-shows, large groups, or booking counts by service (lunch/dinner). "
             "Returns per-day breakdown: total covers, lunch/dinner covers, confirmed, "
-            "no-shows, cancelled, and any large groups (6+ pax) with their time and shift."
+            "no-shows, cancelled, and any large groups (6+ pax) with their time and shift. "
+            "The returned array contains ONLY dates that have reservation data. Dates not present "
+            "in the response had no reservations (or no service that day). Do not mention absent "
+            "dates as if they had data."
         ),
         "input_schema": {
             "type": "object",
@@ -1457,7 +1487,10 @@ AGENT_TOOLS = [
             "Analyse where bookings come from (Google, own website, Instagram, walk-in, etc.) "
             "for a date range. Use this for questions about booking source trends, channel "
             "performance, whether Google or the website is performing better, Instagram growth, etc. "
-            "Default period is last 30 days. Can group results by week or month for trend analysis."
+            "Default period is last 30 days. Can group results by week or month for trend analysis. "
+            "When grouped by week or month, the returned buckets contain ONLY periods that have "
+            "reservation data. Absent periods had no bookings. Do not mention absent periods as if "
+            "they had data."
         ),
         "input_schema": {
             "type": "object",
@@ -1484,7 +1517,9 @@ AGENT_TOOLS = [
             "'dinner_only' (guests who never visit for lunch), "
             "'lunch_only' (guests who never visit for dinner), "
             "'lapsed' (regulars who haven't visited recently), "
-            "'large_groups' (guests who consistently book 6+ pax)."
+            "'large_groups' (guests who consistently book 6+ pax). "
+            "This tool returns aggregated totals only — no daily/weekly breakdown. "
+            "Do not invent finer-grained values."
         ),
         "input_schema": {
             "type": "object",
@@ -1504,7 +1539,9 @@ AGENT_TOOLS = [
         "name": "get_top_products",
         "description": (
             "Get the top-selling products for a date range, ranked by revenue or quantity. "
-            "Use this for questions about best-selling dishes, popular items, or menu performance."
+            "Use this for questions about best-selling dishes, popular items, or menu performance. "
+            "This tool returns aggregated totals only — no daily/weekly breakdown. "
+            "Do not invent finer-grained values."
         ),
         "input_schema": {
             "type": "object",
@@ -1528,7 +1565,9 @@ AGENT_TOOLS = [
         "description": (
             "Get sales broken down by product family/category for a date range. "
             "Use this for questions about food vs drinks mix, which categories drive most revenue, "
-            "or how category performance has changed over time."
+            "or how category performance has changed over time. "
+            "This tool returns aggregated totals only — no daily/weekly breakdown. "
+            "Do not invent finer-grained values."
         ),
         "input_schema": {
             "type": "object",
@@ -1544,7 +1583,9 @@ AGENT_TOOLS = [
         "description": (
             "Get server/waiter performance ranked by total revenue or average ticket for a date range. "
             "Use this for questions about top-performing servers, staff productivity, "
-            "or comparing lunch vs dinner server revenue."
+            "or comparing lunch vs dinner server revenue. "
+            "This tool returns aggregated totals only — no daily/weekly breakdown. "
+            "Do not invent finer-grained values."
         ),
         "input_schema": {
             "type": "object",
@@ -1563,7 +1604,10 @@ AGENT_TOOLS = [
         "name": "get_product_trend",
         "description": (
             "Get the daily revenue and quantity sold for a specific product over a date range. "
-            "Use this to track how a specific dish or drink is trending over time."
+            "Use this to track how a specific dish or drink is trending over time. "
+            "The returned array contains ONLY dates that have non-zero data. Dates not present "
+            "in the response had no sales (or no service that day). Do not mention absent dates "
+            "as if they had data."
         ),
         "input_schema": {
             "type": "object",
@@ -2322,7 +2366,25 @@ def _build_agent_system_prompt() -> str:
         "Be concise and analytical. Format currency as €X.XX. Always mention which date(s) the data refers to.\n"
         "If data is missing for a requested period, say so clearly.\n\n"
         "IMPORTANT: Detect the language of the user's message and always respond in that same language "
-        "(English, Spanish, or Russian). If unclear, default to English."
+        "(English, Spanish, or Russian). If unclear, default to English.\n\n"
+        "---\n"
+        "CRITICAL DATA RULES (no exceptions):\n\n"
+        "1. NEVER invent, interpolate, or fabricate numbers, dates, or product details. Every specific "
+        "figure (quantity, amount, percentage, date) in your response MUST come directly from a tool result.\n\n"
+        "2. If a tool returns no rows for a date, that date had no sales (or no service that day, e.g. "
+        "Sunday — Norah is closed on Sundays). DO NOT mention such dates as if they had sales. If the user "
+        "explicitly asks about a date with no data, say 'no data for that date' or 'no service that day' explicitly.\n\n"
+        "3. If a tool returns aggregated data (e.g. weekly totals) and the user asks for finer granularity "
+        "(e.g. daily breakdown) that the tool didn't provide, do NOT invent the breakdown. Tell the user "
+        "the granularity isn't available and offer what is.\n\n"
+        "4. When summarizing time-series data, only mention dates that appear in the tool's returned array. "
+        "The absence of a date in a tool result means no sales that day, NOT missing/unknown data.\n\n"
+        "5. If you cannot answer the user's question based on tool outputs, say so explicitly. "
+        "Do not produce a confident-looking response with placeholder or guessed values.\n\n"
+        f"Today is {cal_today.isoformat()}. Norah is closed on Sundays — no sales data exists for Sundays. "
+        "If a date is in the future (after today), explicitly note that the data is incomplete because "
+        "the day hasn't happened yet.\n"
+        "---"
     )
 
 

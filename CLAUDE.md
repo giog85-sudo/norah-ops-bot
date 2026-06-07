@@ -751,7 +751,7 @@ Multiple tags per note are supported. Tag analytics: `/tagstats`, `/soldout`, `/
 
 - **Bot commands are English-only.** The AI agent responds in the user's language (English, Spanish, Russian), but slash commands and structured parsing are English.
 - **Dynamic alert threshold tuning.** All thresholds are env vars; no `/setalert` command exists yet.
-- **Agent tool extensibility.** `AGENT_TOOLS` list currently has 13 tools (9 original + 4 F&B/staff tools added 2026-06-02). Adding more tools requires a new tool dict in `AGENT_TOOLS`, a `_exec_*` function, and a new `elif` branch in `execute_agent_tool()`.
+- **Agent tool extensibility.** `AGENT_TOOLS` list currently has 16 tools (9 original + 4 F&B/staff tools added 2026-06-02 + 3 CoverManager tools). Adding more tools requires a new tool dict in `AGENT_TOOLS`, a `_exec_*` function, and a new `elif` branch in `execute_agent_tool()`.
 - **Legacy role config.** `OWNERS_CHAT_IDS` in `settings` table still supported alongside `chat_roles` table; both code paths are live.
 - **No opening/shift-start alerts.** All scheduled alerts are end-of-day. Real-time shift alerts would require a second scheduled job or webhook triggers.
 - **Float rounding on avg ticket.** Headline avg ticket may show 1¢ low (e.g., 45.915 → 45.91 instead of 45.92) due to Python float arithmetic. Accepted.
@@ -797,6 +797,42 @@ One-off surgical corrections to the DB that cannot be handled by the normal pipe
 - `_validate_period()` helper: shared param validation for all five endpoints.
 
 **No backfill required** — existing `daily_server_sales` rows remain at `tips=0` until re-pipelined. Products, events, transferencia, and walkins endpoints draw from tables already populated.
+
+### 2026-06-07 — Fix agent hallucination (anti-fabrication rules)
+
+**Incident:** User (owner's partner) asked in Russian about Patatas Babys Asadas sales over the last 3 weeks. The agent responded with "Sunday June 7: 6 portions" — but `daily_product_sales` has zero rows for 2026-06-07 (a Sunday; Norah is closed). The agent also listed per-day breakdowns with specific numbers ("May 23: 12 portions") that may have been fabricated. Root cause: nothing in the system prompt or tool descriptions instructed the model that absent dates in tool results mean zero sales, not gaps to fill by inference.
+
+**System prompt (`_build_agent_system_prompt`):** Added a `CRITICAL DATA RULES` section appended after the existing language-detection instruction. Five numbered rules:
+1. Never invent/interpolate/fabricate any figure — every number must come directly from a tool result.
+2. Absent dates in tool results = no sales or no service (e.g. Sunday). Do not mention them as if they had data.
+3. If finer granularity than a tool provides is requested, do not invent it — say so.
+4. When summarising time-series, only mention dates present in the returned array.
+5. If a question can't be answered from tool outputs, say so explicitly.
+
+The section also embeds the current date (`cal_today.isoformat()`) and explicitly states Norah is closed on Sundays.
+
+**Tool description changes:**
+
+*Time-series tools* — appended: `"The returned array contains ONLY dates that have non-zero data. Dates not present in the response had no sales (or no service that day). Do not mention absent dates as if they had data."`
+- `get_product_trend` ✓
+- `get_weekday_history` ✓
+- `get_reservations` ✓
+- `get_booking_sources` ✓ (adapted for bucketed periods)
+- `get_notes` ✓ (adapted: "had no notes")
+
+*Aggregation-only tools* — appended: `"This tool returns aggregated totals only — no daily/weekly breakdown. Do not invent finer-grained values."`
+- `get_period_summary` ✓
+- `get_week_comparison` ✓
+- `get_month_comparison` ✓
+- `get_weekend_comparison` ✓
+- `get_top_products` ✓
+- `get_category_breakdown` ✓
+- `get_server_leaderboard` ✓
+- `get_guest_intelligence` ✓
+
+*Single-day tools* (`get_today`, `get_yesterday`, `get_specific_day`) — unchanged; not ambiguous.
+
+No tool return schemas were changed. No handler code was modified.
 
 ### 2026-06-07 — Staff tab + food/drinks per waiter
 
