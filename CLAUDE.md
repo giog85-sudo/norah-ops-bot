@@ -368,13 +368,13 @@ Single-file SPA (`dashboard.html`). Three tabs managed by `switchTab(name)`:
 |---|---|---|
 | `tab-overview` | Overview (default) | KPI cards, all charts, Monthly Summary, Booking Sources |
 | `tab-fb` | F&B | 6 sections driven by `GET /api/dashboard/products` |
-| `tab-staff` | Staff | Server leaderboard analytics (Phase 3d — not yet built) |
+| `tab-staff` | Staff | 4 KPI cards, server leaderboard table, 2 charts fed by `GET /api/dashboard/servers` |
 
 Tab state persists in `localStorage` under key `norah_active_tab`. On page load, the last-selected tab is restored (default: `overview`).
 
-Period selector (`#period-controls`) is visible on Overview and F&B tabs; hidden on Staff. The Apply button calls `loadCurrentTab()`, which dispatches to `loadAll()` (Overview) or `loadFBTab()` (F&B).
+Period selector (`#period-controls`) is visible on all three tabs. The Apply button calls `loadCurrentTab()`, which dispatches to `loadAll()` (Overview), `loadFBTab()` (F&B), or `loadStaffTab()` (Staff).
 
-**`_fbLoaded` flag**: set `true` on first successful `loadFBTab()`. `switchTab('fb')` skips the fetch on re-visit; direct calls from period controls always re-fetch.
+**`_fbLoaded` / `_staffLoaded` flags**: set `true` on first successful tab load. `switchTab` skips the fetch on re-visit; direct calls from period controls reset the flag and always re-fetch.
 
 ### F&B tab sections (all fed by `/api/dashboard/products`)
 
@@ -400,6 +400,26 @@ Period selector (`#period-controls`) is visible on Overview and F&B tabs; hidden
 **Menu Coverage card:** `active_menu_size` is the baseline — unique products sold in the trailing 90 days ending at `period_end`. Shows percentage of that baseline sold during the selected period. Useful for spotting menu items that haven't moved recently.
 
 `renderHBar(canvasId, items, color, valueKey, tooltipExtra)`: shared renderer for all horizontal bar charts. Truncates product names > 30 chars. Tooltip shows revenue or units + family + pct_of_total + any `tooltipExtra` lines.
+
+### Staff tab sections (fed by `/api/dashboard/servers`)
+
+| Section | Element(s) | Data source |
+|---|---|---|
+| KPI — Top Performer | `#staff-kpi-top-name`, `#staff-kpi-top-sub` | `top_performer.user_name` + `total_revenue` |
+| KPI — Total Tips | `#staff-kpi-tips`, `#staff-kpi-tips-sub` | Sum of `leaderboard[].tips`; sub = tips % of total revenue |
+| KPI — Avg per Check | `#staff-kpi-avg` | `total_revenue_all / total_checks_all` (restaurant-wide) |
+| KPI — Active Waiters | `#staff-kpi-count` | Count of leaderboard entries with `total_revenue > 0` |
+| Server Leaderboard | `#staff-leaderboard-tbody` | All leaderboard entries — columns: Rank, Waiter, Revenue, Checks, Avg/Check, Tips, Tips %, Drinks % |
+| Revenue per Waiter | `#chart-staff-revenue` (horizontal bar, 280px, `--overall`) | Leaderboard sorted by revenue DESC |
+| Tips per Waiter | `#chart-staff-tips` (horizontal bar, 280px, `--green`) | Leaderboard sorted by tips DESC, zero-tip entries excluded |
+
+**"Avg per Check (not per person)" labelling convention:** The Avg/Check KPI card subtitle is permanently set to `"per check (not per person)"` in `--muted` color at `0.7rem`. This is a critical honesty signal: checks cover entire tables, so the figure is not a per-head spend. Without this label, owners might confuse it with per-pax avg ticket (which is a different metric reported in the Telegram daily post).
+
+**Drinks % coloring in leaderboard:** `< 15%` → `--muted` (low upsell); `15–30%` → default text color; `> 30%` → `--dinner` (strong drinks upsell). These thresholds are hardcoded client-side in `loadStaffTab()`.
+
+**Deferred — Sala vs Barra breakdown:** Per-section (floor vs bar) server split is pending Agora endpoint clarification. Not implemented. Deferred to a future phase.
+
+**Deferred — per-pax avg ticket per server:** Would require waiter-level cover counts from Agora (currently no confirmed endpoint). Deferred.
 
 ## Dashboard HTTP API
 
@@ -530,7 +550,7 @@ Queries `daily_product_sales`. Returns:
 #### `GET /api/dashboard/servers`
 
 Queries `daily_server_sales`. `EXTRAS` user excluded from all sections. Returns:
-- `leaderboard` — sorted by `total_revenue` desc. Each entry: `user_name`, `total_revenue`, `lunch_revenue`, `lunch_tickets`, `dinner_revenue`, `dinner_tickets`, `total_tickets`, `avg_per_check`, `lunch_avg_per_check`, `dinner_avg_per_check`, `tips`, `tips_pct_of_revenue`
+- `leaderboard` — sorted by `total_revenue` desc. Each entry: `user_name`, `total_revenue`, `lunch_revenue`, `lunch_tickets`, `dinner_revenue`, `dinner_tickets`, `total_tickets`, `avg_per_check`, `lunch_avg_per_check`, `dinner_avg_per_check`, `tips`, `tips_pct_of_revenue`, `food_revenue`, `drinks_revenue`, `drinks_pct`. `food_revenue` = sum of Net for CARTA-family lines in recognized shifts; `drinks_revenue` = all other recognized-shift lines. `drinks_pct = drinks_revenue / total_revenue * 100` (0.0 if no revenue). Uses the same shift filter as lunch/dinner so `food_revenue + drinks_revenue == total_revenue`.
 - `top_performer` — #1 from leaderboard with `period_share_pct` (% of all server revenue)
 - `weekly_consistency` — week-bucketed revenue per server for sparklines (`week_start` aligned to Monday)
 - `prior_period_comparison` — same-length period immediately prior; `delta_pct` is `null` if no prior revenue
@@ -745,6 +765,21 @@ One-off surgical corrections to the DB that cannot be handled by the normal pipe
 - `_validate_period()` helper: shared param validation for all five endpoints.
 
 **No backfill required** — existing `daily_server_sales` rows remain at `tips=0` until re-pipelined. Products, events, transferencia, and walkins endpoints draw from tables already populated.
+
+### 2026-06-07 — Staff tab + food/drinks per waiter
+
+**Schema**: `daily_server_sales` gained two columns via idempotent `ADD COLUMN IF NOT EXISTS` in `init_db()`: `food_revenue NUMERIC DEFAULT 0`, `drinks_revenue NUMERIC DEFAULT 0`. Existing rows remain at 0 until next pipeline run.
+
+**`upsert_server_sales()`**: Now tracks food (`family=="CARTA"`) vs drinks (all other families) revenue per waiter per line item, restricted to the same lunch/dinner timeframes used for total_revenue. `food_revenue + drinks_revenue == total_revenue` is an invariant.
+
+**`/api/dashboard/servers`**: Three new leaderboard fields per entry: `food_revenue`, `drinks_revenue`, `drinks_pct`.
+
+**Dashboard Staff tab** (was placeholder):
+- Period selector now visible on Staff tab (was hidden).
+- `loadStaffTab()` / `_staffLoaded` flag: mirrors F&B pattern.
+- 4 KPI cards: Top Performer, Total Tips, Avg per Check (with "not per person" label), Active Waiters.
+- Server leaderboard table: 8 columns including Drinks % with color-coded thresholds.
+- 2 charts (280px): Revenue per Waiter (`--overall`) and Tips per Waiter (`--green`).
 
 ### 2026-06-06 — Split F&B top-10 charts into food vs drinks
 

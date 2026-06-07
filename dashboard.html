@@ -682,9 +682,83 @@
 </div>
 
 <div class="tab-panel" id="tab-staff" style="display:none">
-  <p style="color: var(--muted); text-align: center; padding: 60px 0;">
-    Staff analytics coming in the next commit.
-  </p>
+
+  <!-- Staff KPI cards -->
+  <div class="kpi-grid">
+    <div class="kpi">
+      <div class="kpi-label">Top Performer</div>
+      <div class="kpi-value" id="staff-kpi-top-name">—</div>
+      <div class="kpi-sub"  id="staff-kpi-top-sub">—</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Total Tips</div>
+      <div class="kpi-value" id="staff-kpi-tips">—</div>
+      <div class="kpi-sub"  id="staff-kpi-tips-sub">—</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Avg per Check</div>
+      <div class="kpi-value" id="staff-kpi-avg">—</div>
+      <div class="kpi-sub" style="color:var(--muted);font-size:0.7rem">per check (not per person)</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Active Waiters</div>
+      <div class="kpi-value" id="staff-kpi-count">—</div>
+      <div class="kpi-sub">in this period</div>
+    </div>
+  </div>
+
+  <div style="height:16px"></div>
+
+  <!-- Server leaderboard table -->
+  <div class="chart-card">
+    <h2>Server Leaderboard</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Rank</th>
+            <th>Waiter</th>
+            <th style="text-align:right">Revenue</th>
+            <th style="text-align:right">Checks</th>
+            <th style="text-align:right">Avg/Check</th>
+            <th style="text-align:right">Tips</th>
+            <th style="text-align:right">Tips %</th>
+            <th style="text-align:right">Drinks %</th>
+          </tr>
+        </thead>
+        <tbody id="staff-leaderboard-tbody">
+          <tr><td colspan="8" style="text-align:center;color:var(--muted);padding:20px">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div style="height:16px"></div>
+
+  <!-- Revenue per Waiter + Tips per Waiter -->
+  <div class="charts-col2">
+    <div class="chart-card" style="margin-bottom:0">
+      <h2>Revenue per Waiter
+        <span class="legend-dots">
+          <span><i class="kpi-dot" style="background:var(--overall)"></i>Net revenue</span>
+        </span>
+      </h2>
+      <div style="position:relative; height:280px">
+        <canvas id="chart-staff-revenue"></canvas>
+      </div>
+    </div>
+    <div class="chart-card" style="margin-bottom:0">
+      <h2>Tips per Waiter
+        <span class="legend-dots">
+          <span><i class="kpi-dot" style="background:var(--green)"></i>Tips</span>
+        </span>
+      </h2>
+      <div style="position:relative; height:280px">
+        <canvas id="chart-staff-tips"></canvas>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 </main>
@@ -1184,15 +1258,20 @@ async function loadBookingSources() {
 }
 
 // ── Active-tab state ──────────────────────────────────────────────────────────
-let _activeTab = 'overview';
-let _fbLoaded  = false;
+let _activeTab   = 'overview';
+let _fbLoaded    = false;
+let _staffLoaded = false;
 
 // ── Tab-aware loader ──────────────────────────────────────────────────────────
 function loadCurrentTab() {
   if (_activeTab === 'overview') {
     loadAll();
   } else if (_activeTab === 'fb') {
+    _fbLoaded = false;
     loadFBTab();
+  } else if (_activeTab === 'staff') {
+    _staffLoaded = false;
+    loadStaffTab();
   }
 }
 
@@ -1208,11 +1287,11 @@ function switchTab(name) {
   document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
   const activeBtn = document.getElementById('tab-btn-' + name);
   if (activeBtn) activeBtn.classList.add('active');
-  // Period selector: visible on Overview and F&B, hidden on Staff
-  document.getElementById('period-controls').style.display =
-    (name === 'staff') ? 'none' : '';
+  // Period selector: visible on all tabs
+  document.getElementById('period-controls').style.display = '';
   // Lazy-load tab data on first visit
   if (name === 'fb' && !_fbLoaded) loadFBTab();
+  if (name === 'staff' && !_staffLoaded) loadStaffTab();
   // Persist selection
   localStorage.setItem('norah_active_tab', name);
 }
@@ -1435,6 +1514,150 @@ async function loadFBTab() {
   }
 }
 
+// ── Staff tab loader ───────────────────────────────────────────────────────────
+async function loadStaffTab() {
+  const from = document.getElementById('date-from').value;
+  const to   = document.getElementById('date-to').value;
+  if (!from || !to) return;
+
+  // Reset to loading state
+  ['staff-kpi-top-name','staff-kpi-top-sub',
+   'staff-kpi-tips','staff-kpi-tips-sub',
+   'staff-kpi-avg','staff-kpi-count'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = '…';
+  });
+  document.getElementById('staff-leaderboard-tbody').innerHTML =
+    '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:20px">Loading…</td></tr>';
+  ['chart-staff-revenue','chart-staff-tips'].forEach(destroyChart);
+
+  try {
+    const data = await apiFetch(`/api/dashboard/servers?period_start=${from}&period_end=${to}`);
+    const lb   = data.leaderboard || [];
+
+    // KPI 1: Top performer
+    if (data.top_performer) {
+      document.getElementById('staff-kpi-top-name').textContent = data.top_performer.user_name;
+      document.getElementById('staff-kpi-top-sub').textContent  =
+        '€' + Math.round(data.top_performer.total_revenue).toLocaleString() + ' revenue';
+    } else {
+      document.getElementById('staff-kpi-top-name').textContent = '—';
+      document.getElementById('staff-kpi-top-sub').textContent  = 'No data';
+    }
+
+    // KPI 2: Total tips
+    const totalTips = lb.reduce((s, r) => s + r.tips, 0);
+    const totalRev  = lb.reduce((s, r) => s + r.total_revenue, 0);
+    const tipsPct   = totalRev > 0 ? (totalTips / totalRev * 100).toFixed(1) : '0.0';
+    document.getElementById('staff-kpi-tips').textContent    = '€' + Math.round(totalTips).toLocaleString();
+    document.getElementById('staff-kpi-tips-sub').textContent = tipsPct + '% of revenue';
+
+    // KPI 3: Avg per check (restaurant-wide)
+    const totalChecks = lb.reduce((s, r) => s + r.total_tickets, 0);
+    const avgPerCheck = totalChecks > 0 ? (totalRev / totalChecks).toFixed(2) : '0.00';
+    document.getElementById('staff-kpi-avg').textContent = '€' + avgPerCheck;
+
+    // KPI 4: Active waiters
+    document.getElementById('staff-kpi-count').textContent = lb.filter(r => r.total_revenue > 0).length;
+
+    // Leaderboard table
+    const tbody = document.getElementById('staff-leaderboard-tbody');
+    if (!lb.length) {
+      tbody.innerHTML =
+        '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:20px">No data for this period</td></tr>';
+    } else {
+      tbody.innerHTML = lb.map((r, i) => {
+        const dpct = r.drinks_pct ?? 0;
+        const drinkColor = dpct < 15 ? 'var(--muted)' : dpct > 30 ? 'var(--dinner)' : 'inherit';
+        return `<tr>
+          <td>${i + 1}</td>
+          <td>${r.user_name}</td>
+          <td class="num">€${Math.round(r.total_revenue).toLocaleString()}</td>
+          <td class="num">${r.total_tickets}</td>
+          <td class="num">€${r.avg_per_check.toFixed(2)}</td>
+          <td class="num">€${r.tips.toFixed(2)}</td>
+          <td class="num">${r.tips_pct_of_revenue.toFixed(1)}%</td>
+          <td class="num" style="color:${drinkColor}">${dpct.toFixed(1)}%</td>
+        </tr>`;
+      }).join('');
+    }
+
+    // Chart: Revenue per Waiter
+    if (lb.length) {
+      const revSorted = [...lb].sort((a, b) => b.total_revenue - a.total_revenue);
+      charts['chart-staff-revenue'] = new Chart(
+        document.getElementById('chart-staff-revenue'), {
+          type: 'bar',
+          data: {
+            labels: revSorted.map(r => r.user_name),
+            datasets: [{ data: revSorted.map(r => r.total_revenue),
+                         backgroundColor: COLORS.overall, borderRadius: 4 }]
+          },
+          options: {
+            indexAxis: 'y', maintainAspectRatio: false, responsive: true,
+            animation: { duration: 350 },
+            plugins: {
+              legend: { display: false },
+              tooltip: { callbacks: { label: ctx => {
+                const r = revSorted[ctx.dataIndex];
+                return [
+                  ` Revenue: €${Math.round(r.total_revenue).toLocaleString()}`,
+                  ` Checks: ${r.total_tickets}`,
+                  ` Avg/check: €${r.avg_per_check.toFixed(2)}`,
+                ];
+              }}}
+            },
+            scales: {
+              x: { grid: { color: 'rgba(0,0,0,0.05)' },
+                   ticks: { callback: v => '€' + v.toLocaleString() } },
+              y: { grid: { display: false } }
+            }
+          }
+        }
+      );
+    }
+
+    // Chart: Tips per Waiter (sorted by tips, skip zero-tip entries)
+    const tipsSorted = [...lb].sort((a, b) => b.tips - a.tips).filter(r => r.tips > 0);
+    if (tipsSorted.length) {
+      charts['chart-staff-tips'] = new Chart(
+        document.getElementById('chart-staff-tips'), {
+          type: 'bar',
+          data: {
+            labels: tipsSorted.map(r => r.user_name),
+            datasets: [{ data: tipsSorted.map(r => r.tips),
+                         backgroundColor: COLORS.green, borderRadius: 4 }]
+          },
+          options: {
+            indexAxis: 'y', maintainAspectRatio: false, responsive: true,
+            animation: { duration: 350 },
+            plugins: {
+              legend: { display: false },
+              tooltip: { callbacks: { label: ctx => {
+                const r = tipsSorted[ctx.dataIndex];
+                return [
+                  ` Tips: €${r.tips.toFixed(2)}`,
+                  ` Revenue: €${Math.round(r.total_revenue).toLocaleString()}`,
+                  ` Tips %: ${r.tips_pct_of_revenue.toFixed(1)}%`,
+                ];
+              }}}
+            },
+            scales: {
+              x: { grid: { color: 'rgba(0,0,0,0.05)' },
+                   ticks: { callback: v => '€' + v.toLocaleString() } },
+              y: { grid: { display: false } }
+            }
+          }
+        }
+      );
+    }
+
+    _staffLoaded = true;
+  } catch (e) {
+    if (e.message !== 'Unauthorized') showError('Staff data failed: ' + e.message);
+  }
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 initDates();
 // Restore last-selected tab (default: overview)
@@ -1446,6 +1669,8 @@ if (_savedTab === 'overview') {
   loadBookingSources();
 } else if (_savedTab === 'fb') {
   loadFBTab();
+} else if (_savedTab === 'staff') {
+  loadStaffTab();
 }
 </script>
 </body>

@@ -362,9 +362,15 @@ def init_db():
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_dss_day ON daily_server_sales(report_day);"
             )
-            # Idempotent column migration — safe on existing DBs
+            # Idempotent column migrations — safe on existing DBs
             cur.execute(
                 "ALTER TABLE daily_server_sales ADD COLUMN IF NOT EXISTS tips NUMERIC DEFAULT 0;"
+            )
+            cur.execute(
+                "ALTER TABLE daily_server_sales ADD COLUMN IF NOT EXISTS food_revenue NUMERIC DEFAULT 0;"
+            )
+            cur.execute(
+                "ALTER TABLE daily_server_sales ADD COLUMN IF NOT EXISTS drinks_revenue NUMERIC DEFAULT 0;"
             )
         conn.commit()
 
@@ -816,21 +822,31 @@ def upsert_server_sales(day_: date, line_items: list, tips_by_user: dict | None 
     agg = defaultdict(lambda: {
         "lunch_revenue": 0.0, "lunch_docs": set(),
         "dinner_revenue": 0.0, "dinner_docs": set(),
+        "food_revenue": 0.0, "drinks_revenue": 0.0,
     })
     for r in line_items:
-        user = (r.get("User") or "Unknown").strip()
-        tf   = (r.get("TimeFrame") or "").strip().lower()
-        net  = float(r.get("Net", 0) or 0)
-        doc  = r.get("DocumentId") or r.get("DocumentNumber") or None
+        user   = (r.get("User") or "Unknown").strip()
+        tf     = (r.get("TimeFrame") or "").strip().lower()
+        net    = float(r.get("Net", 0) or 0)
+        doc    = r.get("DocumentId") or r.get("DocumentNumber") or None
+        family = (r.get("Family") or "").strip().upper()
 
         if tf in _LUNCH_FRAMES_BOT:
             agg[user]["lunch_revenue"] += net
             if doc:
                 agg[user]["lunch_docs"].add(doc)
+            if family == "CARTA":
+                agg[user]["food_revenue"] += net
+            else:
+                agg[user]["drinks_revenue"] += net
         elif tf in _DINNER_FRAMES_BOT:
             agg[user]["dinner_revenue"] += net
             if doc:
                 agg[user]["dinner_docs"].add(doc)
+            if family == "CARTA":
+                agg[user]["food_revenue"] += net
+            else:
+                agg[user]["drinks_revenue"] += net
 
     if not agg:
         return
@@ -841,27 +857,32 @@ def upsert_server_sales(day_: date, line_items: list, tips_by_user: dict | None 
         with conn.cursor() as cur:
             cur.execute("DELETE FROM daily_server_sales WHERE report_day = %s", (day_,))
             for user, vals in agg.items():
-                lr   = vals["lunch_revenue"]
-                lc   = len(vals["lunch_docs"]) or None
-                dr   = vals["dinner_revenue"]
-                dc   = len(vals["dinner_docs"]) or None
-                tr   = lr + dr
-                tips = round(tips_map.get(user, 0.0), 2)
+                lr          = vals["lunch_revenue"]
+                lc          = len(vals["lunch_docs"]) or None
+                dr          = vals["dinner_revenue"]
+                dc          = len(vals["dinner_docs"]) or None
+                tr          = lr + dr
+                tips        = round(tips_map.get(user, 0.0), 2)
+                food_rev    = round(vals["food_revenue"], 2)
+                drinks_rev  = round(vals["drinks_revenue"], 2)
                 cur.execute(
                     """
                     INSERT INTO daily_server_sales
                         (report_day, user_name, lunch_revenue, lunch_covers,
-                         dinner_revenue, dinner_covers, total_revenue, tips)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                         dinner_revenue, dinner_covers, total_revenue, tips,
+                         food_revenue, drinks_revenue)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (report_day, user_name) DO UPDATE SET
                         lunch_revenue  = EXCLUDED.lunch_revenue,
                         lunch_covers   = EXCLUDED.lunch_covers,
                         dinner_revenue = EXCLUDED.dinner_revenue,
                         dinner_covers  = EXCLUDED.dinner_covers,
                         total_revenue  = EXCLUDED.total_revenue,
-                        tips           = EXCLUDED.tips
+                        tips           = EXCLUDED.tips,
+                        food_revenue   = EXCLUDED.food_revenue,
+                        drinks_revenue = EXCLUDED.drinks_revenue
                     """,
-                    (day_, user, lr, lc, dr, dc, tr, tips),
+                    (day_, user, lr, lc, dr, dc, tr, tips, food_rev, drinks_rev),
                 )
         conn.commit()
 
@@ -6310,7 +6331,9 @@ def api_dashboard_servers():
                        SUM(dinner_revenue)                 AS dr,
                        SUM(COALESCE(dinner_covers, 0))     AS dc,
                        SUM(total_revenue)                  AS tr,
-                       SUM(COALESCE(tips, 0))              AS tips
+                       SUM(COALESCE(tips, 0))              AS tips,
+                       SUM(COALESCE(food_revenue, 0))      AS food_rev,
+                       SUM(COALESCE(drinks_revenue, 0))    AS drinks_rev
                 FROM daily_server_sales
                 WHERE report_day BETWEEN %s AND %s
                   AND UPPER(user_name) != 'EXTRAS'
@@ -6350,14 +6373,17 @@ def api_dashboard_servers():
     # Build leaderboard
     leaderboard = []
     total_period_revenue = sum(float(r[5] or 0) for r in current_rows)
-    for (user_name, lr, lc, dr, dc, tr, tips) in current_rows:
-        lr_f   = round(float(lr   or 0), 2)
-        lc_i   = int(lc   or 0)
-        dr_f   = round(float(dr   or 0), 2)
-        dc_i   = int(dc   or 0)
-        tr_f   = round(float(tr   or 0), 2)
-        tips_f = round(float(tips or 0), 2)
-        tc_i   = lc_i + dc_i
+    for (user_name, lr, lc, dr, dc, tr, tips, food_rev, drinks_rev) in current_rows:
+        lr_f        = round(float(lr        or 0), 2)
+        lc_i        = int(lc        or 0)
+        dr_f        = round(float(dr        or 0), 2)
+        dc_i        = int(dc        or 0)
+        tr_f        = round(float(tr        or 0), 2)
+        tips_f      = round(float(tips      or 0), 2)
+        food_rev_f  = round(float(food_rev  or 0), 2)
+        drinks_rev_f= round(float(drinks_rev or 0), 2)
+        tc_i        = lc_i + dc_i
+        drinks_pct  = round(drinks_rev_f / tr_f * 100, 1) if tr_f else 0.0
         leaderboard.append({
             "user_name":             user_name,
             "total_revenue":         tr_f,
@@ -6371,6 +6397,9 @@ def api_dashboard_servers():
             "dinner_avg_per_check":  round(dr_f / dc_i, 2) if dc_i else 0.0,
             "tips":                  tips_f,
             "tips_pct_of_revenue":   round(tips_f / tr_f * 100, 2) if tr_f else 0.0,
+            "food_revenue":          food_rev_f,
+            "drinks_revenue":        drinks_rev_f,
+            "drinks_pct":            drinks_pct,
         })
 
     # Top performer
