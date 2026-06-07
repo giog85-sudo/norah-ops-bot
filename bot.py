@@ -5711,6 +5711,102 @@ def admin_backfill_server_fooddrinks():
     })
 
 
+@flask_app.route("/admin/backfill-server-tips", methods=["POST"])
+def admin_backfill_server_tips():
+    """
+    Surgical backfill: fetches per-user tips from Agora's
+    GetTipsByUserReportRequest for each date in [since, until] and updates
+    ONLY the tips column on existing daily_server_sales rows.
+
+    No INSERT, no DELETE, no DDL. All other columns and tables are untouched.
+
+    POST ?since=YYYY-MM-DD&until=YYYY-MM-DD&confirm=yes  Auth: Bearer token.
+    """
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    if request.args.get("confirm") != "yes":
+        return jsonify({
+            "error": "Add confirm=yes to proceed.",
+            "hint":  "POST /admin/backfill-server-tips?since=YYYY-MM-DD&until=YYYY-MM-DD&confirm=yes",
+        }), 400
+
+    since_str = request.args.get("since")
+    until_str = request.args.get("until")
+    if not since_str or not until_str:
+        return jsonify({"error": "since and until are required (YYYY-MM-DD)"}), 400
+    try:
+        since_date = date.fromisoformat(since_str)
+        until_date = date.fromisoformat(until_str)
+    except ValueError:
+        return jsonify({"error": "Invalid date format — use YYYY-MM-DD"}), 400
+    if since_date > until_date:
+        return jsonify({"error": "since must be <= until"}), 400
+
+    import time as _time
+
+    try:
+        auth_token, session = _agora_mod._login()
+    except Exception as e:
+        return jsonify({"error": f"Agora login failed: {e}"}), 500
+
+    dates_processed = 0
+    rows_updated    = 0
+    errors          = []
+
+    current = since_date
+    while current <= until_date:
+        date_str = current.isoformat()
+        try:
+            _total_tips, tips_by_user = _agora_mod._fetch_tips_by_user(
+                auth_token, session, date_str
+            )
+
+            if not tips_by_user:
+                print(f"[backfill-tips] {date_str}: no tips data — skipping")
+                current += timedelta(days=1)
+                _time.sleep(0.5)
+                continue
+
+            day_updated = 0
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    for user_name, tip_amount in tips_by_user.items():
+                        cur.execute(
+                            """
+                            UPDATE daily_server_sales
+                            SET tips = %s
+                            WHERE report_day = %s AND user_name = %s
+                            """,
+                            (round(tip_amount, 2), current, user_name),
+                        )
+                        if cur.rowcount:
+                            day_updated += cur.rowcount
+                        else:
+                            print(f"[backfill-tips] {date_str}: no row for user={user_name!r} — skipped")
+                conn.commit()
+
+            print(f"[backfill-tips] {date_str}: {len(tips_by_user)} users → {day_updated} rows updated")
+            rows_updated    += day_updated
+            dates_processed += 1
+
+        except Exception as e:
+            msg = f"{date_str}: {e}"
+            print(f"[backfill-tips] ERROR {msg}")
+            errors.append(msg)
+
+        current += timedelta(days=1)
+        _time.sleep(0.5)
+
+    return jsonify({
+        "since":            since_str,
+        "until":            until_str,
+        "dates_processed":  dates_processed,
+        "rows_updated":     rows_updated,
+        "errors":           errors,
+    })
+
+
 @flask_app.route("/admin/probe-waiter-report")
 def admin_probe_waiter_report():
     """

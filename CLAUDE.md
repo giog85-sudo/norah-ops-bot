@@ -516,6 +516,18 @@ Response: `{ since, until, dates_processed, rows_updated, errors[] }`. Per-date 
 
 Progress logged to stdout per date (visible in Railway logs).
 
+### `POST /admin/backfill-server-tips?since=YYYY-MM-DD&until=YYYY-MM-DD&confirm=yes`
+
+Surgical backfill for the `tips` column in `daily_server_sales`. Fetches per-user tips from Agora's `GetTipsByUserReportRequest` (via `_fetch_tips_by_user`) for each date in `[since, until]` and issues `UPDATE daily_server_sales SET tips=… WHERE report_day=… AND user_name=…` for each waiter.
+
+**Context:** The `tips` column was added in Phase 3a but only got populated on days where `/run-pipeline?save=true` was explicitly called. Days processed only via the scheduled daily post (before the 2026-06-04 aggregation sync fix) have `tips=0`. This endpoint fills those in without disturbing any other column.
+
+**Strictly limited to:** Only `UPDATE` on the `tips` column. No INSERT, DELETE, DDL. Only existing rows; waiters absent from `daily_server_sales` for a date are skipped (logged). No other table touched.
+
+Uses `_fetch_tips_by_user` which queries a `date−1 → date+1` window and filters by `BusinessDay` to handle tips entered after midnight.
+
+Same conventions as `backfill-server-fooddrinks`: `confirm=yes` required, 500ms delay between dates, per-date try/except, same response shape.
+
 ### `/admin/health-check?from=YYYY-MM-DD&to=YYYY-MM-DD[&since=YYYY-MM-DD]`
 
 Default window: last 90 days. Optional `?since=YYYY-MM-DD` overrides the lower bound without touching the upper bound — useful for inspecting dates older than 90 days (e.g. `?since=2026-03-01`). Returns 400 if `since` is in the future or malformed. Response always includes `since_date` and `until_date` fields confirming the actual window checked.
