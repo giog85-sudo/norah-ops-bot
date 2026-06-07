@@ -496,6 +496,26 @@ On failure: HTTP 500 with `{ error, agora_url, payload }` (or `response_preview`
 
 Use to inspect per-line-item fields (`WaiterId`, `WaiterName`, `LineType`, `TableCompanions`, etc.) that the normal pipeline discards. Complements `/admin/raw-salecenter` (which covers SaleCenter / per-waiter pax data).
 
+### `POST /admin/backfill-server-fooddrinks?since=YYYY-MM-DD&until=YYYY-MM-DD&confirm=yes`
+
+Surgical one-time backfill for the `food_revenue` and `drinks_revenue` columns added to `daily_server_sales` in commit `7a8a981` (Phase 3d — 2026-06-07). Queries Agora's `GetSalesAnalyticsReportRequest` for each date in `[since, until]` and issues `UPDATE daily_server_sales SET food_revenue=…, drinks_revenue=… WHERE report_day=… AND user_name=…` for each waiter row that already exists.
+
+**Strictly limited to:**
+- Only `UPDATE` statements — no INSERT, DELETE, or DDL
+- Only `food_revenue` and `drinks_revenue` columns — no other column touched
+- Only existing rows — waiters not in `daily_server_sales` for that date are skipped (logged as warning)
+- No changes to `full_daily_stats`, `daily_product_sales`, or any other table
+
+**Why not `/run-pipeline?save=true`**: A full pipeline re-run would risk restoring deleted negative line items (e.g., Mar 10 Sojo correction), overwriting manually-set `full_daily_stats` values, and touching tables that don't need updating. This endpoint does only the minimum.
+
+Auth: Bearer token. `confirm=yes` required — returns 400 without it.
+
+Adds a ~500ms sleep between Agora requests to avoid hammering the POS. For a 90-day window (~78 dates), expect ~40 seconds total.
+
+Response: `{ since, until, dates_processed, rows_updated, errors[] }`. Per-date errors are collected and returned rather than aborting the whole run.
+
+Progress logged to stdout per date (visible in Railway logs).
+
 ### `/admin/health-check?from=YYYY-MM-DD&to=YYYY-MM-DD[&since=YYYY-MM-DD]`
 
 Default window: last 90 days. Optional `?since=YYYY-MM-DD` overrides the lower bound without touching the upper bound — useful for inspecting dates older than 90 days (e.g. `?since=2026-03-01`). Returns 400 if `since` is in the future or malformed. Response always includes `since_date` and `until_date` fields confirming the actual window checked.

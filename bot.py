@@ -5597,6 +5597,120 @@ def admin_raw_sales_analytics():
         }), 500
 
 
+@flask_app.route("/admin/backfill-server-fooddrinks", methods=["POST"])
+def admin_backfill_server_fooddrinks():
+    """
+    Surgical backfill: re-fetches Agora line items for each date in
+    [since, until] and updates ONLY food_revenue + drinks_revenue in
+    existing daily_server_sales rows.
+
+    No INSERT, no DELETE, no DDL. Only UPDATE food_revenue/drinks_revenue
+    on rows that already exist. All other columns and tables are untouched.
+
+    POST ?since=YYYY-MM-DD&until=YYYY-MM-DD&confirm=yes  Auth: Bearer token.
+    """
+    if not _api_check_auth():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    if request.args.get("confirm") != "yes":
+        return jsonify({
+            "error": "Add confirm=yes to proceed.",
+            "hint":  "POST /admin/backfill-server-fooddrinks?since=YYYY-MM-DD&until=YYYY-MM-DD&confirm=yes",
+        }), 400
+
+    since_str = request.args.get("since")
+    until_str = request.args.get("until")
+    if not since_str or not until_str:
+        return jsonify({"error": "since and until are required (YYYY-MM-DD)"}), 400
+    try:
+        since_date = date.fromisoformat(since_str)
+        until_date = date.fromisoformat(until_str)
+    except ValueError:
+        return jsonify({"error": "Invalid date format — use YYYY-MM-DD"}), 400
+    if since_date > until_date:
+        return jsonify({"error": "since must be <= until"}), 400
+
+    import time as _time
+
+    try:
+        auth_token, session = _agora_mod._login()
+    except Exception as e:
+        return jsonify({"error": f"Agora login failed: {e}"}), 500
+
+    dates_processed = 0
+    rows_updated    = 0
+    errors          = []
+
+    current = since_date
+    while current <= until_date:
+        date_str = current.isoformat()
+        try:
+            line_items = _agora_mod._fetch_sales_rows(
+                auth_token, session, date_str, date_str
+            )
+
+            # Aggregate food/drinks per user — same logic as upsert_server_sales
+            from collections import defaultdict as _dd
+            agg = _dd(lambda: {"food_revenue": 0.0, "drinks_revenue": 0.0})
+            for r in line_items:
+                user   = (r.get("User") or "Unknown").strip()
+                tf     = (r.get("TimeFrame") or "").strip().lower()
+                net    = float(r.get("Net", 0) or 0)
+                family = (r.get("Family") or "").strip().upper()
+                if tf in _LUNCH_FRAMES_BOT or tf in _DINNER_FRAMES_BOT:
+                    if family == "CARTA":
+                        agg[user]["food_revenue"]   += net
+                    else:
+                        agg[user]["drinks_revenue"] += net
+
+            if not agg:
+                print(f"[backfill] {date_str}: no recognised line items — skipping")
+                current += timedelta(days=1)
+                _time.sleep(0.5)
+                continue
+
+            # UPDATE only existing rows — no INSERT
+            day_updated = 0
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    for user, vals in agg.items():
+                        food_rev   = round(vals["food_revenue"],   2)
+                        drinks_rev = round(vals["drinks_revenue"], 2)
+                        cur.execute(
+                            """
+                            UPDATE daily_server_sales
+                            SET food_revenue = %s, drinks_revenue = %s
+                            WHERE report_day = %s AND user_name = %s
+                            """,
+                            (food_rev, drinks_rev, current, user),
+                        )
+                        if cur.rowcount:
+                            day_updated += cur.rowcount
+                        else:
+                            print(f"[backfill] {date_str}: no row for user={user!r} — skipped")
+                conn.commit()
+
+            print(f"[backfill] {date_str}: {len(line_items)} items → {day_updated} rows updated")
+            rows_updated    += day_updated
+            dates_processed += 1
+
+        except Exception as e:
+            msg = f"{date_str}: {e}"
+            print(f"[backfill] ERROR {msg}")
+            errors.append(msg)
+
+        current += timedelta(days=1)
+        _time.sleep(0.5)
+
+    return jsonify({
+        "since":            since_str,
+        "until":            until_str,
+        "dates_processed":  dates_processed,
+        "rows_updated":     rows_updated,
+        "errors":           errors,
+    })
+
+
 @flask_app.route("/admin/probe-waiter-report")
 def admin_probe_waiter_report():
     """
