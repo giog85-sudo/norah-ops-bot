@@ -777,6 +777,16 @@ One-off surgical corrections to the DB that cannot be handled by the normal pipe
 
 ## Changelog
 
+### 2026-06-08 — Fix Saturday double-post bug
+
+**Incident:** Saturday June 6 daily report was sent twice — once on Sunday June 7 at 11:05 AM (correct), and again on Monday June 8 at 11:05 AM (duplicate).
+
+**Root cause:** In `send_daily_post_to_owners`, when `previous_business_day()` returns a Sunday, the code falls back to the previous Saturday and posts it. On Monday morning `previous_business_day()` = Sunday, which triggered the same fallback — and since Saturday's DB row was written by Sunday's post, `get_full_day(saturday) is not None`, so the guard passed and Saturday was posted again.
+
+**Fix:** Added a guard at the top of the Sunday block (lines 3991–3993 in `bot.py`). If `report_day` is a Sunday but today (`now_local()`) is not Sunday, Saturday was already sent yesterday — return immediately without touching the DB.
+
+**Invariant:** The Sunday→Saturday fallback can only fire when the job runs on a Sunday. On Monday mornings (and any other day where `previous_business_day` resolves to a Sunday), the job exits cleanly.
+
 ### 2026-06-04 — Dashboard analytics endpoints + per-server tips
 
 **Schema**: `daily_server_sales.tips NUMERIC DEFAULT 0` added via idempotent `ADD COLUMN IF NOT EXISTS` in `init_db()`. Existing rows remain at 0 until next pipeline run.

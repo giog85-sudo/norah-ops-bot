@@ -3989,6 +3989,9 @@ async def send_daily_post_to_owners(context: ContextTypes.DEFAULT_TYPE):
         return
     report_day = previous_business_day(now_local())
     if report_day.weekday() == 6:   # Sunday — Norah is closed
+        if now_local().weekday() != 6:   # today is NOT Sunday → Saturday already posted yesterday
+            print(f"[daily_post] Monday skip — Saturday {(report_day - timedelta(days=1)).isoformat()} already posted on Sunday")
+            return
         saturday = report_day - timedelta(days=1)
         if get_full_day(saturday) is None:
             print(f"[daily_post] Sunday skip — no Saturday data for {saturday.isoformat()}, skipping")
